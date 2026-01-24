@@ -1,6 +1,9 @@
 import sys 
 
-from src.logger import logging
+try:
+    from .logger import logging
+except ImportError:
+    from src.logger import logging
 
 
 def error_message_detail(error, error_detail: sys):
