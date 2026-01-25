@@ -103,6 +103,7 @@ class DocumentProcessor:
 
 
     def build_langchain_documents(self, elements: List) -> List[Document]:
+
         
         if not elements:
             return []
@@ -114,17 +115,14 @@ class DocumentProcessor:
         for el in elements:
             el_type = _get_element_type(el).lower()
 
-            # Table detection
             if "table" in el_type:
                 table_elements.append(el)
                 continue
-
 
             if "image" in el_type or _element_has_image_payload(el):
                 image_elements.append(el)
                 continue
 
-            # treat as narrative text
             if getattr(el, "text", None):
                 text_elements.append(el)
 
@@ -139,7 +137,6 @@ class DocumentProcessor:
                 new_after_n_chars=self.config.NEW_AFTER_N_CHARS,
                 combine_text_under_n_chars=self.config.COMBINE_TEXT_UNDER_N_CHARS,
                 overlap=self.config.CHUNK_OVERLAP,
-
             )
 
             for i, chunk in enumerate(text_chunks, start=1):
@@ -147,20 +144,30 @@ class DocumentProcessor:
                 if not chunk_text or len(chunk_text) < 10:  
                     continue
 
-                page_number = getattr(chunk.metadata, "page_number", None) if hasattr(chunk, "metadata") else None
+                # Safe metadata extraction - handle both object and dict
+                if hasattr(chunk, 'metadata') and chunk.metadata:
+                    page_number = getattr(chunk.metadata, "page_number", None)
+                    filepath = getattr(chunk.metadata, "filepath", None)
+                    filename = getattr(chunk.metadata, "filename", None)
+                    filetype = getattr(chunk.metadata, "filetype", None)
+                else:
+                    page_number = None
+                    filepath = None
+                    filename = None
+                    filetype = None
 
                 metadata = {
                     "chunk_type": "text",
-                    "source": getattr(chunk.metadata, "filepath", None),
-                    "filename": getattr(chunk.metadata, "filename", None),
-                    "filetype": getattr(chunk.metadata, "filetype", None),
+                    "source": filepath,
+                    "filename": filename,
+                    "filetype": filetype,
                     "page_number": page_number,
                     "chunk_index": i,
                     "has_overlap": "..." in chunk_text,  
                 }
 
                 metadata["chunk_id"] = _stable_id(
-                    file_path=str(metadata["source"]),
+                    file_path=str(filepath) if filepath else "unknown",
                     chunk_type="text",
                     index=i,
                     text=chunk_text,
@@ -185,9 +192,15 @@ class DocumentProcessor:
 
                 table_description = self._create_table_description(el)
 
-                source = getattr(el.metadata, "filepath", None) if hasattr(el, "metadata") else None
-                filename = getattr(el.metadata, "filename", None) if hasattr(el, "metadata") else None
-                filetype = getattr(el.metadata, "filetype", None) if hasattr(el, "metadata") else None
+                # Safe metadata extraction
+                if hasattr(el, 'metadata') and el.metadata:
+                    source = getattr(el.metadata, "filepath", None)
+                    filename = getattr(el.metadata, "filename", None)
+                    filetype = getattr(el.metadata, "filetype", None)
+                else:
+                    source = None
+                    filename = None
+                    filetype = None
 
                 metadata = {
                     "chunk_type": "table",
@@ -201,7 +214,7 @@ class DocumentProcessor:
                 }
 
                 metadata["chunk_id"] = _stable_id(
-                    file_path=str(source),
+                    file_path=str(source) if source else "unknown",
                     chunk_type="table",
                     index=i,
                     text=table_text,
@@ -211,7 +224,6 @@ class DocumentProcessor:
 
             print(f"Created {len([d for d in docs if d.metadata.get('chunk_type') == 'table'])} TABLE chunks.")
 
-
         if image_elements:
             print("Creating IMAGE chunks...")
 
@@ -220,12 +232,19 @@ class DocumentProcessor:
 
                 image_text = self._create_image_description(el, page_number)
 
-                source = getattr(el.metadata, "filepath", None) if hasattr(el, "metadata") else None
-                filename = getattr(el.metadata, "filename", None) if hasattr(el, "metadata") else None
-                filetype = getattr(el.metadata, "filetype", None) if hasattr(el, "metadata") else None
-
-                image_base64 = getattr(el.metadata, "image_base64", None) if hasattr(el, "metadata") else None
-                image_path = getattr(el.metadata, "image_path", None) if hasattr(el, "metadata") else None
+                # Safe metadata extraction
+                if hasattr(el, 'metadata') and el.metadata:
+                    source = getattr(el.metadata, "filepath", None)
+                    filename = getattr(el.metadata, "filename", None)
+                    filetype = getattr(el.metadata, "filetype", None)
+                    image_base64 = getattr(el.metadata, "image_base64", None)
+                    image_path = getattr(el.metadata, "image_path", None)
+                else:
+                    source = None
+                    filename = None
+                    filetype = None
+                    image_base64 = None
+                    image_path = None
 
                 metadata = {
                     "chunk_type": "image",
@@ -240,7 +259,7 @@ class DocumentProcessor:
                 }
 
                 metadata["chunk_id"] = _stable_id(
-                    file_path=str(source),
+                    file_path=str(source) if source else "unknown",
                     chunk_type="image",
                     index=i,
                     text=image_text,
