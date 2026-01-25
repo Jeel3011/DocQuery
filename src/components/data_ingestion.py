@@ -3,8 +3,6 @@ import json
 import sys
 from typing import List,Dict,Any
 from pathlib import Path
-
-# Add parent directory to path for direct execution
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from unstructured.partition.pdf import partition_pdf
@@ -27,10 +25,8 @@ class DocumentProcessor:
         self.config = config
     
     def _create_table_description(self, el) -> str:
-        """Extract meaningful description from table element."""
         try:
             table_text = el.text or ""
-            # Extract first few lines for summary
             lines = table_text.split('\n')[:5]
             summary = " ".join([line.strip() for line in lines if line.strip()])
             return f"Table containing: {summary[:200]}..."
@@ -38,26 +34,19 @@ class DocumentProcessor:
             return "Table data extracted from document."
     
     def _create_image_description(self, el, page_num=None) -> str:
-        """Create meaningful description from image element."""
         try:
-            # Try to get alt text or caption
+            
             alt_text = getattr(el.metadata, 'alt_text', None) if hasattr(el, 'metadata') else None
             caption = getattr(el.metadata, 'caption', None) if hasattr(el, 'metadata') else None
             
             if alt_text or caption:
                 return alt_text or caption
             
-            # Fallback description
             page_info = f" on page {page_num}" if page_num else ""
             return f"Image content{page_info}. Contains visual information related to document content."
         except:
             return "Image content extracted from document."
-    
-    def _add_chunk_overlap(self, chunks: List) -> List:
-        """Add overlapping chunks for better context preservation (25% overlap)."""
-        # For now, just return chunks as-is
-        # Overlap will be handled when creating Document objects
-        return chunks
+
 
     def process_documents(self, file_paths: str) -> List:
         """Process documents and return a list of processed data."""
@@ -117,8 +106,7 @@ class DocumentProcessor:
         
         if not elements:
             return []
-
-        # 1) Split elements by type (better than mixing everything)
+        
         text_elements = []
         table_elements = []
         image_elements = []
@@ -131,19 +119,17 @@ class DocumentProcessor:
                 table_elements.append(el)
                 continue
 
-            # Image detection
-            # Unstructured sometimes uses "Image" element types or payload in metadata
+
             if "image" in el_type or _element_has_image_payload(el):
                 image_elements.append(el)
                 continue
 
-            # Default: treat as narrative text
+            # treat as narrative text
             if getattr(el, "text", None):
                 text_elements.append(el)
 
         docs: List[Document] = []
 
-        # 2) Chunk narrative text using chunk_by_title (good for semantic sections)
         if text_elements:
             print("Chunking TEXT elements by title...")
 
@@ -152,18 +138,15 @@ class DocumentProcessor:
                 max_characters=self.config.CHUNK_SIZE,
                 new_after_n_chars=self.config.NEW_AFTER_N_CHARS,
                 combine_text_under_n_chars=self.config.COMBINE_TEXT_UNDER_N_CHARS,
-            )
-            
-            # Apply chunk overlap for better context (50% overlap)
-            text_chunks_with_overlap = self._add_chunk_overlap(text_chunks)
+                overlap=self.config.CHUNK_OVERLAP,
 
-            for i, chunk in enumerate(text_chunks_with_overlap, start=1):
+            )
+
+            for i, chunk in enumerate(text_chunks, start=1):
                 chunk_text = chunk.text.strip() if chunk.text else ""
-                if not chunk_text or len(chunk_text) < 10:  # Skip very small chunks
+                if not chunk_text or len(chunk_text) < 10:  
                     continue
 
-                # Page range info is not always preserved after chunking
-                # so we store best-effort page_number if present.
                 page_number = getattr(chunk.metadata, "page_number", None) if hasattr(chunk, "metadata") else None
 
                 metadata = {
@@ -173,7 +156,7 @@ class DocumentProcessor:
                     "filetype": getattr(chunk.metadata, "filetype", None),
                     "page_number": page_number,
                     "chunk_index": i,
-                    "has_overlap": "..." in chunk_text,  # Flag overlap chunks
+                    "has_overlap": "..." in chunk_text,  
                 }
 
                 metadata["chunk_id"] = _stable_id(
@@ -187,7 +170,6 @@ class DocumentProcessor:
 
             print(f"Created {len([d for d in docs if d.metadata.get('chunk_type') == 'text'])} TEXT chunks.")
 
-        # 3) Store TABLE elements as separate chunks (best for retrieval)
         if table_elements:
             print("Creating TABLE chunks...")
 
@@ -200,8 +182,7 @@ class DocumentProcessor:
 
                 if not table_text:
                     continue
-                
-                # Create meaningful description for retrieval
+
                 table_description = self._create_table_description(el)
 
                 source = getattr(el.metadata, "filepath", None) if hasattr(el, "metadata") else None
@@ -216,7 +197,7 @@ class DocumentProcessor:
                     "page_number": page_number,
                     "chunk_index": i,
                     "table_format": "html" if html else "text",
-                    "description": table_description,  # Add description for better retrieval
+                    "description": table_description,  
                 }
 
                 metadata["chunk_id"] = _stable_id(
@@ -230,15 +211,13 @@ class DocumentProcessor:
 
             print(f"Created {len([d for d in docs if d.metadata.get('chunk_type') == 'table'])} TABLE chunks.")
 
-        # 4) Store IMAGE elements as separate chunks
-        # NOTE: We do NOT embed base64. We store references only.
+
         if image_elements:
             print("Creating IMAGE chunks...")
 
             for i, el in enumerate(image_elements, start=1):
                 page_number = _get_page_number(el)
 
-                # Create meaningful image description for retrieval
                 image_text = self._create_image_description(el, page_number)
 
                 source = getattr(el.metadata, "filepath", None) if hasattr(el, "metadata") else None
@@ -255,10 +234,9 @@ class DocumentProcessor:
                     "filetype": filetype,
                     "page_number": page_number,
                     "chunk_index": i,
-                    # store pointers only
                     "has_image_payload": bool(image_base64),
                     "image_path": image_path,
-                    "description": image_text,  # Add description for better retrieval
+                    "description": image_text,  
                 }
 
                 metadata["chunk_id"] = _stable_id(
@@ -314,11 +292,11 @@ class DocumentProcessor:
         return all_chunks
 
 
-"""if __name__ == "__main__":
+if __name__ == "__main__":
     # testing
     config=Config()
     processor = DocumentProcessor(config=config)
     chunks = processor.process_batch('./docs')
     if chunks:
         print(json.dumps(chunks[0].metadata, indent=2,default=str))
-"""
+

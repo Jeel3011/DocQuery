@@ -18,7 +18,8 @@ class Config:
     CHUNK_SIZE: int = 3000
     NEW_AFTER_N_CHARS: int = 2400
     COMBINE_TEXT_UNDER_N_CHARS: int = 500
-
+    CHUNK_OVERLAP: int = 500
+    
     #retrieval para
     TOP_K: int = 5
     SIMILARITY_THRESHOLD:float = 0.70
