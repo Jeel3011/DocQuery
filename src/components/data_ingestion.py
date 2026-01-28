@@ -84,7 +84,9 @@ class DocumentProcessor:
             else:
                 raise ValueError(f"Unsupported file type: {file_extension}")
             
-            print(f"Processed {file_paths} successfully. Extracted {len(elements)} elements.")
+            print(f"Processed {file_paths} successfully. Extracted {len(elements)} elements. \n")
+
+
             
             # Analyzed elements 
             _log_elements_analysis(elements)
@@ -158,7 +160,7 @@ class DocumentProcessor:
 
                 metadata = {
                     "chunk_type": "text",
-                    "source": filepath,
+                    "source": filepath if filepath else filename,
                     "filename": filename,
                     "filetype": filetype,
                     "page_number": page_number,

@@ -11,8 +11,9 @@ class Config:
 
     
     # for embedings and llm
-    EMBEDDING_MODEL_NAME: str = "openai-embedding-3-small"
-    LLM_MODEL_NAME: str = "gpt-3.5-turbo"
+    EMBEDDING_MODEL_NAME: str = "text-embedding-3-small"
+    LLM_MODEL_NAME: str = "gpt-4o-mini"
+
     
     # chunking para 
     CHUNK_SIZE: int = 3000
@@ -29,7 +30,7 @@ class Config:
 
     #vector db and its paths
     VECTOR_DB_PATH:str="./vector_db"
-    UPLOAD_DIR:str = "./uploaded_docs"
+    UPLOAD_DIR:str = "./docs"
     SUPPORTED_FILE_TYPES: Literal[
         "pdf",
         "docx",
@@ -44,6 +45,8 @@ class Config:
         "xlsx"
     )
 
+
 USE_HYBRID_SEARCH:bool = True
+
 
 
