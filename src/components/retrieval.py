@@ -1,5 +1,3 @@
-import os
-import sys 
 from langchain_chroma import Chroma
 from langchain_openai import OpenAIEmbeddings
 from src.components.config import Config
@@ -7,6 +5,7 @@ from src.logger import get_logger
 logger = get_logger(__name__)
 
 class RetrievalManager:
+    
     def __init__(self,config:Config):
         self.config = config
         self.logger = logger
@@ -27,12 +26,13 @@ class RetrievalManager:
             }
         ) 
 
-       
-
-    def retriev(self,query):
-
-        docs=self.retriever.invoke(query)
-        return docs
+    def retrieve(self,query):
+        try:
+            docs=self.retriever.invoke(query)
+            return docs
+        except Exception as e:
+            self.logger.error(f"retrieval failed : {e}")
+            return []
 
 
 if __name__ == "__main__" :
