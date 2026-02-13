@@ -19,10 +19,11 @@ class RetrievalManager:
         )
 
         self.retriever =self.vectorstore.as_retriever(
-            search_type = "similarity_score_threshold",
+            search_type = "mmr",
             search_kwargs={
                 "k":self.config.TOP_K,
-                "score_threshold" : self.config.SIMILARITY_THRESHOLD
+                "fetch_k":15,
+                "lambda_mult":0.5
             }
         ) 
 
