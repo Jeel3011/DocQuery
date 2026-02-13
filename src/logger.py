@@ -9,7 +9,14 @@ os.makedirs(logs_path, exist_ok=True)
 LOG_FILE_PATH = os.path.join(logs_path, LOG_FILE)
 
 logging.basicConfig(
-    filename=LOG_FILE_PATH,
-    format='[%(asctime)s] %(lineno)d %(levelname)s - %(message)s',
     level=logging.INFO,
+    format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
+    handlers=[
+        logging.StreamHandler(),
+        logging.FileHandler(LOG_FILE_PATH),
+    ],
 )
+
+
+def get_logger(name: str):
+    return logging.getLogger(name)

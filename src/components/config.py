@@ -23,7 +23,8 @@ class Config:
     
     #retrieval para
     TOP_K: int = 5
-    SIMILARITY_THRESHOLD:float = 0.70
+    SIMILARITY_THRESHOLD:float = 0.30
+
 
     #API keys
     OPENAI_API_KEY: str = os.getenv("OPENAI_API_KEY")
@@ -31,6 +32,7 @@ class Config:
     #vector db and its paths
     VECTOR_DB_PATH:str="./vector_db"
     UPLOAD_DIR:str = "./docs"
+    COLLECTION_NAME : str = "docquery_v1"
     SUPPORTED_FILE_TYPES: Literal[
         "pdf",
         "docx",
