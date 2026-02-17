@@ -1,5 +1,6 @@
 import os
 import json
+import pickle
 import sys
 from typing import List,Dict,Any
 from pathlib import Path
@@ -10,10 +11,11 @@ from unstructured.partition.docx import partition_docx
 from unstructured.partition.pptx import partition_pptx
 from unstructured.partition.xlsx import partition_xlsx
 from unstructured.chunking.title import chunk_by_title
+from unstructured.partition.text import partition_text
 
 from langchain_core.documents import Document
 
-from src.utils import _log_elements_analysis, _get_element_type, _get_page_number, _element_has_image_payload, _table_html, _stable_id
+from src.utils import _log_elements_analysis, _get_element_type, _get_page_number, _element_has_image_payload, _table_html, _stable_id,_create_image_description,_create_table_description
 
 try:
     from .config import Config
@@ -23,35 +25,21 @@ except ImportError:
 class DocumentProcessor:
     def __init__(self, config: Config):
         self.config = config
-    
-    def _create_table_description(self, el) -> str:
-        try:
-            table_text = el.text or ""
-            lines = table_text.split('\n')[:5]
-            summary = " ".join([line.strip() for line in lines if line.strip()])
-            return f"Table containing: {summary[:200]}..."
-        except:
-            return "Table data extracted from document."
-    
-    def _create_image_description(self, el, page_num=None) -> str:
-        try:
-            
-            alt_text = getattr(el.metadata, 'alt_text', None) if hasattr(el, 'metadata') else None
-            caption = getattr(el.metadata, 'caption', None) if hasattr(el, 'metadata') else None
-            
-            if alt_text or caption:
-                return alt_text or caption
-            
-            page_info = f" on page {page_num}" if page_num else ""
-            return f"Image content{page_info}. Contains visual information related to document content."
-        except:
-            return "Image content extracted from document."
-
 
     def process_documents(self, file_paths: str) -> List:
         """Process documents and return a list of processed data."""
+        cache_path = Path(file_paths).with_suffix('.pkl')
         file_extension = Path(file_paths).suffix.lower()
         file_name = Path(file_paths).name
+
+
+        if cache_path.exists():
+            try:
+                print(f"loading cached eliments {file_paths}")
+                with open(cache_path,'rb') as f:
+                    return pickle.load(f)
+            except Exception:
+                print("cache corrupted.")    
         try:
             if file_extension == ".pdf":
                 elements = partition_pdf(
@@ -77,7 +65,6 @@ class DocumentProcessor:
                     filename= file_paths
                 )
             elif file_extension in [".txt",".md"]:
-                from unstructured.partition.text import partition_text
                 elements = partition_text(
                     filename= file_paths
                 )
@@ -96,6 +83,9 @@ class DocumentProcessor:
                 element.metadata.filename = file_name
                 element.metadata.filetype = file_extension.strip(".")
                 element.metadata.filepath = file_paths
+
+            with open(cache_path,'wb') as f:
+                pickle.dump(elements,f)
                 
             return elements
         
@@ -177,7 +167,7 @@ class DocumentProcessor:
 
                 docs.append(Document(page_content=chunk_text, metadata=metadata))
 
-            print(f"Created {len([d for d in docs if d.metadata.get('chunk_type') == 'text'])} TEXT chunks.")
+            print(f"Created {len(text_chunks)} TEXT chunks.")
 
         if table_elements:
             print("Creating TABLE chunks...")
@@ -192,7 +182,7 @@ class DocumentProcessor:
                 if not table_text:
                     continue
 
-                table_description = self._create_table_description(el)
+                table_description =_create_table_description(el)
 
                 # Safe metadata extraction
                 if hasattr(el, 'metadata') and el.metadata:
@@ -224,7 +214,8 @@ class DocumentProcessor:
 
                 docs.append(Document(page_content=table_text, metadata=metadata))
 
-            print(f"Created {len([d for d in docs if d.metadata.get('chunk_type') == 'table'])} TABLE chunks.")
+            print(f"Created {len(table_elements)} TABLE chunks.")
+
 
         if image_elements:
             print("Creating IMAGE chunks...")
@@ -232,7 +223,7 @@ class DocumentProcessor:
             for i, el in enumerate(image_elements, start=1):
                 page_number = _get_page_number(el)
 
-                image_text = self._create_image_description(el, page_number)
+                image_text =_create_image_description(el, page_number)
 
                 # Safe metadata extraction
                 if hasattr(el, 'metadata') and el.metadata:
@@ -269,7 +260,7 @@ class DocumentProcessor:
 
                 docs.append(Document(page_content=image_text, metadata=metadata))
 
-            print(f"Created {len([d for d in docs if d.metadata.get('chunk_type') == 'image'])} IMAGE chunks.")
+            print(f"Created {len(image_elements)} IMAGE chunks.")
 
         print(f"Total LangChain Documents created: {len(docs)}")
         return docs
@@ -312,12 +303,4 @@ class DocumentProcessor:
         print(f"processed completed. Total chunks created: {len(all_chunks)}")
         return all_chunks
 
-
-if __name__ == "__main__":
-    # testing
-    config=Config()
-    processor = DocumentProcessor(config=config)
-    chunks = processor.process_batch('./docs')
-    if chunks:
-        print(json.dumps(chunks[0].metadata, indent=2,default=str))
 

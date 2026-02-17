@@ -18,11 +18,10 @@ class RetrievalManager:
         )
 
         self.retriever =self.vectorstore.as_retriever(
-            search_type = "mmr",
+            search_type = "similarity",
+
             search_kwargs={
                 "k":self.config.TOP_K,
-                "fetch_k":15,
-                "lambda_mult":0.5
             }
         ) 
 
@@ -35,9 +34,3 @@ class RetrievalManager:
             return []
 
 
-if __name__ == "__main__" :
-    config = Config()
-    retrieval_manager = RetrievalManager(config=config)
-    query = "what is Decoder?"
-    docs = retrieval_manager.retriev(query) 
-    print(docs)  

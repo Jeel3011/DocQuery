@@ -37,24 +37,6 @@ class AnswerGenration():
 
         self.chain = self.prompt | self.llm | StrOutputParser()
 
-
-    def format_context(self,retrieved_docs: List[Document]) -> tuple[str,list]:
-        context_parts=[]
-        sources = []
-        for i,doc in enumerate(retrieved_docs,1):
-                meta = doc.metadata
-                source_info = f"[Source{1}: {meta.get('filename','unkown')}, Page: {meta.get('page_number', 'N/A')}, Type: {meta.get('chunk_type', 'text')} ]"
-                context_parts.append(f"{source_info}\n{doc.page_content}\n")
-
-                sources.append({
-                    "source_id": i,
-                    "filename":meta.get('filename'),
-                    "page":meta.get('page_number'),
-                    "chunk_type":meta.get('chunk_type'),
-                    "chunk_id":meta.get('chunk_id')
-                })
-                                     
-                context ="\n---\n.".join(context_parts) 
     def generate(self,query:str,retrieved_docs: List[Document]) -> Dict:
 
             
@@ -74,14 +56,15 @@ class AnswerGenration():
                     "chunk_id":meta.get('chunk_id')
                 })
                                      
-                context ="\n---\n.".join(context_parts)
+            context ="\n---\n.".join(context_parts)
 
-                answer = self.chain.invoke({
-                    "context":context,
-                    "question":query
-                })
 
-                return {"answer":answer,"sources":sources,"num_sources_used":len(retrieved_docs)}
+            answer = self.chain.invoke({
+                "context":context,
+                "question":query
+            })
+
+            return {"answer":answer,"sources":sources,"num_sources_used":len(retrieved_docs)}
             
 
 if __name__ == "__main__" :

@@ -57,22 +57,22 @@ class EmbeddingManager:
 
 
             vector_store =Chroma(
-                                    embedding_function=embedding_model,
-
-                                    persist_directory=persist_directory,
-
-                                    collection_metadata={"hnsw:space":"cosine"},
-                                    collection_name=self.config.COLLECTION_NAME
-                                            )
+                                embedding_function=embedding_model,
+                                persist_directory=persist_directory,
+                                collection_metadata={"hnsw:space":"cosine"},
+                                collection_name=self.config.COLLECTION_NAME
+                                )
             
             ids = [doc.metadata["chunk_id"] for doc in documents]
 
-            vector_store.add_documents(
-                documents=documents,
-                ids = ids
-            )
-            
+            existing_ids = set(vector_store.get()["ids"])
+            new_docs = [doc for doc in documents if doc.metadata["chunk_id"] not in existing_ids]
 
+            if not new_docs:
+                 print("All documents already indexed. Skipping.")
+            else:
+                vector_store.add_documents(documents=new_docs, ids=[d.metadata["chunk_id"] for d in new_docs])
+            
             print("Vector store created successfully.")
 
             
@@ -91,15 +91,6 @@ class EmbeddingManager:
            
 
 
-if __name__ == "__main__":
-    config = Config()  
-    doc_processor= DocumentProcessor(config=config)
-    documents = doc_processor.process_batch(directory=config.UPLOAD_DIR)
-    embed = EmbeddingManager(config=config)
-    Vector_store = embed.create_vector_store(documents=documents,persist_directory=config.VECTOR_DB_PATH)
 
-
-
-       
 
 

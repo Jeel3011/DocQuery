@@ -46,3 +46,28 @@ def _log_elements_analysis(elements: List) -> None:
         element_types[el_type] = element_types.get(el_type, 0) + 1
 
     print(f"Element breakdown: {element_types}")
+
+def _create_table_description(el) -> str:
+        try:
+            table_text = el.text or ""
+            lines = table_text.split('\n')[:5]
+            summary = " ".join([line.strip() for line in lines if line.strip()])
+            return f"Table containing: {summary[:200]}..."
+        except Exception:
+            return "Table data extracted from document."
+
+def _create_image_description(el, page_num=None) -> str:
+    try:
+            
+        alt_text = getattr(el.metadata, 'alt_text', None) if hasattr(el, 'metadata') else None
+        caption = getattr(el.metadata, 'caption', None) if hasattr(el, 'metadata') else None
+            
+        if alt_text or caption:
+            return alt_text or caption
+            
+        page_info = f" on page {page_num}" if page_num else ""
+        return f"Image content{page_info}. Contains visual information related to document content."
+    except Exception:
+        return "Image content extracted from document."        
+
+        
