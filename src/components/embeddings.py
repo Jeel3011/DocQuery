@@ -20,14 +20,20 @@ class EmbeddingManager:
             
 
     def create_vector_store(self,documents : List[Document],persist_directory: str) -> Chroma:
-        self.logger.info(
-            "starting vector creation",
-            extra={
-                "num_documents" : len(documents),
-                "persist_directory": persist_directory,
-                "embeding_model" : self.config.EMBEDDING_MODEL_NAME,
-            }
-        )
+        # Early exit: if no documents, just return existing vector store
+        if not documents:
+            print("No new documents to embed. Using existing vector store.")
+            embedding_model = OpenAIEmbeddings(
+                model=self.config.EMBEDDING_MODEL_NAME,
+                openai_api_key=self.config.OPENAI_API_KEY
+            )
+            return Chroma(
+                embedding_function=embedding_model,
+                persist_directory=persist_directory,
+                collection_metadata={"hnsw:space": "cosine"},
+                collection_name=self.config.COLLECTION_NAME,
+            )
+
         try:
             # Deduplication
             unique_docs = []
@@ -63,8 +69,6 @@ class EmbeddingManager:
                                 collection_name=self.config.COLLECTION_NAME
                                 )
             
-            ids = [doc.metadata["chunk_id"] for doc in documents]
-
             existing_ids = set(vector_store.get()["ids"])
             new_docs = [doc for doc in documents if doc.metadata["chunk_id"] not in existing_ids]
 

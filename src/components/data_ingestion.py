@@ -266,8 +266,8 @@ class DocumentProcessor:
         return docs
 
          
-    def process_batch(self,directory:str)-> List:
-        """ process docs in dir"""
+    def process_batch(self, directory: str) -> List:
+        """Process docs in dir. Skips files that already have cached documents."""
         all_chunks = []
 
         if not os.path.exists(directory):
@@ -276,31 +276,53 @@ class DocumentProcessor:
             return all_chunks
 
         supported_formats = self.config.SUPPORTED_FILE_TYPES
+        files = [
+            f for f in os.listdir(directory)
+            if not f.startswith('.')
+            and Path(os.path.join(directory, f)).suffix.lower().strip(".") in supported_formats
+        ]
+        print(f"Found {len(files)} supported files in {directory}")
 
-        files= [f for f in os.listdir(directory) if f.startswith('.') is False and Path(os.path.join(directory, f)).suffix.lower().strip(".") in supported_formats]     
-        print(f"found {len(files)} supported files in {directory} for processing")
+        files_processed = 0
+        files_skipped = 0
 
         for file_name in files:
-            file_path = os.path.join(directory,file_name)
+            file_path = os.path.join(directory, file_name)
+            if not os.path.isfile(file_path):
+                continue
 
-            if os.path.isfile(file_path):
+            # Simple check: if docs cache exists, load it and skip
+            docs_cache_path = Path(file_path).with_suffix(".docs.pkl")
+            if docs_cache_path.exists():
                 try:
-                    print(f"processing file: {file_name}")
-                    elements = self.process_documents(file_paths=file_path)
+                    with open(docs_cache_path, "rb") as f:
+                        cached_docs = pickle.load(f)
+                    print(f"  Loaded {len(cached_docs)} cached chunks for {file_name} (already processed)")
+                    all_chunks.extend(cached_docs)
+                    files_skipped += 1
+                    continue
+                except Exception:
+                    print(f"  Cache corrupted for {file_name}, re-processing...")
 
-                    if elements:
-                        chunks = self.build_langchain_documents(elements=elements)
-                        all_chunks.extend(chunks)
-                        print(f"added {len(chunks)} chunks from {file_name}")
+            # No cache — process from scratch
+            try:
+                print(f"Processing file: {file_name}")
+                elements = self.process_documents(file_paths=file_path)
 
-                    else:
-                        print(f"No elements extracted from {file_name}, skipping chunking.")
+                if elements:
+                    chunks = self.build_langchain_documents(elements=elements)
+                    # Save docs cache so next run skips this file
+                    with open(docs_cache_path, "wb") as f:
+                        pickle.dump(chunks, f)
+                    all_chunks.extend(chunks)
+                    files_processed += 1
+                    print(f"  Added {len(chunks)} chunks from {file_name}")
+                else:
+                    print(f"  No elements extracted from {file_name}, skipping chunking.")
 
-                except Exception as e:
-                    print(f"Error processing file {file_name}: {e}")
+            except Exception as e:
+                print(f"  Error processing file {file_name}: {e}")
 
-
-        print(f"processed completed. Total chunks created: {len(all_chunks)}")
+        print(f"\nBatch complete: {files_processed} processed, {files_skipped} skipped (already cached).")
+        print(f"Total chunks: {len(all_chunks)}")
         return all_chunks
-
-

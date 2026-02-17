@@ -34,4 +34,8 @@ vector_db/
 chroma/
 *.chroma/
 
+# DocQuery caches
+*.pkl
+*.docs.pkl
+
 pyproject.toml

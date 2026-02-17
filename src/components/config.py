@@ -1,9 +1,13 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Literal
 from dotenv import load_dotenv
 import os
+from pathlib import Path
 
 load_dotenv()  # Load .env file
+
+# Project root = two levels up from this file (src/components/config.py -> project root)
+_PROJECT_ROOT = str(Path(__file__).parent.parent.parent)
 
 @dataclass
 class Config:
@@ -25,13 +29,15 @@ class Config:
     TOP_K: int = 5
     SIMILARITY_THRESHOLD:float = 0.30
 
+    # hybrid search
+    USE_HYBRID_SEARCH: bool = True
 
     #API keys
     OPENAI_API_KEY: str = os.getenv("OPENAI_API_KEY")
 
-    #vector db and its paths
-    VECTOR_DB_PATH:str="./vector_db"
-    UPLOAD_DIR:str = "./docs"
+    #vector db and its paths (relative to project root, not CWD)
+    VECTOR_DB_PATH: str = os.path.join(_PROJECT_ROOT, "vector_db")
+    UPLOAD_DIR: str = os.path.join(_PROJECT_ROOT, "docs")
     COLLECTION_NAME : str = "docquery_v1"
     SUPPORTED_FILE_TYPES: Literal[
         "pdf",
@@ -46,9 +52,6 @@ class Config:
         "txt",
         "xlsx"
     )
-
-
-USE_HYBRID_SEARCH:bool = True
 
 
 

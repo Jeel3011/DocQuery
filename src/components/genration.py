@@ -12,7 +12,7 @@ logging.getLogger("httpx").setLevel(logging.WARNING)
 
 class AnswerGenration():
     def __init__(self,config:Config):
-        self.config = Config
+        self.config = config
         self.llm = ChatOpenAI(
             model=self.config.LLM_MODEL_NAME,
             temperature=0.1,
@@ -45,7 +45,7 @@ class AnswerGenration():
 
             for i,doc in enumerate(retrieved_docs,1):
                 meta = doc.metadata
-                source_info = f"[Source{1}: {meta.get('filename','unkown')}, Page: {meta.get('page_number', 'N/A')}, Type: {meta.get('chunk_type', 'text')} ]"
+                source_info = f"[Source{i}: {meta.get('filename','unkown')}, Page: {meta.get('page_number', 'N/A')}, Type: {meta.get('chunk_type', 'text')} ]"
                 context_parts.append(f"{source_info}\n{doc.page_content}\n")
 
                 sources.append({
