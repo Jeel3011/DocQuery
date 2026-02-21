@@ -127,8 +127,7 @@ class DocumentProcessor:
                 elements=text_elements,
                 max_characters=self.config.CHUNK_SIZE,
                 new_after_n_chars=self.config.NEW_AFTER_N_CHARS,
-                combine_text_under_n_chars=self.config.COMBINE_TEXT_UNDER_N_CHARS,
-                overlap=self.config.CHUNK_OVERLAP,
+                combine_text_under_n_chars=self.config.COMBINE_TEXT_UNDER_N_CHARS, 
             )
 
             for i, chunk in enumerate(text_chunks, start=1):

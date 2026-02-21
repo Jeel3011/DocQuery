@@ -25,12 +25,28 @@ class RetrievalManager:
             }
         ) 
 
-    def retrieve(self,query):
+    def retrieve(self,query:str,filename_filter:str = None):
+
         try:
-            docs=self.retriever.invoke(query)
-            return docs
+            if filename_filter:
+                docs = self.vectorstore.similarity_search(query,k=self.config.TOP_K,filter={'filename':filename_filter})
+            else:
+                docs = self.retriever.invoke(query)
+
+            return docs    
         except Exception as e:
             self.logger.error(f"retrieval failed : {e}")
             return []
 
+    def delete_document_by_filename(self,filename:str):
+        try:
+            result = self.vectorstore.get(where={"filename":filename})
+            ids = result.get('ids', [])
+            if ids: 
+                self.vectorstore.delete(ids=ids)
+                self.logger.info(f"Deleted documents with filename {filename}")
+            else:
+                self.logger.warning(f"No documents found with filename {filename} to delete.")
+        except Exception as e:
+            self.logger.error(f"Failed to delete documents with filename {filename}: {e}")
 

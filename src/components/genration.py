@@ -1,4 +1,5 @@
 from typing import List,Dict
+from httpx import stream
 from langchain_openai import ChatOpenAI
 from langchain_core.documents import Document
 from langchain_core.prompts import ChatPromptTemplate
@@ -65,6 +66,21 @@ class AnswerGenration():
             })
 
             return {"answer":answer,"sources":sources,"num_sources_used":len(retrieved_docs)}
+    
+    def generate_stream(self, query: str, retrieved_docs: List[Document]):
+        context_parts = []
+        sources = []
+        for i, doc in enumerate(retrieved_docs, 1):
+            meta = doc.metadata
+            source_info = f"[Source{i}: {meta.get('filename','unknown')}, Page: {meta.get('page_number', 'N/A')}]"
+            context_parts.append(f"{source_info}\n{doc.page_content}\n")
+            sources.append(meta)
+
+        context = "\n---\n".join(context_parts)
+    
+        stream = self.chain.stream({"context": context, "question": query})
+        return stream, sources
+
             
 
 if __name__ == "__main__" :
