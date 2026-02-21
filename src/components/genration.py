@@ -71,7 +71,7 @@ if __name__ == "__main__" :
     config = Config()
     retrieval_manager = RetrievalManager(config=config)
     generator = AnswerGenration(config=config)
-    query = "what is Decoder?"
+    query = "expalin Multi-Head Attention"
     docs = retrieval_manager.retrieve(query) 
     results = generator.generate(query,docs)
     print(results["answer"])              

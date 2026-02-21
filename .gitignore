@@ -39,3 +39,4 @@ chroma/
 *.docs.pkl
 
 pyproject.toml
+test_pipeline.py
