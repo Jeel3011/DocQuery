@@ -148,11 +148,9 @@ A production-grade Retrieval-Augmented Generation (RAG) system that enables inte
 
    The app will be available at `http://localhost:8501`
 
-```
-````md
 ## 📁 Project Structure
 
-```
+```bash
 DocQuery/
 ├── chat.py                    # Streamlit web interface
 ├── src/
@@ -161,15 +159,17 @@ DocQuery/
 │   │   ├── data_ingestion.py  # Document processing & chunking
 │   │   ├── embeddings.py      # Vector embedding management
 │   │   ├── retrieval.py       # Semantic search
-│   │   └── genration.py       # LLM answer generation
+│   │   └── generation.py      # LLM answer generation
 │   ├── logger.py              # Logging configuration
 │   └── utils.py               # Helper functions
-├── pipline.py                 # End-to-end RAG pipeline
+├── pipeline.py                # End-to-end RAG pipeline
 ├── requirements.txt           # Python dependencies
 ├── .env                       # API keys (not in repo)
 ├── .gitignore
 └── README.md
 ```
+
+## 🔍 How It Works
 
 ## 🔍 How It Works
 
