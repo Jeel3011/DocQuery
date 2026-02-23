@@ -149,7 +149,7 @@ A production-grade Retrieval-Augmented Generation (RAG) system that enables inte
    The app will be available at `http://localhost:8501`
 
 ```
-
+````md
 ## 📁 Project Structure
 
 ```
