@@ -25,14 +25,17 @@ class RetrievalManager:
             }
         ) 
 
-    def retrieve(self,query:str,filename_filter:str = None):
+    def retrieve(self,query:str,filename_filter:str = None, page_filter:str = None):
+
 
         try:
             if filename_filter:
-                docs = self.vectorstore.similarity_search(query,k=self.config.TOP_K,filter={'filename':filename_filter})
+                filter_dict = {'filename':filename_filter}
+                if page_filter:
+                    filter_dict['page_number'] = page_filter
+                docs = self.vectorstore.similarity_search(query,k=self.config.TOP_K,filter=filter_dict)
             else:
                 docs = self.retriever.invoke(query)
-
             return docs    
         except Exception as e:
             self.logger.error(f"retrieval failed : {e}")

@@ -169,7 +169,7 @@ DocQuery/
 └── README.md
 ```
 
-## 🔍 How It Works
+
 
 ## 🔍 How It Works
 

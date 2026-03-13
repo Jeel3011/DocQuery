@@ -2,6 +2,7 @@ import os
 import sys
 from pathlib import Path
 import shutil
+import re
 
 # Add project root to sys.path so we can import from src
 _project_root = str(Path(__file__).parent.parent)
@@ -183,7 +184,12 @@ if prompt := st.chat_input("What would you like to know?"):
     with st.chat_message("assistant"):
         # 1. Retrieve Docs First before opening stream
         with st.spinner(f"Retrieving from {selected_filter}..."):
-            docs = st.session_state.retrieval_mgr.retrieve(prompt, filename_filter=filename_filter)
+            page_filter = None
+            # Check if user included page number in query using regex (e.g., "What is on page 5 of document X?")
+            page_match = re.search(r'page\s+(\d+)', prompt.lower())
+            if page_match:  
+                page_filter = int(page_match.group(1))
+            docs = st.session_state.retrieval_mgr.retrieve(prompt, filename_filter=filename_filter, page_filter=page_filter)
         
         if not docs:
             st.warning("No relevant sources found for this query.")

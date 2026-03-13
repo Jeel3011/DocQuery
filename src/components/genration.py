@@ -21,7 +21,8 @@ class AnswerGenration():
         )
 
         self.prompt=ChatPromptTemplate.from_messages([
-            ("system","""you are helpful assistant answering question based on provideddocuments.
+            ("system","""you are helpful assistant answering question based on provided documents.
+
              
              Rules: 
              1. Only use information from context below
@@ -72,14 +73,20 @@ class AnswerGenration():
         sources = []
         for i, doc in enumerate(retrieved_docs, 1):
             meta = doc.metadata
-            source_info = f"[Source{i}: {meta.get('filename','unknown')}, Page: {meta.get('page_number', 'N/A')}]"
+            source_info = f"[Source{i}: {meta.get('filename','unknown')}, Page: {meta.get('page_number', 'N/A')} , Type: {meta.get('chunk_type', 'text')} ]"
             context_parts.append(f"{source_info}\n{doc.page_content}\n")
-            sources.append(meta)
+            sources.append({
+                "source_id": i,
+                "filename": meta.get('filename'),
+                "page": meta.get('page_number'),
+                "chunk_type": meta.get('chunk_type'),
+                "chunk_id": meta.get('chunk_id')})
 
         context = "\n---\n".join(context_parts)
     
         stream = self.chain.stream({"context": context, "question": query})
-        return stream, sources
+        return stream, sources 
+
 
             
 

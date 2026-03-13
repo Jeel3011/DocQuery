@@ -17,6 +17,20 @@ class EmbeddingManager:
     @staticmethod
     def hash_content(text:str) -> str:
         return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+    @staticmethod
+    def clean_metadata(metadata: dict) -> dict:
+        """Clean metadata by removing None values and converting invalid types to strings."""
+        cleaned = {}
+        for key, value in metadata.items():
+            if value is None:
+                continue  # Skip None values
+            elif isinstance(value, (str, int, float, bool)):
+                cleaned[key] = value
+            else:
+                # Convert non-standard types to string
+                cleaned[key] = str(value)
+        return cleaned
             
 
     def create_vector_store(self,documents : List[Document],persist_directory: str) -> Chroma:
@@ -75,6 +89,10 @@ class EmbeddingManager:
             if not new_docs:
                  print("All documents already indexed. Skipping.")
             else:
+                # Clean metadata before adding to vector store
+                for doc in new_docs:
+                    doc.metadata = self.clean_metadata(doc.metadata)
+                
                 vector_store.add_documents(documents=new_docs, ids=[d.metadata["chunk_id"] for d in new_docs])
             
             print("Vector store created successfully.")
