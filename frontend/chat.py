@@ -37,12 +37,17 @@ with st.sidebar:
     st.header("👤 Workspace Session")
     new_user_id = st.text_input("Session ID (User)", value=st.session_state.user_id, help="Change this to create isolated workspaces.")
     if new_user_id != st.session_state.user_id:
-        st.session_state.user_id = new_user_id
-        # Reset state for new workspace
-        for key in ["config", "retrieval_mgr", "generator", "messages"]:
-            if key in st.session_state:
-                del st.session_state[key]
-        st.rerun()
+        # Sanitize session ID to prevent path traversal (allow only safe chars)
+        safe_id = re.sub(r'[^a-zA-Z0-9_-]', '', new_user_id)[:32]
+        if not safe_id:
+            st.warning("Session ID may only contain letters, numbers, underscores and hyphens.")
+        else:
+            st.session_state.user_id = safe_id
+            # Reset state for new workspace
+            for key in ["config", "retrieval_mgr", "generator", "messages"]:
+                if key in st.session_state:
+                    del st.session_state[key]
+            st.rerun()
     st.divider()
 
 # ==========================================

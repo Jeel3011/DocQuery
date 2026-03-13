@@ -30,18 +30,14 @@ def run_pipeline(query: str):
 
     docs = retrieval_mng.retrieve(query)
 
-    result = genrator.generate(query=query,retrieved_docs=docs)
-
-    return {
-        "answer": result,
-        "num_sources_used": len(docs),
-        "sources": docs
-    }
+    result = genrator.generate(query=query, retrieved_docs=docs)
+    # result already contains: {"answer": str, "sources": list, "num_sources_used": int}
+    return result
 
 if __name__ == "__main__":
     query = "what is attention mechanism?"
     result = run_pipeline(query)
-    print(f"Answer: {result['answer']['answer']}")
+    print(f"Answer: {result['answer']}")
 
     print(f"Sources used: {result['num_sources_used']}")
 

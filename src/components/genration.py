@@ -1,5 +1,4 @@
 from typing import List,Dict
-from httpx import stream
 from langchain_openai import ChatOpenAI
 from langchain_core.documents import Document
 from langchain_core.prompts import ChatPromptTemplate
@@ -47,7 +46,7 @@ class AnswerGenration():
 
             for i,doc in enumerate(retrieved_docs,1):
                 meta = doc.metadata
-                source_info = f"[Source{i}: {meta.get('filename','unkown')}, Page: {meta.get('page_number', 'N/A')}, Type: {meta.get('chunk_type', 'text')} ]"
+                source_info = f"[Source{i}: {meta.get('filename','unknown')}, Page: {meta.get('page_number', 'N/A')}, Type: {meta.get('chunk_type', 'text')} ]"
                 context_parts.append(f"{source_info}\n{doc.page_content}\n")
 
                 sources.append({
@@ -58,7 +57,7 @@ class AnswerGenration():
                     "chunk_id":meta.get('chunk_id')
                 })
                                      
-            context ="\n---\n.".join(context_parts)
+            context = "\n---\n".join(context_parts)
 
 
             answer = self.chain.invoke({

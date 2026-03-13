@@ -1,9 +1,6 @@
 import os
 import sys
-import pandas as pd
-import numpy as np
 from typing import List, Dict, Any, Optional
-from src.exception import CustomException
 import hashlib
 
 def _stable_id(file_path: str, chunk_type: str, index: int, text: str) -> str:
