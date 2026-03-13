@@ -16,3 +16,4 @@ openpyxl
 chromadb
 streamlit
 python-dotenv
+ragas

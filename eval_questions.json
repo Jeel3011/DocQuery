@@ -1,0 +1,26 @@
+[
+  {
+    "question": "What is the attention mechanism described in the paper?",
+    "ground_truth": "An attention function maps a query and a set of key-value pairs to an output, where the query, keys, values, and output are all vectors. The output is computed as a weighted sum of the values, where the weight assigned to each value is computed by a compatibility function of the query with the corresponding key."
+  },
+  {
+    "question": "What is Multi-Head Attention and why is it used?",
+    "ground_truth": "Multi-Head Attention linearly projects the queries, keys and values h times with different learned linear projections, performs attention on each of these projected versions in parallel, and concatenates the results. It is used because it allows the model to jointly attend to information from different representation subspaces at different positions."
+  },
+  {
+    "question": "What is the Transformer architecture?",
+    "ground_truth": "The Transformer is a model architecture that eschews recurrence and instead relies entirely on an attention mechanism to draw global dependencies between input and output. It uses stacked self-attention and point-wise, fully connected layers for both the encoder and decoder."
+  },
+  {
+    "question": "What are the BLEU scores reported for English-to-German translation?",
+    "ground_truth": "The big Transformer model achieves a BLEU score of 28.4 on the WMT 2014 English-to-German translation task, outperforming all previously published models and ensembles by more than 2.0 BLEU."
+  },
+  {
+    "question": "What is Scaled Dot-Product Attention?",
+    "ground_truth": "Scaled Dot-Product Attention computes the attention function on a set of queries simultaneously by computing the dot products of the query with all keys, dividing each by the square root of the dimension of the keys (dk), and applying a softmax function to obtain the weights on the values. The formula is Attention(Q,K,V) = softmax(QK^T / sqrt(dk))V."
+  },
+  {
+    "question": "How does the Transformer handle positional information since it has no recurrence?",
+    "ground_truth": "Since the model contains no recurrence and no convolution, positional encodings are added to the input embeddings at the bottoms of the encoder and decoder stacks. The positional encodings use sine and cosine functions of different frequencies, where PE(pos,2i) = sin(pos/10000^(2i/d_model)) and PE(pos,2i+1) = cos(pos/10000^(2i/d_model))."
+  }
+]

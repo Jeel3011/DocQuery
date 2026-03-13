@@ -152,17 +152,24 @@ A production-grade Retrieval-Augmented Generation (RAG) system that enables inte
 
 ```bash
 DocQuery/
-├── chat.py                    # Streamlit web interface
+├── frontend/
+│   └── chat.py                # Streamlit web interface
 ├── src/
 │   ├── components/
 │   │   ├── config.py          # Configuration management
 │   │   ├── data_ingestion.py  # Document processing & chunking
 │   │   ├── embeddings.py      # Vector embedding management
 │   │   ├── retrieval.py       # Semantic search
-│   │   └── generation.py      # LLM answer generation
+│   │   ├── genration.py       # LLM answer generation
+│   │   └── evaluation.py      # RAGAS evaluation module
+│   ├── pipeline/
+│   │   └── pipline.py         # End-to-end RAG pipeline
 │   ├── logger.py              # Logging configuration
+│   ├── exception.py           # Custom exception handling
 │   └── utils.py               # Helper functions
-├── pipeline.py                # End-to-end RAG pipeline
+├── evaluate_rag.py            # RAGAS evaluation runner
+├── eval_questions.json         # Test Q&A pairs for evaluation
+├── test_pipeline.py           # Pipeline integration test
 ├── requirements.txt           # Python dependencies
 ├── .env                       # API keys (not in repo)
 ├── .gitignore
@@ -258,6 +265,50 @@ black src/
 - LLM: ~$0.15 per 1M input tokens, ~$0.60 per 1M output tokens (`gpt-4o-mini`)
 - **Per Query**: ~$0.001-0.005
 
+## 📈 RAGAS Evaluation
+
+DocQuery includes built-in evaluation using the [RAGAS](https://docs.ragas.io/) framework to measure retrieval and generation quality.
+
+### Latest Scores
+
+| Metric | Score | What It Measures |
+|--------|-------|------------------|
+| **Faithfulness** | 0.9286 | Is the answer grounded in the retrieved context? (Detects hallucinations) |
+| **Answer Relevancy** | 0.9591 | Is the answer relevant to the question asked? |
+| **Context Precision** | 1.0000 | Are the retrieved chunks actually relevant to the question? |
+| **Context Recall** | 1.0000 | Was all the information needed to answer retrieved? |
+| **Overall** | **0.9719** | ✅ Production-quality RAG pipeline |
+
+> Evaluated on 6 test questions from the "Attention Is All You Need" paper.
+
+### Running Evaluation
+
+```bash
+# Run with default test questions
+python evaluate_rag.py
+
+# Use custom questions
+python evaluate_rag.py --questions path/to/questions.json
+
+# Custom output path
+python evaluate_rag.py --output path/to/results.json
+```
+
+### Custom Test Questions
+
+Create a JSON file with question-answer pairs:
+
+```json
+[
+  {
+    "question": "Your question here?",
+    "ground_truth": "Expected correct answer based on your documents."
+  }
+]
+```
+
+Results are saved to `eval_results.json` with per-question and aggregate scores.
+
 ## 🔒 Security & Privacy
 
 - API keys stored in `.env` (gitignored)
@@ -272,7 +323,7 @@ black src/
 - [ ] Voice query interface
 - [ ] Export conversations to PDF/DOCX
 - [ ] Integration with Google Drive / Dropbox
-- [ ] Evaluation metrics (RAGAS framework)
+- [x] Evaluation metrics (RAGAS framework) ✅
 - [ ] Support for web scraping (URLs as input)
 - [ ] Fine-tuned embedding models for domain-specific docs
 

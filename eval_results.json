@@ -1,0 +1,61 @@
+{
+  "aggregate_scores": {
+    "faithfulness": 0.9285714285714286,
+    "answer_relevancy": 0.9591054360756334,
+    "context_precision": 0.9999999999791666,
+    "context_recall": 1.0
+  },
+  "num_questions": 6,
+  "pipeline_time_s": 36.91,
+  "eval_time_s": 16.57,
+  "per_question": [
+    {
+      "question": "What is the attention mechanism described in the paper?",
+      "answer": "The attention mechanism described in the paper is referred to as \"Scaled Dot-Product Attention.\" It maps a query and a set of key-value pairs to an output, where the output is computed as a weighted s",
+      "faithfulness": 1.0,
+      "answer_relevancy": 0.985782272179652,
+      "context_precision": 0.99999999998,
+      "context_recall": 1.0
+    },
+    {
+      "question": "What is Multi-Head Attention and why is it used?",
+      "answer": "Multi-Head Attention is a mechanism that enhances the attention function by performing multiple attention operations in parallel. Instead of using a single attention function with a fixed dimensionali",
+      "faithfulness": 1.0,
+      "answer_relevancy": 0.9532642070457048,
+      "context_precision": 0.99999999998,
+      "context_recall": 1.0
+    },
+    {
+      "question": "What is the Transformer architecture?",
+      "answer": "The Transformer architecture is a neural network model designed for sequence transduction tasks, which relies entirely on attention mechanisms rather than recurrence or convolutions. It consists of an",
+      "faithfulness": 1.0,
+      "answer_relevancy": 0.9444494006907881,
+      "context_precision": 0.99999999998,
+      "context_recall": 1.0
+    },
+    {
+      "question": "What are the BLEU scores reported for English-to-German translation?",
+      "answer": "The BLEU score reported for the English-to-German translation task is 28.4 for the big transformer model, which establishes a new state-of-the-art score, outperforming the best previously reported mod",
+      "faithfulness": 0.7142857142857143,
+      "answer_relevancy": 0.9379949706586014,
+      "context_precision": 0.99999999998,
+      "context_recall": 1.0
+    },
+    {
+      "question": "What is Scaled Dot-Product Attention?",
+      "answer": "Scaled Dot-Product Attention is a specific type of attention mechanism where the input consists of queries and keys of dimension \\(d_k\\), and values of dimension \\(d_v\\). The output is computed as a w",
+      "faithfulness": NaN,
+      "answer_relevancy": 0.9847362184157369,
+      "context_precision": 0.999999999975,
+      "context_recall": 1.0
+    },
+    {
+      "question": "How does the Transformer handle positional information since it has no recurrence?",
+      "answer": "The Transformer handles positional information by injecting \"positional encodings\" into the input embeddings at the bottoms of the encoder and decoder stacks. Since the model does not use recurrence o",
+      "faithfulness": NaN,
+      "answer_relevancy": 0.9484055474633174,
+      "context_precision": 0.99999999998,
+      "context_recall": 1.0
+    }
+  ]
+}
