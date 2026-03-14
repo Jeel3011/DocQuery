@@ -17,3 +17,5 @@ chromadb
 streamlit
 python-dotenv
 ragas
+
+-e .

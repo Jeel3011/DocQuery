@@ -9,6 +9,8 @@ from src.logger import get_logger
 logger = get_logger(__name__)
 import logging
 logging.getLogger("httpx").setLevel(logging.WARNING)
+from src.utils import format_chat_history
+
 
 class AnswerGenration():
     def __init__(self,config:Config):
@@ -19,22 +21,25 @@ class AnswerGenration():
             api_key=self.config.OPENAI_API_KEY
         )
 
-        self.prompt=ChatPromptTemplate.from_messages([
-            ("system","""you are helpful assistant answering question based on provided documents.
+        self.prompt = ChatPromptTemplate.from_messages([
+    ("system", """You are a helpful assistant answering questions based on provided documents.
 
-             
-             Rules: 
-             1. Only use information from context below
-             2. If answer is not in context, say " i can not find information about your question from document"
-             3.Cite sources using[Sources :filename,Page : X] format
-             4. Be conise but complete.
 
-            Context : {context}
+Rules:
+1. Only use information from the context below
+2. If answer is not in context, say "I cannot find information about your question from the document"
+3. Cite sources using [Source: filename, Page: X] format
+4. Be concise but complete
+5. Use conversation history only to understand follow-up questions, not as a source of facts
 
-             """),
-             ("user","{question}")
+Conversation History:
+{chat_history}
 
-        ])
+Context:
+{context}
+"""),
+    ("user", "{question}")
+])
 
         self.chain = self.prompt | self.llm | StrOutputParser()
 
@@ -67,7 +72,7 @@ class AnswerGenration():
 
             return {"answer":answer,"sources":sources,"num_sources_used":len(retrieved_docs)}
     
-    def generate_stream(self, query: str, retrieved_docs: List[Document]):
+    def generate_stream(self, query: str, retrieved_docs: List[Document],chat_history:list = None):
         context_parts = []
         sources = []
         for i, doc in enumerate(retrieved_docs, 1):
@@ -83,7 +88,10 @@ class AnswerGenration():
 
         context = "\n---\n".join(context_parts)
     
-        stream = self.chain.stream({"context": context, "question": query})
+        stream = self.chain.stream({"context": context,
+                                    "question": query,
+                                    "chat_history": format_chat_history(chat_history) if chat_history else ""
+                                    })
         return stream, sources 
 
 

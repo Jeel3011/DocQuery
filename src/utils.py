@@ -68,3 +68,14 @@ def _create_image_description(el, page_num=None) -> str:
         return "Image content extracted from document."        
 
         
+def format_chat_history(chat_history: list, window: int = 6) -> str:
+    """Format last N messages into a string for LLM prompt injection."""
+    if not chat_history:
+        return ""
+    recent = chat_history[-window:]
+    lines = []
+    for msg in recent:
+        role = "User" if msg["role"] == "user" else "Assistant"
+        content = msg["content"][:500]
+        lines.append(f"{role}: {content}")
+    return "\n".join(lines)        
