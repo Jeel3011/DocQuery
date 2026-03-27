@@ -5,8 +5,8 @@ langchain-openai
 langchain-chroma
 langchain-experimental
 
-unstructured[all-docs]==0.11.8
-unstructured-client==0.16.0
+unstructured[all-docs]
+unstructured-client
 
 pdf2image
 pypdf
@@ -17,5 +17,12 @@ chromadb
 streamlit
 python-dotenv
 ragas
+
+fastapi
+uvicorn[standard]
+python-multipart
+pydantic[email]
+
+supabase
 
 -e .
