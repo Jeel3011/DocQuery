@@ -7,6 +7,15 @@
 
 A production-grade Retrieval-Augmented Generation (RAG) system that enables intelligent question-answering over your documents using semantic search and AI-powered generation.
 
+## Recent Updates
+
+The project has been upgraded to a production-grade decoupled architecture:
+- the Streamlit interface now acts entirely as a thin client, while a new FastAPI backend handles all business logic, document processing, and RAG pipelines.
+- Supabase PostgreSQL replaces local serialization to securely store user authentication, conversation history, and document chunks.
+- asynchronous tasks are now used for heavy document parsing and embedding, keeping the system responsive during larger file uploads.
+- the system now rewrites conversational follow-up questions to resolve pronouns into standalone queries before searching the vector database, drastically improving context retrieval.
+- to run the system locally, you must now start the FastAPI server and the Streamlit frontend in two separate terminals.
+
 ## 🎯 Features
 
 - **Multi-Format Support**: Process PDF, DOCX, PPTX, XLSX, TXT, and Markdown files
