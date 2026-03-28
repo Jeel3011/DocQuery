@@ -1,12 +1,12 @@
 """
-Document management endpoints — upload, list, delete.
-Uses lazy imports for heavy RAG components.
+Document management endpoints — upload (async with BackgroundTasks), list, delete.
 """
 
 import os
 from pathlib import Path
 
-from fastapi import APIRouter, HTTPException, Depends, UploadFile, File
+from fastapi import APIRouter, HTTPException, Depends, UploadFile, File, BackgroundTasks
+from fastapi.responses import JSONResponse
 
 from src.api.schemas import DocumentResponse, DocumentListResponse
 from src.api.dependencies import get_current_user, get_user_config
@@ -17,20 +17,70 @@ router = APIRouter(prefix="/documents")
 MAX_FILE_SIZE_MB = 10
 
 
-@router.post("/upload", response_model=DocumentResponse)
+def _process_document_background(
+    file_bytes: bytes,
+    filename: str,
+    doc_id: str,
+    tmp_path: str,
+    user_config: Config,
+    sb,
+):
+    """
+    Background task: ingest → chunk → embed → save chunks to Supabase.
+    Updates document status to 'ready' or 'failed' when done.
+    Runs AFTER the API has already returned 202 Accepted to the client.
+    """
+    from src.components.data_ingestion import DocumentProcessor
+    from src.components.embeddings import EmbeddingManager
+
+    try:
+        # Write to temp file for Unstructured
+        os.makedirs(user_config.UPLOAD_DIR, exist_ok=True)
+        with open(tmp_path, "wb") as f:
+            f.write(file_bytes)
+
+        # Ingest + chunk
+        processor = DocumentProcessor(config=user_config)
+        elements = processor.process_documents(file_paths=tmp_path)
+
+        if not elements:
+            sb.update_document_status(doc_id, "failed")
+            return
+
+        chunks = processor.build_langchain_documents(elements=elements)
+
+        # Embed into ChromaDB (vector store)
+        embed_mgr = EmbeddingManager(config=user_config)
+        embed_mgr.create_vector_store(chunks, user_config.VECTOR_DB_PATH)
+
+        # Persist text chunks to Supabase (replaces insecure .pkl caching)
+        sb.save_document_chunks(doc_id, chunks)
+
+        # Mark document as ready
+        sb.update_document_status(doc_id, "ready", len(chunks))
+
+    except Exception:
+        sb.update_document_status(doc_id, "failed")
+    finally:
+        # Clean up temp file
+        try:
+            os.remove(tmp_path)
+        except OSError:
+            pass
+
+
+@router.post("/upload", status_code=202)
 async def upload_document(
+    background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
     sb=Depends(get_current_user),
     user_config: Config = Depends(get_user_config),
 ):
     """
-    Upload a document, process it through the RAG pipeline
-    (ingest → chunk → embed), and store vectors in ChromaDB.
+    Upload a document and immediately return 202 Accepted.
+    Processing (ingest → chunk → embed) happens in the background.
+    Poll GET /documents to check when status changes from 'processing' → 'ready'.
     """
-    from src.components.data_ingestion import DocumentProcessor
-    from src.components.embeddings import EmbeddingManager
-    from src.components.retrieval import RetrievalManager
-
     # Validate file type
     file_ext = Path(file.filename).suffix.lower().strip(".")
     if file_ext not in user_config.SUPPORTED_FILE_TYPES:
@@ -39,23 +89,21 @@ async def upload_document(
             detail=f"Unsupported file type: .{file_ext}. Supported: {user_config.SUPPORTED_FILE_TYPES}",
         )
 
-    # Read file bytes
+    # Read + validate file size
     file_bytes = await file.read()
-
-    # Validate file size
     if len(file_bytes) > MAX_FILE_SIZE_MB * 1024 * 1024:
         raise HTTPException(
             status_code=400,
             detail=f"File too large. Max size: {MAX_FILE_SIZE_MB}MB",
         )
 
-    # 1. Upload raw file to Supabase Storage
+    # 1. Upload raw file to Supabase Storage immediately
     try:
         storage_path = sb.upload_file(file_bytes, file.filename)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to upload file: {str(e)}")
 
-    # 2. Create document record (status=processing)
+    # 2. Create document record with status=processing
     doc_record = sb.create_document_record(
         filename=file.filename,
         storage_path=storage_path,
@@ -64,60 +112,30 @@ async def upload_document(
     )
     doc_id = doc_record.get("id")
 
-    # 3. Write to local temp file for Unstructured processing
-    try:
-        os.makedirs(user_config.UPLOAD_DIR, exist_ok=True)
-        tmp_path = os.path.join(user_config.UPLOAD_DIR, file.filename)
-        with open(tmp_path, "wb") as f:
-            f.write(file_bytes)
+    # 3. Schedule background processing — returns immediately after this
+    tmp_path = os.path.join(user_config.UPLOAD_DIR, file.filename)
+    background_tasks.add_task(
+        _process_document_background,
+        file_bytes=file_bytes,
+        filename=file.filename,
+        doc_id=doc_id,
+        tmp_path=tmp_path,
+        user_config=user_config,
+        sb=sb,
+    )
 
-        # 4. Ingest + chunk
-        processor = DocumentProcessor(config=user_config)
-        elements = processor.process_documents(file_paths=tmp_path)
-
-        if not elements:
-            if doc_id:
-                sb.update_document_status(doc_id, "failed")
-            raise HTTPException(
-                status_code=422,
-                detail="Could not extract content from this file.",
-            )
-
-        chunks = processor.build_langchain_documents(elements=elements)
-
-        # 5. Embed into ChromaDB
-        embed_mgr = EmbeddingManager(config=user_config)
-        embed_mgr.create_vector_store(chunks, user_config.VECTOR_DB_PATH)
-
-        # 6. Update DB record to ready
-        if doc_id:
-            sb.update_document_status(doc_id, "ready", len(chunks))
-
-        # 7. Upload pkl caches to Supabase so they survive restarts
-        for pkl_suffix in [".pkl", ".docs.pkl"]:
-            pkl_path = Path(tmp_path).with_suffix(pkl_suffix)
-            if pkl_path.exists():
-                sb.upload_pkl(pkl_path.read_bytes(), file.filename + pkl_suffix)
-
-        return DocumentResponse(
-            id=doc_id,
-            filename=file.filename,
-            file_type=file_ext,
-            status="ready",
-            chunk_count=len(chunks),
-            file_size_bytes=len(file_bytes),
-            created_at=doc_record.get("created_at"),
-        )
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        if doc_id:
-            sb.update_document_status(doc_id, "failed")
-        raise HTTPException(
-            status_code=500,
-            detail=f"Processing failed: {str(e)}",
-        )
+    # 4. Return 202 Accepted immediately — client should poll GET /documents
+    return JSONResponse(
+        status_code=202,
+        content={
+            "id": doc_id,
+            "filename": file.filename,
+            "file_type": file_ext,
+            "status": "processing",
+            "message": "Document accepted for processing. Poll GET /documents to check status.",
+            "file_size_bytes": len(file_bytes),
+        },
+    )
 
 
 @router.get("", response_model=DocumentListResponse)
@@ -147,7 +165,7 @@ async def delete_document(
     sb=Depends(get_current_user),
     user_config: Config = Depends(get_user_config),
 ):
-    """Delete a document: removes vectors from ChromaDB, file from Supabase Storage, and DB record."""
+    """Delete a document: removes vectors from ChromaDB, file from Storage, and DB record."""
     from src.components.retrieval import RetrievalManager
 
     try:

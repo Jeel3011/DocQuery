@@ -39,7 +39,7 @@ security = HTTPBearer()
 
 
 def get_supabase():
-    """Create a fresh SupabaseManager per request."""
+    """Create an unauthenticated SupabaseManager (anon key, no RLS user context)."""
     from src.components.db import SupabaseManager
     return SupabaseManager()
 
@@ -48,24 +48,33 @@ async def get_current_user(
     credentials: HTTPAuthorizationCredentials = Depends(security),
 ):
     """
-    Extract Bearer token from Authorization header,
-    validate it against Supabase, and return an authenticated SupabaseManager.
+    Validate the Bearer token via Supabase auth (uses anon key \u2014 required for
+    auth.get_user()). Returns a SupabaseManager backed by the SERVICE ROLE key
+    so all subsequent Storage / PostgREST calls bypass RLS while still being
+    scoped to the validated user via sb._user.
     """
-    from src.components.db import SupabaseManager
+    from src.components.db import SupabaseManager, get_supabase_client
 
     token = credentials.credentials
-    sb = SupabaseManager()
 
+    # Step 1: Validate token using anon-key client (get_user requires anon key)
+    anon_client = get_supabase_client(use_service_role=False)
     try:
-        res = sb.client.auth.get_user(token)
+        res = anon_client.auth.get_user(token)
         if not res or not res.user:
             raise HTTPException(status_code=401, detail="Invalid or expired token")
-        sb._user = res.user
-        return sb
     except HTTPException:
         raise
     except Exception as e:
         raise HTTPException(status_code=401, detail=f"Authentication failed: {str(e)}")
+
+    # Step 2: Return a service-role SupabaseManager for all actual operations.
+    # The service role key bypasses RLS so Storage, PostgREST etc. all work
+    # without needing to thread the JWT through the Supabase client internals.
+    # User identity is confirmed above via get_user(); _user is set here.
+    sb = SupabaseManager(use_service_role=True)
+    sb._user = res.user
+    return sb
 
 
 # ─────────────────────────────────────────

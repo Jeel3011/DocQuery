@@ -68,14 +68,48 @@ def _create_image_description(el, page_num=None) -> str:
         return "Image content extracted from document."        
 
         
-def format_chat_history(chat_history: list, window: int = 6) -> str:
-    """Format last N messages into a string for LLM prompt injection."""
+def format_chat_history(chat_history: list, window: int = 6, max_tokens: int = 2000) -> str:
+    """Format last N messages into a string for LLM prompt injection.
+
+    Args:
+        chat_history: List of {"role": ..., "content": ...} dicts.
+        window: Maximum number of messages to retain (default 6 = 3 user + 3 assistant turns).
+        max_tokens: Hard token ceiling — oldest messages are dropped until under budget.
+
+    Returns:
+        Formatted string safe to inject into an LLM prompt.
+    """
     if not chat_history:
         return ""
+
+    # Step 1: Keep only the most recent `window` messages
     recent = chat_history[-window:]
-    lines = []
-    for msg in recent:
-        role = "User" if msg["role"] == "user" else "Assistant"
-        content = msg["content"][:500]
-        lines.append(f"{role}: {content}")
-    return "\n".join(lines)        
+
+    # Step 2: Attempt tiktoken truncation to stay under max_tokens
+    try:
+        import tiktoken
+        enc = tiktoken.get_encoding("cl100k_base")  # works for GPT-4 / GPT-4o-mini
+
+        while recent:
+            lines = []
+            for msg in recent:
+                role = "User" if msg["role"] == "user" else "Assistant"
+                # Truncate individual message content to 500 chars to avoid runaway context
+                content = msg["content"][:500]
+                lines.append(f"{role}: {content}")
+            text = "\n".join(lines)
+            token_count = len(enc.encode(text))
+            if token_count <= max_tokens:
+                return text
+            # Drop the oldest message and retry
+            recent = recent[1:]
+
+        return ""  # all messages exceeded the budget
+    except ImportError:
+        # tiktoken not installed — fall back to character-based truncation
+        lines = []
+        for msg in recent:
+            role = "User" if msg["role"] == "user" else "Assistant"
+            content = msg["content"][:500]
+            lines.append(f"{role}: {content}")
+        return "\n".join(lines)

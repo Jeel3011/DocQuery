@@ -89,8 +89,19 @@ async def query_stream(
     Query documents with SSE streaming.
     Returns a stream of tokens followed by a final sources event.
     """
+    chat_history = []
+    if body.conversation_id:
+        existing_msgs = sb.get_messages(body.conversation_id)
+        chat_history = [
+            {"role": m["role"], "content": m["content"]}
+            for m in existing_msgs
+        ]
+
+    # Contextualize ambiguous follow-up questions for the retriever
+    search_query = generator.rewrite_query(body.question, chat_history)
+
     docs = retrieval_mgr.retrieve(
-        body.question,
+        search_query,
         filename_filter=body.filename_filter,
         page_filter=body.page_filter,
     )
@@ -103,28 +114,15 @@ async def query_stream(
 
         return StreamingResponse(no_results(), media_type="text/event-stream")
 
-    stream, sources = generator.generate_stream(query=body.question, retrieved_docs=docs)
-
-    async def event_generator():
-        try:
-            for chunk in stream:
-                yield f"data: {json.dumps({'type': 'token', 'content': chunk})}\n\n"
-
-            serializable_sources = [
-                {
-                    "source_id": s.get("source_id"),
-                    "filename": s.get("filename"),
-                    "page": s.get("page"),
-                    "chunk_type": s.get("chunk_type"),
-                }
-                for s in sources
-            ]
-            yield f"data: {json.dumps({'type': 'sources', 'sources': serializable_sources})}\n\n"
-            yield "data: [DONE]\n\n"
-        except Exception as e:
-            yield f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n"
-
-    return StreamingResponse(event_generator(), media_type="text/event-stream")
+    # Pass the generator directly to StreamingResponse
+    return StreamingResponse(
+        generator.generate_stream(
+            query=body.question, 
+            retrieved_docs=docs,
+            chat_history=chat_history
+        ),
+        media_type="text/event-stream"
+    )
 
 
 # ─────────────────────────────────────────
@@ -255,7 +253,7 @@ async def send_message(
             created_at=msg.get("created_at"),
         )
 
-    result = generator.generate(query=body.question, retrieved_docs=docs)
+    result = generator.generate(query=body.question, retrieved_docs=docs, chat_history=chat_history)
 
     serializable_sources = [
         {

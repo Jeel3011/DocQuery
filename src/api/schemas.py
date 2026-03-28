@@ -66,6 +66,7 @@ class QueryRequest(BaseModel):
     question: str = Field(..., min_length=1)
     filename_filter: Optional[str] = None
     page_filter: Optional[int] = None
+    conversation_id: Optional[str] = None
 
 
 class QueryResponse(BaseModel):

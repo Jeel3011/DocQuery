@@ -43,7 +43,42 @@ Context:
 
         self.chain = self.prompt | self.llm | StrOutputParser()
 
-    def generate(self,query:str,retrieved_docs: List[Document]) -> Dict:
+    def rewrite_query(self, query: str, chat_history: list = None) -> str:
+        """
+        Rewrite a follow-up question to be a standalone query based on chat history.
+        This ensures the vector DB can find relevant documents even for ambiguous queries like 'what is it?'.
+        """
+        if not chat_history:
+            return query
+            
+        # format_chat_history already handles truncation
+        formatted_history = format_chat_history(chat_history)
+        if not formatted_history:
+            return query
+            
+        rewrite_prompt = ChatPromptTemplate.from_messages([
+            ("system", """You are an AI assistant that rewrites conversational follow-up questions into standalone search queries.
+Given the conversation history, rephrase the follow-up question to be a standalone query that can be used to search a document database. 
+- Resolve any pronouns (it, they, them, this, these, those) to their specific referents from the history.
+- If the user uses vague terms like "all 3" or "both", explicitly list what those refer to based on the previous messages.
+- Do not answer the question, ONLY return the rewritten standalone question.
+- If the question is already completely standalone, return it exactly as is.
+
+Conversation History:
+{chat_history}"""),
+            ("user", "Follow-up question: {question}\nStandalone query:")
+        ])
+        
+        chain = rewrite_prompt | self.llm | StrOutputParser()
+        standalone_query = chain.invoke({
+            "chat_history": formatted_history,
+            "question": query
+        })
+        
+        logger.info(f"Rewrote query: '{query}' -> '{standalone_query}'")
+        return standalone_query.strip()
+
+    def generate(self,query:str,retrieved_docs: List[Document], chat_history: list = None) -> Dict:
 
             
             context_parts=[]
@@ -67,32 +102,54 @@ Context:
 
             answer = self.chain.invoke({
                 "context":context,
-                "question":query
+                "question":query,
+                "chat_history": format_chat_history(chat_history) if chat_history else ""
             })
 
             return {"answer":answer,"sources":sources,"num_sources_used":len(retrieved_docs)}
     
-    def generate_stream(self, query: str, retrieved_docs: List[Document],chat_history:list = None):
+    def generate_stream(self, query: str, retrieved_docs: List[Document], chat_history: list = None):
+        """Yield Server-Sent Events (SSE) for streaming RAG responses."""
         context_parts = []
         sources = []
         for i, doc in enumerate(retrieved_docs, 1):
             meta = doc.metadata
             source_info = f"[Source{i}: {meta.get('filename','unknown')}, Page: {meta.get('page_number', 'N/A')} , Type: {meta.get('chunk_type', 'text')} ]"
             context_parts.append(f"{source_info}\n{doc.page_content}\n")
+            
+            # Prepare source metadata for the client, including a snippet of the text
+            snippet = doc.page_content[:250].replace('\n', ' ') + "..."
             sources.append({
                 "source_id": i,
-                "filename": meta.get('filename'),
-                "page": meta.get('page_number'),
-                "chunk_type": meta.get('chunk_type'),
-                "chunk_id": meta.get('chunk_id')})
+                "filename": meta.get('filename', 'Unknown'),
+                "page": meta.get('page_number', 'N/A'),
+                "chunk_type": meta.get('chunk_type', 'text'),
+                "chunk_id": meta.get('chunk_id', ''),
+                "content": snippet
+            })
 
         context = "\n---\n".join(context_parts)
-    
-        stream = self.chain.stream({"context": context,
-                                    "question": query,
-                                    "chat_history": format_chat_history(chat_history) if chat_history else ""
-                                    })
-        return stream, sources 
+        
+        import json
+        
+        # 1. Send the sources to the client first
+        yield f"data: {json.dumps({'type': 'sources', 'sources': sources})}\n\n"
+        
+        # 2. Stream the LLM tokens
+        stream = self.chain.stream({
+            "context": context,
+            "question": query,
+            "chat_history": format_chat_history(chat_history) if chat_history else ""
+        })
+        
+        for chunk in stream:
+            # Depending on OutputParser, chunk might be a string or dict
+            text_chunk = chunk if isinstance(chunk, str) else chunk.get("answer", "")
+            if text_chunk:
+                yield f"data: {json.dumps({'type': 'token', 'content': text_chunk})}\n\n"
+                
+        # 3. Signal end of stream
+        yield "data: [DONE]\n\n"
 
 
             

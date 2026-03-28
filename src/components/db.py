@@ -15,25 +15,41 @@ from dotenv import load_dotenv
 load_dotenv()
 
 
-def get_supabase_client() -> Client:
+def get_supabase_client(use_service_role: bool = False) -> Client:
+    """Create a Supabase client.
+
+    For server-side (FastAPI) operations that need to bypass RLS (file uploads,
+    embedding saves etc.), pass use_service_role=True. This uses the
+    SUPABASE_SERVICE_KEY which grants full access — validation of the user's
+    identity is still done separately via auth.get_user(token).
+
+    For client-side (Streamlit) sessions: use default (anon key).
+    """
     url = os.getenv("SUPABASE_URL")
-    key = os.getenv("SUPABASE_ANON_KEY")
-    if not url or not key:
+    anon_key = os.getenv("SUPABASE_ANON_KEY")
+    service_key = os.getenv("SUPABASE_SERVICE_KEY")
+    if not url or not anon_key:
         raise ValueError("SUPABASE_URL and SUPABASE_ANON_KEY must be set in your .env file")
-    return create_client(url, key)
+    if use_service_role:
+        if not service_key:
+            raise ValueError("SUPABASE_SERVICE_KEY must be set in your .env file for server-side operations")
+        return create_client(url, service_key)
+    return create_client(url, anon_key)
 
 
 class SupabaseManager:
     """
     Central class for all Supabase operations in DocQuery.
-    One instance per Streamlit session is enough.
+
+    use_service_role=True: FastAPI backend — bypasses RLS for storage/DB writes.
+    use_service_role=False: Streamlit frontend — uses anon key + cookie auth.
     """
 
     BUCKET = "docquery-files"
 
-    def __init__(self):
-        self.client: Client = get_supabase_client()
-        self._user = None  # set after login
+    def __init__(self, use_service_role: bool = False):
+        self.client: Client = get_supabase_client(use_service_role=use_service_role)
+        self._user = None  # set after login / after get_user() validation
 
     # ─────────────────────────────────────────
     # AUTH
@@ -104,27 +120,50 @@ class SupabaseManager:
         tmp.close()
         return tmp.name
 
-    def upload_pkl(self, pkl_bytes: bytes, filename: str) -> str:
-        """Upload a pickle cache file to storage."""
+    # ─────────────────────────────────────────
+    # DOCUMENT CHUNKS TABLE
+    # ─────────────────────────────────────────
+
+    def save_document_chunks(self, document_id: str, chunks: list) -> None:
+        """Persist LangChain Document chunks to Supabase document_chunks table.
+
+        Each chunk is stored as plain text + JSONB metadata — no pickle involved.
+        Safe to call multiple times; existing chunks for the document_id are replaced.
+        """
         if not self.user_id:
             raise ValueError("User must be logged in.")
-        storage_path = f"{self.user_id}/cache/{filename}"
-        self.client.storage.from_(self.BUCKET).upload(
-            path=storage_path,
-            file=pkl_bytes,
-            file_options={"upsert": "true"},
-        )
-        return storage_path
 
-    def download_pkl(self, filename: str) -> Optional[bytes]:
-        """Download a pickle cache file. Returns None if not found."""
-        if not self.user_id:
-            return None
-        storage_path = f"{self.user_id}/cache/{filename}"
-        try:
-            return self.client.storage.from_(self.BUCKET).download(storage_path)
-        except Exception:
-            return None
+        # Delete any previous chunks for this document so we get a clean re-index
+        self.client.table("document_chunks").delete().eq(
+            "document_id", document_id
+        ).execute()
+
+        rows = [
+            {
+                "document_id": document_id,
+                "user_id": self.user_id,
+                "chunk_index": idx,
+                "content": chunk.page_content,
+                "metadata": chunk.metadata,
+            }
+            for idx, chunk in enumerate(chunks)
+        ]
+
+        if rows:
+            self.client.table("document_chunks").insert(rows).execute()
+
+    def get_document_chunks(self, document_id: str) -> list:
+        """Retrieve all stored chunks for a document (ordered by chunk_index)."""
+        res = (
+            self.client.table("document_chunks")
+            .select("*")
+            .eq("document_id", document_id)
+            .eq("user_id", self.user_id)
+            .order("chunk_index")
+            .execute()
+        )
+        return res.data or []
+
 
     def delete_file(self, storage_path: str):
         """Delete a file from storage."""
