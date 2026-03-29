@@ -1,11 +1,12 @@
 from typing import List
 from src.components.config import Config
 from src.components.data_ingestion import DocumentProcessor
-from langchain_chroma import Chroma
+from langchain_pinecone import PineconeVectorStore
 from langchain_openai import OpenAIEmbeddings
 from langchain_core.documents import Document
 import hashlib
 import traceback
+import os
 from src.logger import get_logger
 logger = get_logger(__name__)
 
@@ -13,6 +14,8 @@ class EmbeddingManager:
     def __init__(self,config : Config):
         self.config = config
         self.logger = logger
+        if self.config.PINECONE_API_KEY:
+            os.environ["PINECONE_API_KEY"] = self.config.PINECONE_API_KEY
 
     @staticmethod
     def hash_content(text:str) -> str:
@@ -33,19 +36,19 @@ class EmbeddingManager:
         return cleaned
             
 
-    def create_vector_store(self,documents : List[Document],persist_directory: str) -> Chroma:
+    def create_vector_store(self,documents : List[Document],persist_directory: str = None) -> PineconeVectorStore:
+        embedding_model = OpenAIEmbeddings(
+            model=self.config.EMBEDDING_MODEL_NAME,
+            openai_api_key=self.config.OPENAI_API_KEY
+        )
+        
         # Early exit: if no documents, just return existing vector store
         if not documents:
             print("No new documents to embed. Using existing vector store.")
-            embedding_model = OpenAIEmbeddings(
-                model=self.config.EMBEDDING_MODEL_NAME,
-                openai_api_key=self.config.OPENAI_API_KEY
-            )
-            return Chroma(
-                embedding_function=embedding_model,
-                persist_directory=persist_directory,
-                collection_metadata={"hnsw:space": "cosine"},
-                collection_name=self.config.COLLECTION_NAME,
+            return PineconeVectorStore(
+                index_name=self.config.PINECONE_INDEX_NAME,
+                embedding=embedding_model,
+                namespace=self.config.PINECONE_NAMESPACE
             )
 
         try:
@@ -63,55 +66,36 @@ class EmbeddingManager:
                 doc.metadata["content_hash"]=content_hash
                 unique_docs.append(doc)
 
-            
-
             documents=unique_docs    
-
-            embedding_model = OpenAIEmbeddings(model=self.config.EMBEDDING_MODEL_NAME,
-                                                openai_api_key=self.config.OPENAI_API_KEY)
-
             self.logger.info("Embedding model created")                                    
 
             for doc in documents:
                 doc.metadata["chunk_id"] = f"{doc.metadata.get('source','unknown')}::{doc.metadata['content_hash']}"
 
+            # Clean metadata before adding to vector store
+            for doc in documents:
+                doc.metadata = self.clean_metadata(doc.metadata)
 
-            vector_store =Chroma(
-                                embedding_function=embedding_model,
-                                persist_directory=persist_directory,
-                                collection_metadata={"hnsw:space":"cosine"},
-                                collection_name=self.config.COLLECTION_NAME
-                                )
+            vector_store = PineconeVectorStore(
+                index_name=self.config.PINECONE_INDEX_NAME,
+                embedding=embedding_model,
+                namespace=self.config.PINECONE_NAMESPACE
+            )
             
-            existing_ids = set(vector_store.get()["ids"])
-            new_docs = [doc for doc in documents if doc.metadata["chunk_id"] not in existing_ids]
-
-            if not new_docs:
-                 print("All documents already indexed. Skipping.")
-            else:
-                # Clean metadata before adding to vector store
-                for doc in new_docs:
-                    doc.metadata = self.clean_metadata(doc.metadata)
-                
-                vector_store.add_documents(documents=new_docs, ids=[d.metadata["chunk_id"] for d in new_docs])
+            # Upsert into Pinecone. This automatically handles duplicates if reusing chunk_id.
+            vector_store.add_documents(documents=documents, ids=[d.metadata["chunk_id"] for d in documents])
             
             print("Vector store created successfully.")
-
-            
-            
             return vector_store
         
         except Exception as e:
             self.logger.exception(
                 "Failed to create vector store",
                 extra={
-                    "persist_directory": persist_directory,
                     "num_documents": len(documents),
                 },
             )
             raise
-           
-
 
 
 

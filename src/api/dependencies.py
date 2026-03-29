@@ -85,10 +85,10 @@ def get_user_config(
     sb=Depends(get_current_user),
     config: Config = Depends(get_config),
 ) -> Config:
-    """Create a user-scoped Config with isolated ChromaDB collection."""
+    """Create a user-scoped Config with isolated Pinecone namespace."""
     user_config = Config()
-    user_config.VECTOR_DB_PATH = f"{config.VECTOR_DB_PATH}_{sb.user_id}"
-    user_config.COLLECTION_NAME = f"docquery_{sb.user_id[:8]}"
+    # Namespace uses the user's UUID for strict isolation in Pinecone
+    user_config.PINECONE_NAMESPACE = sb.user_id
     return user_config
 
 

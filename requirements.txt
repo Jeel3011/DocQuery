@@ -2,7 +2,8 @@ langchain
 langchain-community
 langchain-text-splitters
 langchain-openai
-langchain-chroma
+langchain-pinecone
+pinecone-client
 langchain-experimental
 
 unstructured[all-docs]
@@ -13,7 +14,6 @@ pypdf
 python-pptx
 openpyxl
 
-chromadb
 streamlit
 python-dotenv
 ragas

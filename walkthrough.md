@@ -77,6 +77,22 @@ Follow-up questions (e.g., "what is the purpose of it?") were originally passed 
 3. `AnswerGenration.rewrite_query()` uses a fast LLM chain to rewrite the ambiguous question into a standalone query (e.g., "What is the purpose of the Transformer Encoder?").
 4. The vector DB searches for this standalone query, successfully finding and citing the relevant documents.
 
+### ✅ Phase 2.1 — Pinecone Migration & Multi-Tenancy
+
+**Files:** `src/components/embeddings.py`, `src/components/retrieval.py`, `src/api/dependencies.py`, `src/components/config.py`
+
+Migrated the local ChromaDB vector store to Pinecone for production-ready, persistent embeddings.
+1. **Namespaces for Multi-Tenancy:** Users are now isolated using Pinecone namespaces (`namespace=user_id`). This completely secures user data without requiring multiple expensive Pinecone indices.
+2. **Deduplication:** Chunks are upserted into Pinecone using deterministic IDs (`source::content_hash`) to avoid duplicate vectors.
+3. **Dependencies:** Replaced `chromadb` with `pinecone-client` and `langchain-pinecone`.
+
+> [!IMPORTANT]
+> Add the following to your `.env` file before running:
+> ```
+> PINECONE_API_KEY=your_pinecone_api_key
+> PINECONE_INDEX_NAME=your_index_name
+> ```
+
 ---
 
 ## How to Run
@@ -102,7 +118,6 @@ API_BASE_URL=http://localhost:8000
 
 | Phase | Item |
 |---|---|
-| 2.1 | Migrate ChromaDB → Pinecone (cloud vector DB so embeddings survive restarts) |
 | 3.1 | Dockerize (multi-stage Dockerfile + docker-compose) |
 | 3.2 | CI/CD GitHub Actions |
 | 4.x | Celery, Hybrid Search, Reranking, Caching, GraphRAG, LangGraph, Telemetry |

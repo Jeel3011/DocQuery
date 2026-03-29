@@ -37,14 +37,14 @@ class Config:
     SUPABASE_URL: str = os.getenv("SUPABASE_URL")
     SUPABASE_ANON_KEY: str = os.getenv("SUPABASE_ANON_KEY")
 
-    # Local paths (ChromaDB stays local for now — Pinecone migration later)
-    VECTOR_DB_PATH: str = os.path.join(_PROJECT_ROOT, "vector_db")
+    # Pinecone
+    PINECONE_API_KEY: str = os.getenv("PINECONE_API_KEY")
+    PINECONE_INDEX_NAME: str = os.getenv("PINECONE_INDEX_NAME", "docquery")
+    PINECONE_NAMESPACE: str = "default"  # Dynamically overridden per user
 
     # UPLOAD_DIR is used as a temp directory when downloading files from Supabase
     # for processing. Files are NOT stored here permanently anymore.
     UPLOAD_DIR: str = os.path.join(_PROJECT_ROOT, "tmp_uploads")
-
-    COLLECTION_NAME: str = "docquery_v1"
     SUPPORTED_FILE_TYPES: tuple = (
         "pdf",
         "docx",

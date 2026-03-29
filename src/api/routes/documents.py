@@ -49,9 +49,9 @@ def _process_document_background(
 
         chunks = processor.build_langchain_documents(elements=elements)
 
-        # Embed into ChromaDB (vector store)
+        # Embed into Pinecone (vector store)
         embed_mgr = EmbeddingManager(config=user_config)
-        embed_mgr.create_vector_store(chunks, user_config.VECTOR_DB_PATH)
+        embed_mgr.create_vector_store(chunks)
 
         # Persist text chunks to Supabase (replaces insecure .pkl caching)
         sb.save_document_chunks(doc_id, chunks)
@@ -165,7 +165,7 @@ async def delete_document(
     sb=Depends(get_current_user),
     user_config: Config = Depends(get_user_config),
 ):
-    """Delete a document: removes vectors from ChromaDB, file from Storage, and DB record."""
+    """Delete a document: removes vectors from Pinecone, file from Storage, and DB record."""
     from src.components.retrieval import RetrievalManager
 
     try:
