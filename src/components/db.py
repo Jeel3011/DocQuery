@@ -214,11 +214,20 @@ class SupabaseManager:
         ).order("created_at", desc=True).execute()
         return res.data or []
 
-    def delete_document_record(self, filename: str):
-        """Delete document record by filename for current user."""
+    def get_document(self, doc_id: str) -> dict:
+        """Get a document record by ID for current user."""
+        if not self.user_id:
+            return {}
+        res = self.client.table("documents").select("*").eq(
+            "user_id", self.user_id
+        ).eq("id", doc_id).execute()
+        return res.data[0] if res.data else {}
+
+    def delete_document_record(self, doc_id: str):
+        """Delete document record by ID for current user."""
         self.client.table("documents").delete().eq(
             "user_id", self.user_id
-        ).eq("filename", filename).execute()
+        ).eq("id", doc_id).execute()
 
     # ─────────────────────────────────────────
     # CONVERSATIONS (THREADS)

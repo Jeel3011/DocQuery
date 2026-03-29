@@ -59,7 +59,9 @@ def _process_document_background(
         # Mark document as ready
         sb.update_document_status(doc_id, "ready", len(chunks))
 
-    except Exception:
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
         sb.update_document_status(doc_id, "failed")
     finally:
         # Clean up temp file
@@ -159,9 +161,9 @@ async def list_documents(sb=Depends(get_current_user)):
     )
 
 
-@router.delete("/{filename}")
+@router.delete("/{doc_id}")
 async def delete_document(
-    filename: str,
+    doc_id: str,
     sb=Depends(get_current_user),
     user_config: Config = Depends(get_user_config),
 ):
@@ -169,15 +171,24 @@ async def delete_document(
     from src.components.retrieval import RetrievalManager
 
     try:
+        # Get document record to find filename
+        doc = sb.get_document(doc_id)
+        if not doc:
+            raise HTTPException(status_code=404, detail="Document not found.")
+
+        filename = doc["filename"]
+        storage_path = doc["storage_path"]
+
         retrieval_mgr = RetrievalManager(user_config)
         retrieval_mgr.delete_document_by_filename(filename)
 
-        storage_path = f"{sb.user_id}/{filename}"
         sb.delete_file(storage_path)
-        sb.delete_document_record(filename)
+        sb.delete_document_record(doc_id)
 
         return {"message": f"Document '{filename}' deleted successfully"}
 
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(
             status_code=500,

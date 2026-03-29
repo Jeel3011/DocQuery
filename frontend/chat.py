@@ -79,34 +79,71 @@ def api_delete(path: str, **kwargs):
 user = sb.get_user()
 
 if not user:
-    st.title("📄 DocQuery")
-    st.caption("Sign in to start querying your documents.")
+    # --- Custom CSS for Auth Page ---
+    st.markdown("""
+        <style>
+        div[data-testid="stForm"] {
+            border-radius: 12px;
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            background-color: rgba(20, 20, 20, 0.3);
+            padding: 2rem;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+        }
+        .stButton>button[kind="primary"] {
+            border-radius: 8px;
+            background: linear-gradient(90deg, #4F46E5 0%, #7C3AED 100%);
+            border: none;
+            transition: all 0.2s;
+            font-weight: bold;
+        }
+        .stButton>button[kind="primary"]:hover {
+            opacity: 0.9;
+            transform: scale(1.02);
+            box-shadow: 0 4px 12px rgba(124, 58, 237, 0.4);
+        }
+        </style>
+    """, unsafe_allow_html=True)
+    
+    empty_l, center_col, empty_r = st.columns([1, 1.2, 1])
+    
+    with center_col:
+        st.write("") # Top spacing
+        st.write("")
+        st.markdown("<h1 style='text-align: center; margin-bottom: 0;'>📄 DocQuery</h1>", unsafe_allow_html=True)
+        st.markdown("<p style='text-align: center; color: #888;'>Securely query your documents with AI</p>", unsafe_allow_html=True)
+        st.write("")
+        
+        tab_login, tab_signup = st.tabs(["🔒 Sign In", "🚀 Sign Up"])
 
-    tab_login, tab_signup = st.tabs(["Sign In", "Sign Up"])
+        with tab_login:
+            with st.form("login_form", clear_on_submit=False):
+                email = st.text_input("Email Address", placeholder="you@example.com")
+                password = st.text_input("Password", type="password", placeholder="••••••••")
+                submitted = st.form_submit_button("Sign In", type="primary", use_container_width=True)
+                if submitted:
+                    if not email or not password:
+                        st.error("Please enter email and password.")
+                    else:
+                        try:
+                            sb.sign_in(email, password)
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"Login failed: {str(e)}")
 
-    with tab_login:
-        with st.form("login_form"):
-            email = st.text_input("Email")
-            password = st.text_input("Password", type="password")
-            submitted = st.form_submit_button("Sign In", type="primary")
-            if submitted:
-                try:
-                    sb.sign_in(email, password)
-                    st.rerun()
-                except Exception as e:
-                    st.error(f"Login failed: {e}")
-
-    with tab_signup:
-        with st.form("signup_form"):
-            email = st.text_input("Email")
-            password = st.text_input("Password", type="password")
-            submitted = st.form_submit_button("Create Account", type="primary")
-            if submitted:
-                try:
-                    sb.sign_up(email, password)
-                    st.success("Account created! Please sign in.")
-                except Exception as e:
-                    st.error(f"Sign up failed: {e}")
+        with tab_signup:
+            with st.form("signup_form", clear_on_submit=True):
+                email = st.text_input("Email Address", placeholder="you@example.com")
+                password = st.text_input("Password", type="password", placeholder="Choose a strong password")
+                submitted = st.form_submit_button("Create Account", type="primary", use_container_width=True)
+                if submitted:
+                    if not email or not password:
+                        st.error("Please provide both email and password.")
+                    else:
+                        try:
+                            sb.sign_up(email, password)
+                            st.success("Account created successfully! You can now sign in.")
+                        except Exception as e:
+                            st.error(f"Sign up failed: {str(e)}")
 
     st.stop()
 
@@ -212,19 +249,24 @@ with st.sidebar:
 
     docs_resp = api_get("/documents")
     docs_in_db = docs_resp.json().get("documents", []) if docs_resp.status_code == 200 else []
-    doc_filenames = [d["filename"] for d in docs_in_db if d["status"] == "ready"]
+    # Use dict.fromkeys to keep items unique while preserving order so the selectbox doesn't glitch
+    doc_filenames = list(dict.fromkeys([d["filename"] for d in docs_in_db if d["status"] == "ready"]))
 
     if docs_in_db:
         for doc in docs_in_db:
-            status_icon = {"ready": "✅", "processing": "⏳", "failed": "❌"}.get(doc["status"], "?")
+            status_icon = {"ready": "🟢", "processing": "⏳", "failed": "⚠️"}.get(doc["status"], "❓")
             col1, col2 = st.columns([5, 1])
             col1.caption(f"{status_icon} {doc['filename']}")
-            if doc["status"] == "ready":
-                if col2.button("❌", key=f"deldoc_{doc['id']}", help="Delete"):
-                    with st.spinner("Deleting…"):
-                        api_delete(f"/documents/{doc['filename']}")
+            
+            # Allow deleting ANY document (ready, processing, or failed)
+            if col2.button("🗑️", key=f"deldoc_{doc['id']}", help="Delete"):
+                with st.spinner("Deleting…"):
+                    resp = api_delete(f"/documents/{doc['id']}")
+                    if resp.status_code == 200:
                         st.toast(f"Deleted {doc['filename']}")
-                        st.rerun()
+                    else:
+                        st.error(f"Failed to delete: {resp.text}")
+                    st.rerun()
     else:
         st.caption("No documents yet.")
 
@@ -235,6 +277,12 @@ with st.sidebar:
         ["All Documents"] + doc_filenames,
     )
     filename_filter = selected_filter if selected_filter != "All Documents" else None
+
+    # Auto-refresh loop if any documents are currently processing
+    if any(d["status"] == "processing" for d in docs_in_db):
+        import time
+        time.sleep(3)
+        st.rerun()
 
 
 # ─────────────────────────────────────────
