@@ -40,10 +40,5 @@ chroma/
 
 pyproject.toml
 test_pipeline.py
-next_implimetation.md
-implementation_plan.md
-fastapi_walkthrough.md
-fastapi_walkthrough.md
-production_analysis.md
-walkthrough.md
 improve.txt
+production_audit.md

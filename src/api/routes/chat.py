@@ -6,7 +6,7 @@ Uses lazy imports for heavy RAG components.
 import re
 import json
 
-from fastapi import APIRouter, HTTPException, Depends
+from fastapi import APIRouter, HTTPException, Depends, Request
 from fastapi.responses import StreamingResponse
 
 from src.api.schemas import (
@@ -29,6 +29,11 @@ from src.api.dependencies import (
 from src.components.config import Config
 
 router = APIRouter()
+
+# Import shared limiter (created in server.py at startup)
+def _get_limiter():
+    from src.api.server import limiter
+    return limiter
 
 
 # ─────────────────────────────────────────
@@ -80,6 +85,7 @@ async def query(
 
 @router.post("/query/stream")
 async def query_stream(
+    request: Request,          # P1: required by slowapi
     body: QueryRequest,
     sb=Depends(get_current_user),
     retrieval_mgr=Depends(get_retrieval_mgr),

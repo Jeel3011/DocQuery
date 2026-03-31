@@ -6,6 +6,7 @@ Place this file at: src/components/db.py
 """
 
 import os
+from datetime import datetime, timezone
 import tempfile
 from pathlib import Path
 from typing import Optional
@@ -136,7 +137,7 @@ class SupabaseManager:
         # Delete any previous chunks for this document so we get a clean re-index
         self.client.table("document_chunks").delete().eq(
             "document_id", document_id
-        ).execute()
+        ).eq("user_id", self.user_id).execute()
 
         rows = [
             {
@@ -164,6 +165,14 @@ class SupabaseManager:
         )
         return res.data or []
 
+
+    def delete_document_chunks(self, document_id: str) -> None:
+        """Delete all stored chunks for a document (called on document deletion)."""
+        if not self.user_id:
+            return
+        self.client.table("document_chunks").delete().eq(
+            "document_id", document_id
+        ).eq("user_id", self.user_id).execute()
 
     def delete_file(self, storage_path: str):
         """Delete a file from storage."""
@@ -203,7 +212,7 @@ class SupabaseManager:
         self.client.table("documents").update({
             "status": status,
             "chunk_count": chunk_count,
-        }).eq("id", doc_id).execute()
+        }).eq("id", doc_id).eq("user_id", self.user_id).execute()
 
     def get_user_documents(self) -> list:
         """Get all documents for current user."""
@@ -250,15 +259,19 @@ class SupabaseManager:
         return res.data or []
 
     def rename_conversation(self, conversation_id: str, new_title: str):
+        if not self.user_id:
+            return
         self.client.table("conversations").update({
             "title": new_title
-        }).eq("id", conversation_id).execute()
+        }).eq("id", conversation_id).eq("user_id", self.user_id).execute()
 
     def delete_conversation(self, conversation_id: str):
         # Messages are deleted by CASCADE in DB
+        if not self.user_id:
+            return
         self.client.table("conversations").delete().eq(
             "id", conversation_id
-        ).execute()
+        ).eq("user_id", self.user_id).execute()
 
     # ─────────────────────────────────────────
     # MESSAGES
@@ -274,17 +287,19 @@ class SupabaseManager:
             "content": content,
             "sources": sources or [],
         }).execute()
-        # Bump conversation updated_at so it rises to top of list
+        # Bump conversation updated_at so it rises to top of list (B3 fix: use real timestamp)
         self.client.table("conversations").update(
-            {"updated_at": "now()"}
+            {"updated_at": datetime.now(timezone.utc).isoformat()}
         ).eq("id", conversation_id).execute()
         return res.data[0] if res.data else {}
 
     def get_messages(self, conversation_id: str) -> list:
         """Load all messages for a conversation, oldest first."""
+        if not self.user_id:
+            return []
         res = self.client.table("messages").select("*").eq(
             "conversation_id", conversation_id
-        ).order("created_at", desc=False).execute()
+        ).eq("user_id", self.user_id).order("created_at", desc=False).execute()
         return res.data or []
 
     def auto_title_conversation(self, conversation_id: str, first_question: str):

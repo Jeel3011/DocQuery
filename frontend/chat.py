@@ -34,6 +34,99 @@ st.set_page_config(
     layout="wide",
 )
 
+st.markdown("""
+<style>
+/* 1. Global App Background */
+.stApp {
+    background: linear-gradient(135deg, #0f111a 0%, #1e1b4b 100%);
+    color: #f1f5f9;
+}
+
+/* 2. Glassmorphism Sidebar */
+section[data-testid="stSidebar"] {
+    background: rgba(15, 17, 26, 0.5) !important;
+    backdrop-filter: blur(16px) !important;
+    -webkit-backdrop-filter: blur(16px) !important;
+    border-right: 1px solid rgba(255, 255, 255, 0.05);
+}
+
+/* 3. Modern Chat Bubbles with Slide-in Animation */
+@keyframes slideUpFade {
+    0% { opacity: 0; transform: translateY(20px); }
+    100% { opacity: 1; transform: translateY(0); }
+}
+
+div[data-testid="stChatMessage"] {
+    animation: slideUpFade 0.4s ease-out forwards;
+    padding: 1rem;
+    border-radius: 12px;
+    margin-bottom: 1rem;
+    box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
+    background: rgba(255, 255, 255, 0.03);
+    border: 1px solid rgba(255, 255, 255, 0.05);
+}
+
+/* User Message specific styling */
+div[data-testid="stChatMessage"]:has(div[data-testid="chatAvatarIcon-user"]) {
+    background: rgba(79, 70, 229, 0.1);
+    border: 1px solid rgba(79, 70, 229, 0.2);
+}
+
+/* Assistant Message specific styling */
+div[data-testid="stChatMessage"]:has(div[data-testid="chatAvatarIcon-assistant"]) {
+    background: rgba(16, 185, 129, 0.05);
+    border: 1px solid rgba(16, 185, 129, 0.1);
+}
+
+/* 4. Elegant Buttons with Hover Effects */
+.stButton>button {
+    border-radius: 8px !important;
+    border: 1px solid rgba(255, 255, 255, 0.1) !important;
+    transition: all 0.3s ease !important;
+    background: rgba(255, 255, 255, 0.05) !important;
+}
+
+.stButton>button:hover {
+    transform: translateY(-2px) !important;
+    box-shadow: 0 6px 12px rgba(0,0,0,0.2) !important;
+    background: rgba(255, 255, 255, 0.1) !important;
+    border-color: rgba(255, 255, 255, 0.3) !important;
+}
+
+/* Primary Button glows */
+.stButton>button[kind="primary"] {
+    background: linear-gradient(90deg, #4F46E5 0%, #7C3AED 100%) !important;
+    border: none !important;
+    color: white !important;
+}
+
+.stButton>button[kind="primary"]:hover {
+    box-shadow: 0 8px 16px rgba(124, 58, 237, 0.3) !important;
+    transform: translateY(-2px) !important;
+}
+
+/* 5. Sleek Chat Input */
+div[data-testid="stChatInput"] {
+    border-radius: 16px !important;
+    background: rgba(255, 255, 255, 0.05) !important;
+    backdrop-filter: blur(10px) !important;
+    border: 1px solid rgba(255, 255, 255, 0.1) !important;
+}
+
+div[data-testid="stChatInput"]:focus-within {
+    border-color: #7C3AED !important;
+    box-shadow: 0 0 0 2px rgba(124, 58, 237, 0.2) !important;
+}
+
+/* Citation Expanders */
+div[data-testid="stExpander"] {
+    background: rgba(0, 0, 0, 0.2) !important;
+    border-radius: 8px !important;
+    border: 1px solid rgba(255, 255, 255, 0.05) !important;
+}
+</style>
+""", unsafe_allow_html=True)
+
 # ─────────────────────────────────────────
 # Config & Supabase (auth only)
 # ─────────────────────────────────────────
@@ -149,17 +242,22 @@ if not user:
 
 
 # ─────────────────────────────────────────
-# Sidebar — Threads + Documents
+# Top User Bar
 # ─────────────────────────────────────────
-with st.sidebar:
-    st.caption(f"👤 {sb.user_email}")
+top_col1, top_col2, top_col3 = st.columns([6, 2, 1])
+with top_col2:
+    st.markdown(f"<p style='text-align: right; margin-top: 10px; color: #aaa;'>👤 {sb.user_email}</p>", unsafe_allow_html=True)
+with top_col3:
     if st.button("Sign Out", use_container_width=True):
         sb.sign_out()
         for key in list(st.session_state.keys()):
             del st.session_state[key]
         st.rerun()
 
-    st.divider()
+# ─────────────────────────────────────────
+# Sidebar — Threads + Documents
+# ─────────────────────────────────────────
+with st.sidebar:
 
     # ── CONVERSATIONS ──
     st.subheader("💬 Conversations")
@@ -252,21 +350,36 @@ with st.sidebar:
     # Use dict.fromkeys to keep items unique while preserving order so the selectbox doesn't glitch
     doc_filenames = list(dict.fromkeys([d["filename"] for d in docs_in_db if d["status"] == "ready"]))
 
+    # Storage Quota Indicator
+    total_bytes = sum(d.get("file_size_bytes") or 0 for d in docs_in_db)
+    MAX_STORAGE_BYTES = 100 * 1024 * 1024  # 100 MB total quota
+    usage_pct = min(total_bytes / MAX_STORAGE_BYTES, 1.0)
+    
+    st.markdown(f"<span style='font-size:0.85em; color:#aaa;'>Storage: {total_bytes / (1024*1024):.1f} MB / 100 MB</span>", unsafe_allow_html=True)
+    st.progress(usage_pct)
+    st.write("")
+
     if docs_in_db:
         for doc in docs_in_db:
-            status_icon = {"ready": "🟢", "processing": "⏳", "failed": "⚠️"}.get(doc["status"], "❓")
-            col1, col2 = st.columns([5, 1])
-            col1.caption(f"{status_icon} {doc['filename']}")
-            
-            # Allow deleting ANY document (ready, processing, or failed)
-            if col2.button("🗑️", key=f"deldoc_{doc['id']}", help="Delete"):
-                with st.spinner("Deleting…"):
-                    resp = api_delete(f"/documents/{doc['id']}")
-                    if resp.status_code == 200:
-                        st.toast(f"Deleted {doc['filename']}")
-                    else:
-                        st.error(f"Failed to delete: {resp.text}")
-                    st.rerun()
+            with st.container(border=True):
+                status_icon = {"ready": "🟢", "processing": "⏳", "failed": "⚠️"}.get(doc["status"], "❓")
+                col1, col2 = st.columns([5, 1])
+                
+                # Truncate long filenames
+                fname = doc['filename']
+                display_name = fname if len(fname) < 25 else fname[:22] + "..."
+                
+                col1.markdown(f"**{display_name}**<br/><span style='font-size:0.8em; color:#888;'>{status_icon} {doc['status'].title()} • {doc.get('chunk_count', 0)} chunks</span>", unsafe_allow_html=True)
+                
+                # Allow deleting ANY document (ready, processing, or failed)
+                if col2.button("🗑️", key=f"deldoc_{doc['id']}", help="Delete"):
+                    with st.spinner("Deleting…"):
+                        resp = api_delete(f"/documents/{doc['id']}")
+                        if resp.status_code == 200:
+                            st.toast(f"Deleted {fname}")
+                        else:
+                            st.error(f"Failed to delete: {resp.text}")
+                        st.rerun()
     else:
         st.caption("No documents yet.")
 

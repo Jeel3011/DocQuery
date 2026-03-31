@@ -40,7 +40,7 @@ class Config:
     # Pinecone
     PINECONE_API_KEY: str = os.getenv("PINECONE_API_KEY")
     PINECONE_INDEX_NAME: str = os.getenv("PINECONE_INDEX_NAME", "docquery")
-    PINECONE_NAMESPACE: str = "default"  # Dynamically overridden per user
+    PINECONE_NAMESPACE: str = ""  # B5: Must be set per-user — empty default prevents silent fallback
 
     # UPLOAD_DIR is used as a temp directory when downloading files from Supabase
     # for processing. Files are NOT stored here permanently anymore.

@@ -1,6 +1,5 @@
 import os
 import json
-import pickle
 import sys
 from typing import List,Dict,Any
 from pathlib import Path
@@ -28,18 +27,9 @@ class DocumentProcessor:
 
     def process_documents(self, file_paths: str) -> List:
         """Process documents and return a list of processed data."""
-        cache_path = Path(file_paths).with_suffix('.pkl')
         file_extension = Path(file_paths).suffix.lower()
         file_name = Path(file_paths).name
 
-
-        if cache_path.exists():
-            try:
-                print(f"loading cached eliments {file_paths}")
-                with open(cache_path,'rb') as f:
-                    return pickle.load(f)
-            except Exception:
-                print("cache corrupted.")    
         try:
             if file_extension == ".pdf":
                 elements = partition_pdf(
@@ -73,7 +63,6 @@ class DocumentProcessor:
             
             print(f"Processed {file_paths} successfully. Extracted {len(elements)} elements. \n")
 
-
             
             # Analyzed elements 
             _log_elements_analysis(elements)
@@ -83,9 +72,6 @@ class DocumentProcessor:
                 element.metadata.filename = file_name
                 element.metadata.filetype = file_extension.strip(".")
                 element.metadata.filepath = file_paths
-
-            with open(cache_path,'wb') as f:
-                pickle.dump(elements,f)
                 
             return elements
         
@@ -154,7 +140,7 @@ class DocumentProcessor:
                     "filetype": filetype,
                     "page_number": page_number,
                     "chunk_index": i,
-                    "has_overlap": "..." in chunk_text,  
+                    # B7: removed bogus "has_overlap" field (was checking for literal "..." in text)
                 }
 
                 metadata["chunk_id"] = _stable_id(
@@ -290,12 +276,16 @@ class DocumentProcessor:
             if not os.path.isfile(file_path):
                 continue
 
-            # Simple check: if docs cache exists, load it and skip
-            docs_cache_path = Path(file_path).with_suffix(".docs.pkl")
+            # Check JSON cache — safe alternative to pickle
+            docs_cache_path = Path(file_path).with_suffix(".docs.json")
             if docs_cache_path.exists():
                 try:
-                    with open(docs_cache_path, "rb") as f:
-                        cached_docs = pickle.load(f)
+                    with open(docs_cache_path, "r") as f:
+                        cached_data = json.load(f)
+                    cached_docs = [
+                        Document(page_content=d["page_content"], metadata=d["metadata"])
+                        for d in cached_data
+                    ]
                     print(f"  Loaded {len(cached_docs)} cached chunks for {file_name} (already processed)")
                     all_chunks.extend(cached_docs)
                     files_skipped += 1
@@ -310,9 +300,13 @@ class DocumentProcessor:
 
                 if elements:
                     chunks = self.build_langchain_documents(elements=elements)
-                    # Save docs cache so next run skips this file
-                    with open(docs_cache_path, "wb") as f:
-                        pickle.dump(chunks, f)
+                    # Save JSON cache so next run skips this file
+                    cache_data = [
+                        {"page_content": doc.page_content, "metadata": doc.metadata}
+                        for doc in chunks
+                    ]
+                    with open(docs_cache_path, "w") as f:
+                        json.dump(cache_data, f)
                     all_chunks.extend(chunks)
                     files_processed += 1
                     print(f"  Added {len(chunks)} chunks from {file_name}")
@@ -325,3 +319,4 @@ class DocumentProcessor:
         print(f"\nBatch complete: {files_processed} processed, {files_skipped} skipped (already cached).")
         print(f"Total chunks: {len(all_chunks)}")
         return all_chunks
+

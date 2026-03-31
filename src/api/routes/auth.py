@@ -2,6 +2,7 @@
 Authentication endpoints — signup, login, logout, current user.
 """
 
+import logging
 from fastapi import APIRouter, HTTPException, Depends
 
 from src.api.schemas import (
@@ -13,6 +14,7 @@ from src.api.schemas import (
 from src.api.dependencies import get_current_user
 from src.components.db import SupabaseManager
 
+logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/auth")
 
 
@@ -36,7 +38,8 @@ async def signup(body: SignUpRequest):
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Sign-up failed: {str(e)}")
+        logger.exception("Sign-up failed for %s", body.email)   # S8: full detail server-side only
+        raise HTTPException(status_code=400, detail="Sign-up failed. Please check your details and try again.")
 
 
 @router.post("/login", response_model=AuthResponse)
@@ -51,7 +54,8 @@ async def login(body: SignInRequest):
             email=res.user.email,
         )
     except Exception as e:
-        raise HTTPException(status_code=401, detail=f"Login failed: {str(e)}")
+        logger.exception("Login failed for %s", body.email)   # S8: full detail server-side only
+        raise HTTPException(status_code=401, detail="Login failed. Check your email and password.")
 
 
 @router.post("/logout")

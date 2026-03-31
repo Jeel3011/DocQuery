@@ -20,7 +20,7 @@ def run_pipeline(query: str):
     # embedding
 
     embed_mng = EmbeddingManager(config=config)
-    vector_store = embed_mng.create_vector_store(chunks,config.VECTOR_DB_PATH)
+    vector_store = embed_mng.create_vector_store(chunks)
 
     # retrieval 
 

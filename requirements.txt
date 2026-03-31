@@ -26,5 +26,9 @@ pydantic[email]
 supabase
 httpx
 tiktoken
+aiofiles
+
+# Rate limiting & async file I/O
+slowapi
 
 -e .

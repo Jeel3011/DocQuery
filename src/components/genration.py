@@ -18,7 +18,8 @@ class AnswerGenration():
         self.llm = ChatOpenAI(
             model=self.config.LLM_MODEL_NAME,
             temperature=0.1,
-            api_key=self.config.OPENAI_API_KEY
+            api_key=self.config.OPENAI_API_KEY,
+            request_timeout=30,   # P6: prevent infinite hang on OpenAI upstream stall
         )
 
         self.prompt = ChatPromptTemplate.from_messages([
@@ -135,21 +136,24 @@ Conversation History:
         # 1. Send the sources to the client first
         yield f"data: {json.dumps({'type': 'sources', 'sources': sources})}\n\n"
         
-        # 2. Stream the LLM tokens
+        # 2. Stream the LLM tokens (S7: wrap in try/except so client always gets [DONE])
         stream = self.chain.stream({
             "context": context,
             "question": query,
             "chat_history": format_chat_history(chat_history) if chat_history else ""
         })
         
-        for chunk in stream:
-            # Depending on OutputParser, chunk might be a string or dict
-            text_chunk = chunk if isinstance(chunk, str) else chunk.get("answer", "")
-            if text_chunk:
-                yield f"data: {json.dumps({'type': 'token', 'content': text_chunk})}\n\n"
-                
-        # 3. Signal end of stream
-        yield "data: [DONE]\n\n"
+        try:
+            for chunk in stream:
+                text_chunk = chunk if isinstance(chunk, str) else chunk.get("answer", "")
+                if text_chunk:
+                    yield f"data: {json.dumps({'type': 'token', 'content': text_chunk})}\n\n"
+        except Exception as e:
+            logger.error("SSE stream error: %s", e)
+            yield f"data: {json.dumps({'type': 'error', 'message': 'Stream interrupted. Please try again.'})}\n\n"
+        finally:
+            # 3. Always signal end of stream so the client is never left hanging
+            yield "data: [DONE]\n\n"
 
 
             

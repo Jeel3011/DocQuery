@@ -9,6 +9,7 @@ Uses RAGAS metrics to evaluate retrieval and generation quality:
 """
 
 import json
+import math
 import time
 from typing import List, Dict, Any, Optional
 from pathlib import Path
@@ -139,10 +140,18 @@ class RAGASEvaluator:
         t4 = time.time()
         print(f"RAGAS evaluation complete in {t4 - t3:.2f}s\n")
 
-        # 5. Format results
+        # 5. Format results — B1: guard NaN values so JSON stays valid
+        def _safe_float(v) -> float:
+            """Return 0.0 for NaN/None so the score is always a valid JSON number."""
+            try:
+                f = float(v)
+                return 0.0 if math.isnan(f) else f
+            except (TypeError, ValueError):
+                return 0.0
+
         scores = {
             "aggregate_scores": {
-                metric: float(ragas_result[metric])
+                metric: _safe_float(ragas_result[metric])
                 for metric in [
                     "faithfulness",
                     "answer_relevancy",
@@ -155,6 +164,13 @@ class RAGASEvaluator:
             "eval_time_s": round(t4 - t3, 2),
         }
 
+        # Re-compute overall average ignoring any remaining NaN slots
+        valid_scores = [
+            v for v in scores["aggregate_scores"].values()
+            if not math.isnan(v)
+        ]
+        scores["average_score"] = round(sum(valid_scores) / len(valid_scores), 4) if valid_scores else 0.0
+
         # Per-question breakdown from the ragas dataframe
         try:
             df = ragas_result.to_pandas()
@@ -163,10 +179,10 @@ class RAGASEvaluator:
                 per_question.append({
                     "question": row.get("question", ""),
                     "answer": str(row.get("answer", ""))[:200],
-                    "faithfulness": float(row.get("faithfulness", 0)),
-                    "answer_relevancy": float(row.get("answer_relevancy", 0)),
-                    "context_precision": float(row.get("context_precision", 0)),
-                    "context_recall": float(row.get("context_recall", 0)),
+                    "faithfulness": _safe_float(row.get("faithfulness")),
+                    "answer_relevancy": _safe_float(row.get("answer_relevancy")),
+                    "context_precision": _safe_float(row.get("context_precision")),
+                    "context_recall": _safe_float(row.get("context_recall")),
                 })
             scores["per_question"] = per_question
         except Exception as e:

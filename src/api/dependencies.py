@@ -86,6 +86,9 @@ def get_user_config(
     config: Config = Depends(get_config),
 ) -> Config:
     """Create a user-scoped Config with isolated Pinecone namespace."""
+    # B5: guard — user_id must always be set before we use it as a Pinecone namespace
+    if not sb.user_id:
+        raise HTTPException(status_code=401, detail="User ID not available — cannot scope vector namespace.")
     user_config = Config()
     # Namespace uses the user's UUID for strict isolation in Pinecone
     user_config.PINECONE_NAMESPACE = sb.user_id
