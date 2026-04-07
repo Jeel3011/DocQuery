@@ -70,6 +70,15 @@ app.include_router(documents.router, prefix=API_PREFIX, tags=["Documents"])
 app.include_router(chat.router,   prefix=API_PREFIX, tags=["Chat"])
 
 
+# ── Prometheus Metrics ──
+from prometheus_fastapi_instrumentator import Instrumentator
+
+Instrumentator(
+    should_group_status_codes=False,
+    excluded_handlers=["/metrics"],   # don't track the metrics endpoint itself
+).instrument(app).expose(app, endpoint="/metrics")
+
+
 @app.get("/", tags=["Root"])
 async def root():
     return {

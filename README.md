@@ -18,14 +18,17 @@ The project has been upgraded to a production-grade decoupled architecture:
 
 ## 🎯 Features
 
+- **Decoupled Architecture**: FastAPI backend and Streamlit thin-client frontend
 - **Multi-Format Support**: Process PDF, DOCX, PPTX, XLSX, TXT, and Markdown files
 - **Advanced Document Processing**: 
   - Table extraction with HTML structure preservation
   - Image extraction from PDFs (base64 encoding)
   - Title-based intelligent chunking
-- **Semantic Search**: Vector similarity search using OpenAI embeddings
-- **Context-Aware Answers**: GPT-powered responses with source citations
-- **Multi-User Workspaces**: Isolated sessions for different users
+- **Asynchronous Processing**: Celery worker queue for heavy document ingestion
+- **Semantic Search & Reranking**: Vector similarity search using OpenAI embeddings, boosted by a Cross-Encoder reranker
+- **Context-Aware Answers**: GPT-powered responses with source citations and query rewriting
+- **Multi-User Workspaces**: Isolated sessions backed securely by Supabase PostgreSQL
+- **Observability**: Prometheus metrics integration for API monitoring
 - **Real-time Streaming**: Stream LLM responses for better UX
 - **Document Management**: Upload, delete, and filter documents via web UI
 
@@ -46,29 +49,45 @@ The project has been upgraded to a production-grade decoupled architecture:
 
 ```
 ┌─────────────────┐
-│  User Question  │
+│ Streamlit UI    │
+│ (Thin Client)   │
 └────────┬────────┘
-         │
+         │ REST API (FastAPI) + SSE
          ▼
 ┌─────────────────────────────────────────────┐
-│         Document Processing Layer            │
-│  ┌──────────────────────────────────────┐   │
-│  │ Unstructured Library (hi_res)        │   │
-│  │ - PDF: Tables + Images extraction    │   │
-│  │ - DOCX/PPTX/XLSX: Structure parsing  │   │
-│  └──────────────────────────────────────┘   │
-└─────────────────────────────────────────────┘
-         │
-         ▼
-┌─────────────────────────────────────────────┐
-│            Chunking Layer                    │
-│  - Title-based chunking                      │
-│  - Max 3000 chars/chunk                      │
-│  - 500 char overlap                          │
-│  - Metadata enrichment                       │
-└─────────────────────────────────────────────┘
-         │
-         ▼
+│               FastAPI Layer                 │
+│  - Auth & Rate Limiting (SlowAPI)           │
+│  - Prometheus Metrics Integration           │
+│  - Request Routing                          │
+└────────┬──────────────────────────┬─────────┘
+         │                          │ Async Document
+         │ Chat Query               │ Upload
+         ▼                          ▼
+┌─────────────────┐       ┌───────────────────┐
+│ Query Rewriting │       │ Celery Worker     │
+│ & Preprocessing │       │ (Background Task) │
+└────────┬────────┘       └─────────┬─────────┘
+         │                          │
+         │                          ▼
+         │        ┌─────────────────────────────────────────────┐
+         │        │         Document Processing Layer            │
+         │        │  ┌──────────────────────────────────────┐   │
+         │        │  │ Unstructured Library (hi_res)        │   │
+         │        │  │ - PDF: Tables + Images extraction    │   │
+         │        │  │ - DOCX/PPTX/XLSX: Structure parsing  │   │
+         │        │  └──────────────────────────────────────┘   │
+         │        └─────────────────────────────────────────────┘
+         │                          │
+         │                          ▼
+         │        ┌─────────────────────────────────────────────┐
+         │        │            Chunking Layer                    │
+         │        │  - Title-based chunking                      │
+         │        │  - Max 3000 chars/chunk                      │
+         │        │  - 500 char overlap                          │
+         │        │  - Metadata enrichment                       │
+         │        └─────────────────────────────────────────────┘
+         │                          │
+         ▼                          ▼
 ┌─────────────────────────────────────────────┐
 │          Embedding Layer                     │
 │  OpenAI text-embedding-3-small               │
@@ -78,18 +97,18 @@ The project has been upgraded to a production-grade decoupled architecture:
          │
          ▼
 ┌─────────────────────────────────────────────┐
-│         Vector Store (ChromaDB)              │
-│  - Cosine similarity                         │
-│  - Persistent storage                        │
-│  - Multi-user collections                    │
+│         Storage Layer                        │
+│  - Pinecone Serverless (Vector Store)        │
+│  - Supabase PostgreSQL (Relational Data)     │
 └─────────────────────────────────────────────┘
          │
          ▼
 ┌─────────────────────────────────────────────┐
 │          Retrieval Layer                     │
-│  - Top-K similarity search (K=5)             │
+│  - Multi-query similarity search             │
+│  - Cross-Encoder Reranker prioritization     │
+│  - Top-K similarity selection (K=5)          │
 │  - Threshold filtering (0.30)                │
-│  - Optional document filtering               │
 └─────────────────────────────────────────────┘
          │
          ▼
@@ -103,7 +122,8 @@ The project has been upgraded to a production-grade decoupled architecture:
          │
          ▼
 ┌─────────────────┐
-│  Answer + Sources│
+│ Answer & Sources│
+│ (SSE Stream)    │
 └─────────────────┘
 ```
 
@@ -148,11 +168,33 @@ The project has been upgraded to a production-grade decoupled architecture:
    ```bash
    # Create .env file
    echo "OPENAI_API_KEY=your-api-key-here" > .env
+   echo "SUPABASE_URL=your-supabase-url" >> .env
+   echo "SUPABASE_KEY=your-supabase-key" >> .env
+   echo "PINECONE_API_KEY=your-pinecone-key" >> .env
+   echo "PINECONE_INDEX_NAME=docquery" >> .env
+   echo "REDIS_URL=redis://localhost:6379/0" >> .env
    ```
 
-5. **Run the application**
+5. **Ensure Redis is running**
    ```bash
-   streamlit run chat.py
+   redis-server
+   ```
+
+6. **Run the application (in separate terminals)**
+
+   **Terminal 1:** Start the FastAPI server
+   ```bash
+   uvicorn src.api.server:app --host 0.0.0.0 --port 8000 --reload
+   ```
+
+   **Terminal 2:** Start the Celery Worker
+   ```bash
+   celery -A src.worker.celery_app worker --loglevel=info
+   ```
+
+   **Terminal 3:** Start the Streamlit Frontend
+   ```bash
+   streamlit run frontend/chat.py
    ```
 
    The app will be available at `http://localhost:8501`
@@ -162,22 +204,31 @@ The project has been upgraded to a production-grade decoupled architecture:
 ```bash
 DocQuery/
 ├── frontend/
-│   └── chat.py                # Streamlit web interface
+│   └── chat.py                # Streamlit web interface client
 ├── src/
+│   ├── api/                   # FastAPI backend implementation
+│   │   ├── routes/            # API endpoints (auth, chat, documents, health)
+│   │   └── server.py          # FastAPI application server entrypoint
 │   ├── components/
 │   │   ├── config.py          # Configuration management
 │   │   ├── data_ingestion.py  # Document processing & chunking
+│   │   ├── db.py              # Supabase database interaction
 │   │   ├── embeddings.py      # Vector embedding management
-│   │   ├── retrieval.py       # Semantic search
+│   │   ├── evaluation.py      # RAGAS evaluation module
 │   │   ├── genration.py       # LLM answer generation
-│   │   └── evaluation.py      # RAGAS evaluation module
+│   │   ├── metrics.py         # Prometheus metrics tracking
+│   │   ├── reranker.py        # Cross-encoder reranker for search
+│   │   └── retrieval.py       # Semantic search
 │   ├── pipeline/
 │   │   └── pipline.py         # End-to-end RAG pipeline
-│   ├── logger.py              # Logging configuration
+│   ├── worker/                # Celery worker implementation
+│   │   ├── celery_app.py      # Celery app initialization
+│   │   └── tasks.py           # Asynchronous worker tasks
 │   ├── exception.py           # Custom exception handling
+│   ├── logger.py              # Logging configuration
 │   └── utils.py               # Helper functions
 ├── evaluate_rag.py            # RAGAS evaluation runner
-├── eval_questions.json         # Test Q&A pairs for evaluation
+├── eval_questions.json        # Test Q&A pairs for evaluation
 ├── test_pipeline.py           # Pipeline integration test
 ├── requirements.txt           # Python dependencies
 ├── .env                       # API keys (not in repo)
@@ -217,14 +268,17 @@ Title-based chunking creates semantic units:
 ### 3. Vector Storage
 
 - Embeddings are generated using OpenAI's `text-embedding-3-small`
-- Stored in ChromaDB with cosine similarity indexing
-- Deduplication prevents redundant storage
-- Multi-user isolation via collection namespacing
+- Stored in Pinecone Serverless vector database
+- Deduplication prevents redundant storage via content hashing
+- Multi-user isolation is enforced natively via Pinecone namespaces
 
 ### 4. Retrieval
 
+- Conversational query rewriting for robust context understanding
 - Query is embedded using same model
-- Top-K (default 5) most similar chunks retrieved
+- Multi-query similarity search fetches candidate chunks
+- Cross-Encoder reranker prioritizes the most highly relevant candidates
+- Top-K most similar chunks finalize the context
 - Optional filtering by document name
 - Results include metadata for source attribution
 
@@ -265,7 +319,7 @@ black src/
 **Typical Query Performance**:
 - Document processing: ~2-5 seconds (one-time)
 - Embedding generation: ~100ms per 1000 tokens
-- Retrieval: <100ms (ChromaDB search)
+- Retrieval: ~100-200ms (Pinecone similarity search)
 - Answer generation: 500-2000ms (streaming)
 - **Total**: ~1-3 seconds per query
 
@@ -321,18 +375,20 @@ Results are saved to `eval_results.json` with per-question and aggregate scores.
 ## 🔒 Security & Privacy
 
 - API keys stored in `.env` (gitignored)
-- Documents stored locally in `./docs` and `./vector_db`
+- Documents stored securely in Supabase storage and Pinecone remotely (no local `./vector_db`)
 - No data sent to third parties except OpenAI API
 - Multi-user workspaces are isolated but stored on same disk
 
 ## 🗺️ Roadmap
 
-- [ ] Add reranker for improved retrieval quality
+- [x] Add reranker for improved retrieval quality ✅
+- [x] Evaluation metrics (RAGAS framework) ✅
+- [x] Decouple architecture and scale async background processing ✅
+- [x] Add observability and telemetry (Prometheus) ✅
 - [ ] Multi-language support
 - [ ] Voice query interface
 - [ ] Export conversations to PDF/DOCX
 - [ ] Integration with Google Drive / Dropbox
-- [x] Evaluation metrics (RAGAS framework) ✅
 - [ ] Support for web scraping (URLs as input)
 - [ ] Fine-tuned embedding models for domain-specific docs
 
@@ -344,7 +400,7 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 - [LangChain](https://www.langchain.com/) - LLM orchestration framework
 - [Unstructured](https://unstructured.io/) - Document processing library
-- [ChromaDB](https://www.trychroma.com/) - Vector database
+- [Pinecone](https://www.pinecone.io/) - Serverless Vector Database
 - [OpenAI](https://openai.com/) - Embeddings and LLM API
 - [Streamlit](https://streamlit.io/) - Web interface framework
 

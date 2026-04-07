@@ -1,5 +1,5 @@
 """
-Document management endpoints — upload (async with BackgroundTasks), list, delete.
+Document management endpoints — upload (async via Celery), list, delete.
 """
 
 import os
@@ -7,12 +7,13 @@ import logging
 from pathlib import Path
 
 import aiofiles
-from fastapi import APIRouter, HTTPException, Depends, UploadFile, File, BackgroundTasks, Request
+from fastapi import APIRouter, HTTPException, Depends, UploadFile, File, Request
 from fastapi.responses import JSONResponse
 
 from src.api.schemas import DocumentResponse, DocumentListResponse
 from src.api.dependencies import get_current_user, get_user_config
 from src.components.config import Config
+from src.components.metrics import uploads_total
 
 logger = logging.getLogger(__name__)
 
@@ -37,69 +38,9 @@ def _validate_mime(file_ext: str, header: bytes) -> bool:
 MAX_FILE_SIZE_MB = 10
 
 
-def _process_document_background(
-    file_bytes: bytes,
-    filename: str,
-    doc_id: str,
-    tmp_path: str,
-    user_config: Config,
-    user_id: str,          # B2: pass only the ID, not the request-scoped sb
-):
-    """
-    Background task: ingest → chunk → embed → save chunks to Supabase.
-    Updates document status to 'ready' or 'failed' when done.
-    Runs AFTER the API has already returned 202 Accepted to the client.
-    Creates its own SupabaseManager so it is not tied to the request lifecycle.
-    """
-    from src.components.data_ingestion import DocumentProcessor
-    from src.components.embeddings import EmbeddingManager
-    from src.components.db import SupabaseManager
-
-    # B2: fresh service-role client scoped to the validated user_id
-    sb = SupabaseManager(use_service_role=True)
-    sb._user = type("User", (), {"id": user_id})()
-
-    try:
-        # Write to temp file for Unstructured
-        os.makedirs(user_config.UPLOAD_DIR, exist_ok=True)
-        with open(tmp_path, "wb") as f:
-            f.write(file_bytes)
-
-        # Ingest + chunk
-        processor = DocumentProcessor(config=user_config)
-        elements = processor.process_documents(file_paths=tmp_path)
-
-        if not elements:
-            sb.update_document_status(doc_id, "failed")
-            return
-
-        chunks = processor.build_langchain_documents(elements=elements)
-
-        # Embed into Pinecone (vector store)
-        embed_mgr = EmbeddingManager(config=user_config)
-        embed_mgr.create_vector_store(chunks)
-
-        # Persist text chunks to Supabase (replaces insecure .pkl caching)
-        sb.save_document_chunks(doc_id, chunks)
-
-        # Mark document as ready
-        sb.update_document_status(doc_id, "ready", len(chunks))
-
-    except Exception as e:
-        logger.exception("Background processing failed for doc %s", doc_id)
-        sb.update_document_status(doc_id, "failed")
-    finally:
-        # Clean up temp file
-        try:
-            os.remove(tmp_path)
-        except OSError:
-            pass
-
-
 @router.post("/upload", status_code=202)
 async def upload_document(
     request: Request,                            # P1: required by slowapi
-    background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
     sb=Depends(get_current_user),
     user_config: Config = Depends(get_user_config),
@@ -175,15 +116,16 @@ async def upload_document(
     )
     doc_id = doc_record.get("id")
 
-    # 3. Schedule background processing — B2: pass user_id string, not the request-scoped sb
-    background_tasks.add_task(
-        _process_document_background,
-        file_bytes=file_bytes,
+    # 3. Dispatch to Celery worker (replaces BackgroundTasks)
+    from src.worker.tasks import process_document_task
+
+    process_document_task.delay(
+        file_bytes_hex=file_bytes.hex(),
         filename=safe_filename,
         doc_id=doc_id,
         tmp_path=tmp_path,
-        user_config=user_config,
         user_id=sb.user_id,
+        pinecone_namespace=user_config.PINECONE_NAMESPACE,
     )
 
     # 4. Return 202 Accepted immediately — client should poll GET /documents

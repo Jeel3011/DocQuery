@@ -31,4 +31,13 @@ aiofiles
 # Rate limiting & async file I/O
 slowapi
 
+# Observability
+prometheus-fastapi-instrumentator
+
+# Reranker (cross-encoder)
+sentence-transformers
+
+# Celery worker
+celery[redis]
+
 -e .

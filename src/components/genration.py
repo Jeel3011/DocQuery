@@ -108,6 +108,22 @@ Conversation History:
             })
 
             return {"answer":answer,"sources":sources,"num_sources_used":len(retrieved_docs)}
+
+    def generate_query_variants(self, query: str, n: int = 3) -> list[str]:
+        """Generate N diverse search queries from the user's question for multi-query retrieval."""
+        variant_prompt = ChatPromptTemplate.from_messages([
+            ("system", """Generate {n} different search queries to find relevant documents 
+for the user's question. Each query should approach the topic from a different angle 
+(e.g., synonyms, broader/narrower scope, related concepts).
+
+Return ONLY the queries, one per line, no numbering or bullets."""),
+            ("user", "{question}")
+        ])
+        chain = variant_prompt | self.llm | StrOutputParser()
+        raw = chain.invoke({"question": query, "n": n})
+        variants = [line.strip() for line in raw.strip().split("\n") if line.strip()]
+        return variants[:n]
+
     
     def generate_stream(self, query: str, retrieved_docs: List[Document], chat_history: list = None):
         """Yield Server-Sent Events (SSE) for streaming RAG responses."""

@@ -52,3 +52,13 @@ class Config:
         "txt",
         "xlsx",
     )
+
+    # ── Reranker ──
+    USE_RERANKER: bool = True
+    RERANKER_MODEL: str = "cross-encoder/ms-marco-MiniLM-L-6-v2"
+    RERANK_INITIAL_K: int = 15   # Over-fetch from Pinecone
+    RERANK_TOP_K: int = 5        # Final docs after reranking
+
+    # ── Multi-Query Retrieval ──
+    USE_MULTI_QUERY: bool = True
+    MULTI_QUERY_COUNT: int = 3   # Number of query variants to generate

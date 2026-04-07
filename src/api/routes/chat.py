@@ -27,6 +27,7 @@ from src.api.dependencies import (
     get_generator,
 )
 from src.components.config import Config
+from src.components.metrics import queries_total, retrieval_docs
 
 router = APIRouter()
 
@@ -44,6 +45,7 @@ def _get_limiter():
 async def query(
     body: QueryRequest,
     sb=Depends(get_current_user),
+    user_config: Config = Depends(get_user_config),
     retrieval_mgr=Depends(get_retrieval_mgr),
     generator=Depends(get_generator),
 ):
@@ -51,11 +53,24 @@ async def query(
     Query documents and get an answer.
     Non-streaming — returns the full response at once.
     """
-    docs = retrieval_mgr.retrieve(
-        body.question,
-        filename_filter=body.filename_filter,
-        page_filter=body.page_filter,
-    )
+    if user_config.USE_MULTI_QUERY:
+        variants = generator.generate_query_variants(body.question, n=user_config.MULTI_QUERY_COUNT)
+        variants = [body.question] + variants
+        docs = retrieval_mgr.retrieve_multi_query(
+            variants,
+            filename_filter=body.filename_filter,
+            page_filter=body.page_filter,
+        )
+    else:
+        docs = retrieval_mgr.retrieve(
+            body.question,
+            filename_filter=body.filename_filter,
+            page_filter=body.page_filter,
+        )
+
+    # ── Prometheus metrics ──
+    queries_total.labels(endpoint="query", has_results=str(len(docs) > 0)).inc()
+    retrieval_docs.observe(len(docs))
 
     if not docs:
         return QueryResponse(
@@ -88,6 +103,7 @@ async def query_stream(
     request: Request,          # P1: required by slowapi
     body: QueryRequest,
     sb=Depends(get_current_user),
+    user_config: Config = Depends(get_user_config),
     retrieval_mgr=Depends(get_retrieval_mgr),
     generator=Depends(get_generator),
 ):
@@ -106,11 +122,24 @@ async def query_stream(
     # Contextualize ambiguous follow-up questions for the retriever
     search_query = generator.rewrite_query(body.question, chat_history)
 
-    docs = retrieval_mgr.retrieve(
-        search_query,
-        filename_filter=body.filename_filter,
-        page_filter=body.page_filter,
-    )
+    if user_config.USE_MULTI_QUERY:
+        variants = generator.generate_query_variants(search_query, n=user_config.MULTI_QUERY_COUNT)
+        variants = [search_query] + variants
+        docs = retrieval_mgr.retrieve_multi_query(
+            variants,
+            filename_filter=body.filename_filter,
+            page_filter=body.page_filter,
+        )
+    else:
+        docs = retrieval_mgr.retrieve(
+            search_query,
+            filename_filter=body.filename_filter,
+            page_filter=body.page_filter,
+        )
+
+    # ── Prometheus metrics ──
+    queries_total.labels(endpoint="query_stream", has_results=str(len(docs) > 0)).inc()
+    retrieval_docs.observe(len(docs))
 
     if not docs:
         async def no_results():
@@ -214,13 +243,14 @@ async def send_message(
     conversation_id: str,
     body: SendMessageRequest,
     sb=Depends(get_current_user),
+    user_config: Config = Depends(get_user_config),
     retrieval_mgr=Depends(get_retrieval_mgr),
     generator=Depends(get_generator),
 ):
     """
     Send a message in a conversation:
     1. Save user message to DB
-    2. Retrieve relevant docs
+    2. Retrieve relevant docs (optionally via multi-query)
     3. Generate AI response
     4. Save assistant message to DB
     5. Return the assistant message
@@ -242,11 +272,27 @@ async def send_message(
         if page_match:
             page_filter = int(page_match.group(1))
 
-    docs = retrieval_mgr.retrieve(
-        body.question,
-        filename_filter=body.filename_filter,
-        page_filter=page_filter,
-    )
+    # Rewrite query for standalone context
+    search_query = generator.rewrite_query(body.question, chat_history)
+
+    if user_config.USE_MULTI_QUERY:
+        variants = generator.generate_query_variants(search_query, n=user_config.MULTI_QUERY_COUNT)
+        variants = [search_query] + variants
+        docs = retrieval_mgr.retrieve_multi_query(
+            variants,
+            filename_filter=body.filename_filter,
+            page_filter=page_filter,
+        )
+    else:
+        docs = retrieval_mgr.retrieve(
+            search_query,
+            filename_filter=body.filename_filter,
+            page_filter=page_filter,
+        )
+
+    # ── Prometheus metrics ──
+    queries_total.labels(endpoint="send_message", has_results=str(len(docs) > 0)).inc()
+    retrieval_docs.observe(len(docs))
 
     if not docs:
         answer = "I couldn't find relevant information in your documents for this question."
