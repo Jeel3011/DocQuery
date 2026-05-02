@@ -14,13 +14,24 @@ from src.components.metrics import rerank_latency
 
 logger = get_logger(__name__)
 
+# ── Singleton model cache ──
+# CrossEncoder takes 1-3s to load from disk. Cache it so the cost is paid
+# once at first use, not on every request.
+_model_cache: dict[str, CrossEncoder] = {}
+
+
+def _get_model(model_name: str) -> CrossEncoder:
+    if model_name not in _model_cache:
+        _model_cache[model_name] = CrossEncoder(model_name)
+        logger.info("Reranker model loaded (singleton): %s", model_name)
+    return _model_cache[model_name]
+
 
 class Reranker:
     """Thin wrapper around a SentenceTransformers CrossEncoder."""
 
     def __init__(self, model_name: str):
-        self.model = CrossEncoder(model_name)
-        logger.info("Reranker loaded: %s", model_name)
+        self.model = _get_model(model_name)
 
     def rerank(
         self, query: str, docs: list[Document], top_k: int = 5

@@ -3,7 +3,7 @@ Authentication endpoints — signup, login, logout, current user.
 """
 
 import logging
-from fastapi import APIRouter, HTTPException, Depends
+from fastapi import APIRouter, HTTPException, Depends, Request
 
 from src.api.schemas import (
     SignUpRequest,
@@ -11,7 +11,7 @@ from src.api.schemas import (
     AuthResponse,
     UserResponse,
 )
-from src.api.dependencies import get_current_user
+from src.api.dependencies import get_current_user, limiter
 from src.components.db import SupabaseManager
 
 logger = logging.getLogger(__name__)
@@ -19,7 +19,8 @@ router = APIRouter(prefix="/auth")
 
 
 @router.post("/signup", response_model=AuthResponse)
-async def signup(body: SignUpRequest):
+@limiter.limit("5/minute")
+async def signup(request: Request, body: SignUpRequest):
     """Register a new user account."""
     sb = SupabaseManager()
     try:
@@ -43,7 +44,8 @@ async def signup(body: SignUpRequest):
 
 
 @router.post("/login", response_model=AuthResponse)
-async def login(body: SignInRequest):
+@limiter.limit("10/minute")
+async def login(request: Request, body: SignInRequest):
     """Login with email and password. Returns an access token."""
     sb = SupabaseManager()
     try:
@@ -65,7 +67,8 @@ async def logout(sb: SupabaseManager = Depends(get_current_user)):
         sb.sign_out()
         return {"message": "Signed out successfully"}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Logout failed: {str(e)}")
+        logger.exception("Logout failed")
+        raise HTTPException(status_code=500, detail="Logout failed. Please try again.")
 
 
 @router.get("/me", response_model=UserResponse)

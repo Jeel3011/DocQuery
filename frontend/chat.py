@@ -386,7 +386,17 @@ with st.sidebar:
                 fname = doc['filename']
                 display_name = fname if len(fname) < 25 else fname[:22] + "..."
                 
-                col1.markdown(f"**{display_name}**<br/><span style='font-size:0.8em; color:#888;'>{status_icon} {doc['status'].title()} • {doc.get('chunk_count', 0)} chunks</span>", unsafe_allow_html=True)
+                # Show progress for processing documents
+                progress = doc.get('processing_progress')
+                status_text = doc['status'].title()
+                if doc['status'] == 'processing' and progress is not None:
+                    status_text = f"Processing ({progress}%)"
+                
+                col1.markdown(f"**{display_name}**<br/><span style='font-size:0.8em; color:#888;'>{status_icon} {status_text} • {doc.get('chunk_count', 0)} chunks</span>", unsafe_allow_html=True)
+                
+                # Show progress bar for processing documents
+                if doc['status'] == 'processing' and progress is not None:
+                    col1.progress(progress / 100)
                 
                 # Allow deleting ANY document (ready, processing, or failed)
                 if col2.button("🗑️", key=f"deldoc_{doc['id']}", help="Delete"):
@@ -409,9 +419,11 @@ with st.sidebar:
     filename_filter = selected_filter if selected_filter != "All Documents" else None
 
     # Auto-refresh loop if any documents are currently processing
+    # NOTE: Streamlit is single-threaded per session; time.sleep is the standard
+    # polling pattern. For multi-user production, consider streamlit-autorefresh.
     if any(d["status"] == "processing" for d in docs_in_db):
         import time
-        time.sleep(3)
+        time.sleep(2)
         st.rerun()
 
 

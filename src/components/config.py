@@ -23,6 +23,15 @@ class Config:
     COMBINE_TEXT_UNDER_N_CHARS: int = 500
     CHUNK_OVERLAP: int = 500
 
+    # ── Document Processing ──
+    # "auto" = unstructured auto-detects (fast for text, hi_res for scans)
+    # "fast" = no OCR/layout model — 5-10x faster for text-heavy PDFs
+    # "hi_res" = full layout detection + OCR — best accuracy, slowest
+    PDF_STRATEGY: str = "auto"
+    EXTRACT_IMAGES: bool = True   # False = skip image extraction (faster)
+    PARALLEL_PDF_PAGES: bool = True   # Process PDF page-ranges in parallel (3-5x faster)
+    PDF_PARALLEL_WORKERS: int = 4     # Max parallel workers for page processing
+
     # Retrieval params
     TOP_K: int = 5
     SIMILARITY_THRESHOLD: float = 0.30
@@ -66,3 +75,6 @@ class Config:
     # ── Multi-Query Retrieval ──
     USE_MULTI_QUERY: bool = True
     MULTI_QUERY_COUNT: int = 3   # Number of query variants to generate
+
+    # ── Input limits ──
+    MAX_QUERY_LENGTH: int = 2000   # Max characters for user question

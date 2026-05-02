@@ -11,7 +11,7 @@ from fastapi import APIRouter, HTTPException, Depends, UploadFile, File, Request
 from fastapi.responses import JSONResponse
 
 from src.api.schemas import DocumentResponse, DocumentListResponse
-from src.api.dependencies import get_current_user, get_user_config
+from src.api.dependencies import get_current_user, get_user_config, limiter
 from src.components.config import Config
 from src.components.metrics import uploads_total
 
@@ -39,6 +39,7 @@ MAX_FILE_SIZE_MB = 10
 
 
 @router.post("/upload", status_code=202)
+@limiter.limit("10/minute")
 async def upload_document(
     request: Request,                            # P1: required by slowapi
     file: UploadFile = File(...),
@@ -47,8 +48,8 @@ async def upload_document(
 ):
     """
     Upload a document and immediately return 202 Accepted.
-    Processing (ingest → chunk → embed) happens in the background.
-    Poll GET /documents to check when status changes from 'processing' → 'ready'.
+    Processing (ingest -> chunk -> embed) happens in the background.
+    Poll GET /documents to check when status changes from 'processing' -> 'ready'.
     """
     # Validate file type
     safe_filename = Path(file.filename).name  # Strip directory components (S5)
@@ -65,7 +66,6 @@ async def upload_document(
     file_size = 0
     max_bytes = MAX_FILE_SIZE_MB * 1024 * 1024
     first_chunk = True
-    chunks_buf: list[bytes] = []
 
     async with aiofiles.open(tmp_path, "wb") as out:
         while True:
@@ -95,10 +95,12 @@ async def upload_document(
                         detail="File content does not match its extension.",
                     )
                 first_chunk = False
-            chunks_buf.append(chunk)
             await out.write(chunk)
 
-    file_bytes = b"".join(chunks_buf)
+    # L7 FIX: Read file from disk for Supabase upload instead of keeping
+    # a second copy in memory via chunks_buf.
+    async with aiofiles.open(tmp_path, "rb") as f:
+        file_bytes = await f.read()
 
     # 1. Upload raw file to Supabase Storage immediately
     try:
@@ -116,11 +118,10 @@ async def upload_document(
     )
     doc_id = doc_record.get("id")
 
-    # 3. Dispatch to Celery worker (replaces BackgroundTasks)
+    # 3. Dispatch to Celery worker — pass file PATH, not hex-encoded bytes (L7 fix)
     from src.worker.tasks import process_document_task
 
     process_document_task.delay(
-        file_bytes_hex=file_bytes.hex(),
         filename=safe_filename,
         doc_id=doc_id,
         tmp_path=tmp_path,

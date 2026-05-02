@@ -3,6 +3,7 @@ Chat endpoints — query, streaming, conversations, messages.
 Uses lazy imports for heavy RAG components.
 """
 
+import asyncio
 import re
 import json
 
@@ -25,24 +26,22 @@ from src.api.dependencies import (
     get_user_config,
     get_retrieval_mgr,
     get_generator,
+    limiter,
 )
 from src.components.config import Config
 from src.components.metrics import queries_total, retrieval_docs
 
 router = APIRouter()
 
-# Import shared limiter (created in server.py at startup)
-def _get_limiter():
-    from src.api.server import limiter
-    return limiter
 
-
-# ─────────────────────────────────────────
+# -----------------------------------------
 # DIRECT QUERY (no conversation context)
-# ─────────────────────────────────────────
+# -----------------------------------------
 
 @router.post("/query", response_model=QueryResponse)
+@limiter.limit("30/minute")
 async def query(
+    request: Request,          # required by slowapi
     body: QueryRequest,
     sb=Depends(get_current_user),
     user_config: Config = Depends(get_user_config),
@@ -54,21 +53,25 @@ async def query(
     Non-streaming — returns the full response at once.
     """
     if user_config.USE_MULTI_QUERY:
-        variants = generator.generate_query_variants(body.question, n=user_config.MULTI_QUERY_COUNT)
+        variants = await asyncio.to_thread(
+            generator.generate_query_variants, body.question, user_config.MULTI_QUERY_COUNT
+        )
         variants = [body.question] + variants
-        docs = retrieval_mgr.retrieve_multi_query(
+        docs = await asyncio.to_thread(
+            retrieval_mgr.retrieve_multi_query,
             variants,
-            filename_filter=body.filename_filter,
-            page_filter=body.page_filter,
+            body.filename_filter,
+            body.page_filter,
         )
     else:
-        docs = retrieval_mgr.retrieve(
+        docs = await asyncio.to_thread(
+            retrieval_mgr.retrieve,
             body.question,
-            filename_filter=body.filename_filter,
-            page_filter=body.page_filter,
+            body.filename_filter,
+            body.page_filter,
         )
 
-    # ── Prometheus metrics ──
+    # -- Prometheus metrics --
     queries_total.labels(endpoint="query", has_results=str(len(docs) > 0)).inc()
     retrieval_docs.observe(len(docs))
 
@@ -79,7 +82,9 @@ async def query(
             num_sources_used=0,
         )
 
-    result = generator.generate(query=body.question, retrieved_docs=docs)
+    result = await asyncio.to_thread(
+        generator.generate, query=body.question, retrieved_docs=docs
+    )
 
     sources = [
         SourceInfo(
@@ -99,6 +104,7 @@ async def query(
 
 
 @router.post("/query/stream")
+@limiter.limit("30/minute")
 async def query_stream(
     request: Request,          # P1: required by slowapi
     body: QueryRequest,
@@ -120,24 +126,30 @@ async def query_stream(
         ]
 
     # Contextualize ambiguous follow-up questions for the retriever
-    search_query = generator.rewrite_query(body.question, chat_history)
+    search_query = await asyncio.to_thread(
+        generator.rewrite_query, body.question, chat_history
+    )
 
     if user_config.USE_MULTI_QUERY:
-        variants = generator.generate_query_variants(search_query, n=user_config.MULTI_QUERY_COUNT)
+        variants = await asyncio.to_thread(
+            generator.generate_query_variants, search_query, user_config.MULTI_QUERY_COUNT
+        )
         variants = [search_query] + variants
-        docs = retrieval_mgr.retrieve_multi_query(
+        docs = await asyncio.to_thread(
+            retrieval_mgr.retrieve_multi_query,
             variants,
-            filename_filter=body.filename_filter,
-            page_filter=body.page_filter,
+            body.filename_filter,
+            body.page_filter,
         )
     else:
-        docs = retrieval_mgr.retrieve(
+        docs = await asyncio.to_thread(
+            retrieval_mgr.retrieve,
             search_query,
-            filename_filter=body.filename_filter,
-            page_filter=body.page_filter,
+            body.filename_filter,
+            body.page_filter,
         )
 
-    # ── Prometheus metrics ──
+    # -- Prometheus metrics --
     queries_total.labels(endpoint="query_stream", has_results=str(len(docs) > 0)).inc()
     retrieval_docs.observe(len(docs))
 
@@ -149,10 +161,11 @@ async def query_stream(
 
         return StreamingResponse(no_results(), media_type="text/event-stream")
 
-    # Pass the generator directly to StreamingResponse
+    # B3 FIX: Pass search_query (rewritten standalone query) to the generator
+    # so the LLM sees a clear question, not an ambiguous "what is it?"
     return StreamingResponse(
         generator.generate_stream(
-            query=body.question, 
+            query=search_query,
             retrieved_docs=docs,
             chat_history=chat_history
         ),
@@ -160,9 +173,9 @@ async def query_stream(
     )
 
 
-# ─────────────────────────────────────────
+# -----------------------------------------
 # CONVERSATIONS
-# ─────────────────────────────────────────
+# -----------------------------------------
 
 @router.post("/conversations", response_model=ConversationResponse)
 async def create_conversation(
@@ -212,9 +225,9 @@ async def delete_conversation(
         raise HTTPException(status_code=500, detail=f"Failed to delete conversation: {str(e)}")
 
 
-# ─────────────────────────────────────────
+# -----------------------------------------
 # MESSAGES
-# ─────────────────────────────────────────
+# -----------------------------------------
 
 @router.get("/conversations/{conversation_id}/messages", response_model=MessageListResponse)
 async def get_messages(
@@ -239,7 +252,9 @@ async def get_messages(
 
 
 @router.post("/conversations/{conversation_id}/messages", response_model=MessageResponse)
+@limiter.limit("30/minute")
 async def send_message(
+    request: Request,          # required by slowapi
     conversation_id: str,
     body: SendMessageRequest,
     sb=Depends(get_current_user),
@@ -273,24 +288,30 @@ async def send_message(
             page_filter = int(page_match.group(1))
 
     # Rewrite query for standalone context
-    search_query = generator.rewrite_query(body.question, chat_history)
+    search_query = await asyncio.to_thread(
+        generator.rewrite_query, body.question, chat_history
+    )
 
     if user_config.USE_MULTI_QUERY:
-        variants = generator.generate_query_variants(search_query, n=user_config.MULTI_QUERY_COUNT)
+        variants = await asyncio.to_thread(
+            generator.generate_query_variants, search_query, user_config.MULTI_QUERY_COUNT
+        )
         variants = [search_query] + variants
-        docs = retrieval_mgr.retrieve_multi_query(
+        docs = await asyncio.to_thread(
+            retrieval_mgr.retrieve_multi_query,
             variants,
-            filename_filter=body.filename_filter,
-            page_filter=page_filter,
+            body.filename_filter,
+            page_filter,
         )
     else:
-        docs = retrieval_mgr.retrieve(
+        docs = await asyncio.to_thread(
+            retrieval_mgr.retrieve,
             search_query,
-            filename_filter=body.filename_filter,
-            page_filter=page_filter,
+            body.filename_filter,
+            page_filter,
         )
 
-    # ── Prometheus metrics ──
+    # -- Prometheus metrics --
     queries_total.labels(endpoint="send_message", has_results=str(len(docs) > 0)).inc()
     retrieval_docs.observe(len(docs))
 
@@ -305,7 +326,14 @@ async def send_message(
             created_at=msg.get("created_at"),
         )
 
-    result = generator.generate(query=body.question, retrieved_docs=docs, chat_history=chat_history)
+    # B3 FIX: Pass search_query (rewritten) to generator so the LLM
+    # sees a standalone question, not an ambiguous follow-up.
+    result = await asyncio.to_thread(
+        generator.generate,
+        query=search_query,
+        retrieved_docs=docs,
+        chat_history=chat_history,
+    )
 
     serializable_sources = [
         {

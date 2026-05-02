@@ -1,7 +1,8 @@
 """
-Health check endpoint \u2014 verifies API liveness and dependency reachability.
+Health check endpoint - verifies API liveness and dependency reachability.
 """
 
+import asyncio
 import os
 import logging
 from fastapi import APIRouter
@@ -16,7 +17,6 @@ def _ping_supabase() -> bool:
     try:
         from src.components.db import get_supabase_client
         client = get_supabase_client(use_service_role=False)
-        # Lightweight query \u2014 just checks connectivity, no data returned
         client.table("documents").select("id").limit(1).execute()
         return True
     except Exception as e:
@@ -39,9 +39,15 @@ def _ping_pinecone() -> bool:
 
 @router.get("/health")
 async def health_check():
-    """Check API health and verify all dependency connections."""
-    supabase_ok = _ping_supabase()
-    pinecone_ok = _ping_pinecone()
+    """Check API health and verify all dependency connections.
+
+    Runs sync dependency pings in a thread pool so they don't block
+    the async event loop.
+    """
+    supabase_ok, pinecone_ok = await asyncio.gather(
+        asyncio.to_thread(_ping_supabase),
+        asyncio.to_thread(_ping_pinecone),
+    )
 
     all_ok = supabase_ok and pinecone_ok
     status = "ok" if all_ok else "degraded"

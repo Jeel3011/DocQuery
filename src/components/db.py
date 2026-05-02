@@ -208,11 +208,25 @@ class SupabaseManager:
         }).execute()
         return res.data[0] if res.data else {}
 
-    def update_document_status(self, doc_id: str, status: str, chunk_count: int = 0):
-        self.client.table("documents").update({
+    def update_document_status(self, doc_id: str, status: str,
+                               chunk_count: int = 0, progress_pct: int = None):
+        """Update document processing status.
+
+        Args:
+            doc_id: Document UUID.
+            status: 'processing', 'ready', or 'failed'.
+            chunk_count: Number of chunks (set when status='ready').
+            progress_pct: Optional 0-100 progress percentage shown during processing.
+        """
+        update_data = {
             "status": status,
             "chunk_count": chunk_count,
-        }).eq("id", doc_id).eq("user_id", self.user_id).execute()
+        }
+        if progress_pct is not None:
+            update_data["processing_progress"] = progress_pct
+        self.client.table("documents").update(
+            update_data
+        ).eq("id", doc_id).eq("user_id", self.user_id).execute()
 
     def get_user_documents(self) -> list:
         """Get all documents for current user."""

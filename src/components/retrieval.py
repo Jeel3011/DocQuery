@@ -129,20 +129,30 @@ class RetrievalManager:
         filename_filter: str = None,
         page_filter: str = None,
     ) -> list[Document]:
-        """Retrieve docs for multiple query variants, deduplicate, optional rerank."""
+        """Retrieve docs for multiple query variants, deduplicate, optional rerank.
+
+        Uses a thread pool to run Pinecone calls in parallel (fixes L3).
+        """
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+
         all_docs: dict[str, Document] = {}
 
-        for q in queries:
-            docs = self._raw_retrieve(q, filename_filter, page_filter)
-            for doc in docs:
-                # Dedupe by content hash (already in metadata from embedding time)
-                key = doc.metadata.get("content_hash", doc.page_content[:100])
-                if key not in all_docs:
-                    all_docs[key] = doc
+        def _fetch(q: str) -> list[Document]:
+            return self._raw_retrieve(q, filename_filter, page_filter)
+
+        # Run all Pinecone queries in parallel (I/O-bound)
+        max_workers = min(len(queries), 4)
+        with ThreadPoolExecutor(max_workers=max_workers) as pool:
+            futures = {pool.submit(_fetch, q): q for q in queries}
+            for future in as_completed(futures):
+                for doc in future.result():
+                    key = doc.metadata.get("content_hash", doc.page_content[:100])
+                    if key not in all_docs:
+                        all_docs[key] = doc
 
         merged = list(all_docs.values())
         self.logger.info(
-            "Multi-query: %d variants → %d unique docs", len(queries), len(merged)
+            "Multi-query: %d variants -> %d unique docs (parallel)", len(queries), len(merged)
         )
 
         # Hybrid BM25 + RRF fusion (same as single-query path)

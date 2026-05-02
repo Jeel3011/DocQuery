@@ -11,18 +11,14 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 
-from slowapi import Limiter, _rate_limit_exceeded_handler
-from slowapi.util import get_remote_address
-from slowapi.errors import RateLimitExceeded
-
-from src.api.dependencies import init_config
+from src.api.dependencies import init_config, limiter
 from src.api.routes import health, auth, documents, chat
+
+from slowapi.errors import RateLimitExceeded
+from slowapi import _rate_limit_exceeded_handler
 
 # S9: disable interactive API docs in production
 _IS_PROD = os.getenv("IS_PROD", "false").lower() == "true"
-
-# P1: shared rate limiter — keyed by client IP
-limiter = Limiter(key_func=get_remote_address)
 
 
 @asynccontextmanager
@@ -45,7 +41,7 @@ app = FastAPI(
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
-# ── CORS ──
+# -- CORS (tightened: explicit methods + headers) --
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
@@ -57,11 +53,11 @@ app.add_middleware(
         # "https://docquery.yourdomain.com",
     ],
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "DELETE", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type", "Accept"],
 )
 
-# ── Routes ──
+# -- Routes --
 API_PREFIX = "/api/v1"
 
 app.include_router(health.router, prefix=API_PREFIX, tags=["Health"])
@@ -70,7 +66,7 @@ app.include_router(documents.router, prefix=API_PREFIX, tags=["Documents"])
 app.include_router(chat.router,   prefix=API_PREFIX, tags=["Chat"])
 
 
-# ── Prometheus Metrics ──
+# -- Prometheus Metrics --
 from prometheus_fastapi_instrumentator import Instrumentator
 
 Instrumentator(

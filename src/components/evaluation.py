@@ -26,7 +26,7 @@ from ragas.metrics import (
 
 from src.components.config import Config
 from src.components.retrieval import RetrievalManager
-from src.components.genration import AnswerGenration
+from src.components.generation import AnswerGenration
 from src.logger import get_logger
 
 logger = get_logger(__name__)

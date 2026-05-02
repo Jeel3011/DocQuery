@@ -7,7 +7,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 from src.components.data_ingestion import DocumentProcessor
 from src.components.embeddings import EmbeddingManager
 from src.components.retrieval import RetrievalManager
-from src.components.genration import AnswerGenration
+from src.components.generation import AnswerGenration
 
 def run_pipeline(query: str):
     config = Config()

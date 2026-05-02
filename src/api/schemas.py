@@ -63,7 +63,7 @@ class SourceInfo(BaseModel):
 
 
 class QueryRequest(BaseModel):
-    question: str = Field(..., min_length=1)
+    question: str = Field(..., min_length=1, max_length=2000)
     filename_filter: Optional[str] = None
     page_filter: Optional[int] = None
     conversation_id: Optional[str] = None
@@ -100,7 +100,7 @@ class ConversationListResponse(BaseModel):
 # ─────────────────────────────────────────
 
 class SendMessageRequest(BaseModel):
-    question: str = Field(..., min_length=1)
+    question: str = Field(..., min_length=1, max_length=2000)
     filename_filter: Optional[str] = None
     page_filter: Optional[int] = None
 

@@ -6,14 +6,24 @@ Uses lazy imports for heavy RAG components to avoid triggering
 the entire langchain/transformers import chain at module-load time.
 """
 
+import threading
 from fastapi import Request, HTTPException, Depends
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 
+from slowapi import Limiter
+from slowapi.util import get_remote_address
+
 from src.components.config import Config
 
-# ─────────────────────────────────────────
+# -----------------------------------------
+# Shared rate limiter (imported by server.py and route files)
+# -----------------------------------------
+limiter = Limiter(key_func=get_remote_address)
+
+
+# -----------------------------------------
 # Shared singletons (created once at startup)
-# ─────────────────────────────────────────
+# -----------------------------------------
 
 _config: Config = None
 
@@ -31,9 +41,9 @@ def get_config() -> Config:
     return _config
 
 
-# ─────────────────────────────────────────
+# -----------------------------------------
 # Auth dependencies
-# ─────────────────────────────────────────
+# -----------------------------------------
 
 security = HTTPBearer()
 
@@ -48,7 +58,7 @@ async def get_current_user(
     credentials: HTTPAuthorizationCredentials = Depends(security),
 ):
     """
-    Validate the Bearer token via Supabase auth (uses anon key \u2014 required for
+    Validate the Bearer token via Supabase auth (uses anon key — required for
     auth.get_user()). Returns a SupabaseManager backed by the SERVICE ROLE key
     so all subsequent Storage / PostgREST calls bypass RLS while still being
     scoped to the validated user via sb._user.
@@ -77,9 +87,17 @@ async def get_current_user(
     return sb
 
 
-# ─────────────────────────────────────────
-# User-scoped RAG dependencies (lazy imports)
-# ─────────────────────────────────────────
+# -----------------------------------------
+# User-scoped RAG dependencies (lazy imports + singleton cache)
+# -----------------------------------------
+
+# L1 FIX: Cache heavy objects per Pinecone namespace so they aren't
+# re-created on every request. The CrossEncoder model (loaded by
+# RetrievalManager -> Reranker) takes 1-3s — caching eliminates that.
+_retrieval_cache: dict[str, object] = {}
+_generator_cache: dict[str, object] = {}
+_cache_lock = threading.Lock()
+
 
 def get_user_config(
     sb=Depends(get_current_user),
@@ -98,14 +116,22 @@ def get_user_config(
 def get_retrieval_mgr(
     user_config: Config = Depends(get_user_config),
 ):
-    """Return a RetrievalManager scoped to the current user."""
-    from src.components.retrieval import RetrievalManager
-    return RetrievalManager(user_config)
+    """Return a RetrievalManager scoped to the current user (cached per namespace)."""
+    ns = user_config.PINECONE_NAMESPACE
+    with _cache_lock:
+        if ns not in _retrieval_cache:
+            from src.components.retrieval import RetrievalManager
+            _retrieval_cache[ns] = RetrievalManager(user_config)
+        return _retrieval_cache[ns]
 
 
 def get_generator(
     user_config: Config = Depends(get_user_config),
 ):
-    """Return an AnswerGenration instance scoped to the current user."""
-    from src.components.genration import AnswerGenration
-    return AnswerGenration(user_config)
+    """Return an AnswerGenration instance scoped to the current user (cached per namespace)."""
+    ns = user_config.PINECONE_NAMESPACE
+    with _cache_lock:
+        if ns not in _generator_cache:
+            from src.components.generation import AnswerGenration
+            _generator_cache[ns] = AnswerGenration(user_config)
+        return _generator_cache[ns]
