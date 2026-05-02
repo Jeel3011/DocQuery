@@ -143,6 +143,23 @@ API_BASE_URL = os.getenv("API_BASE_URL", "http://localhost:8000").rstrip("/")
 API_V1 = f"{API_BASE_URL}/api/v1"
 
 
+def _friendly_auth_error(exc: Exception) -> str:
+    """Map raw Supabase auth exceptions to user-friendly messages."""
+    msg = str(exc).strip()
+    lower = msg.lower()
+    if "rate limit" in lower:
+        return "Too many auth attempts. Please wait a few minutes and try again."
+    if "invalid login credentials" in lower:
+        return "Invalid email or password."
+    if "email not confirmed" in lower:
+        return "Email not confirmed yet. Please verify your inbox and retry."
+    if "user already registered" in lower:
+        return "This email is already registered. Please sign in instead."
+    if "email_address_invalid" in lower or "email address" in lower and "invalid" in lower:
+        return "Email format appears invalid. Use a valid mailbox address."
+    return f"Auth error: {msg}"
+
+
 def _auth_headers() -> dict:
     """Return Authorization header using the current Supabase session token."""
     try:
@@ -221,7 +238,7 @@ if not user:
                             sb.sign_in(email, password)
                             st.rerun()
                         except Exception as e:
-                            st.error(f"Login failed: {str(e)}")
+                            st.error(_friendly_auth_error(e))
 
         with tab_signup:
             with st.form("signup_form", clear_on_submit=True):
@@ -236,7 +253,7 @@ if not user:
                             sb.sign_up(email, password)
                             st.success("Account created successfully! You can now sign in.")
                         except Exception as e:
-                            st.error(f"Sign up failed: {str(e)}")
+                            st.error(_friendly_auth_error(e))
 
     st.stop()
 

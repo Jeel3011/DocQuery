@@ -11,6 +11,7 @@ Uses RAGAS metrics to evaluate retrieval and generation quality:
 import json
 import math
 import time
+import traceback
 from typing import List, Dict, Any, Optional
 from pathlib import Path
 
@@ -59,12 +60,16 @@ class RAGASEvaluator:
         return data
 
     def run_pipeline_on_questions(
-        self, questions: List[Dict[str, Any]]
+        self, questions: List[Dict[str, Any]], mode: str = "baseline"
     ) -> Dict[str, List]:
         """Run the RAG pipeline on each question and collect results.
-        
-        Returns a dict with keys: question, answer, contexts, ground_truth
-        suitable for RAGAS evaluation.
+
+        Args:
+            questions: List of {question, ground_truth} dicts.
+            mode:      'baseline' (dense+reranker) or 'hybrid' (BM25+dense+reranker).
+
+        Returns:
+            Dict with keys: question, answer, contexts, ground_truth.
         """
         results = {
             "question": [],
@@ -73,14 +78,24 @@ class RAGASEvaluator:
             "ground_truth": [],
         }
 
+        use_multi_query = self.config.USE_MULTI_QUERY
+
         for i, item in enumerate(questions, 1):
             question = item["question"]
             ground_truth = item["ground_truth"]
 
-            print(f"  [{i}/{len(questions)}] Querying: {question[:60]}...")
+            print(f"  [{i}/{len(questions)}] [{mode.upper()}] {question[:65]}...")
 
-            # Retrieve
-            docs = self.retrieval_mgr.retrieve(question)
+            # Multi-query: generate variants then retrieve
+            if use_multi_query:
+                variants = self.generator.generate_query_variants(
+                    question, n=self.config.MULTI_QUERY_COUNT
+                )
+                all_queries = [question] + variants
+                docs = self.retrieval_mgr.retrieve_multi_query(all_queries)
+            else:
+                docs = self.retrieval_mgr.retrieve(question)
+
             contexts = [doc.page_content for doc in docs]
 
             # Generate
@@ -96,7 +111,7 @@ class RAGASEvaluator:
             results["ground_truth"].append(ground_truth)
 
             logger.info(
-                f"Q{i}: retrieved {len(docs)} docs, answer length={len(answer)}"
+                "Q%d: retrieved %d docs, answer length=%d", i, len(docs), len(answer)
             )
 
         return results
@@ -105,18 +120,20 @@ class RAGASEvaluator:
         self,
         eval_dataset_path: str,
         output_path: Optional[str] = None,
+        mode: str = "baseline",
     ) -> Dict[str, Any]:
         """Run full RAGAS evaluation.
-        
+
         Args:
             eval_dataset_path: Path to JSON file with test questions.
-            output_path: Optional path to save results JSON.
-            
+            output_path:       Optional path to save results JSON.
+            mode:              'baseline' or 'hybrid' — recorded in output for comparison.
+
         Returns:
-            Dict with per-metric scores and per-question breakdown.
+            Dict with aggregate scores, per-question breakdown, and pipeline config.
         """
         print("\n" + "=" * 60)
-        print("RAGAS EVALUATION")
+        print(f"RAGAS EVALUATION  [mode: {mode.upper()}]")
         print("=" * 60)
 
         # 1. Load questions
@@ -126,7 +143,7 @@ class RAGASEvaluator:
         # 2. Run pipeline
         print("Running pipeline on questions...")
         t1 = time.time()
-        pipeline_results = self.run_pipeline_on_questions(questions)
+        pipeline_results = self.run_pipeline_on_questions(questions, mode=mode)
         t2 = time.time()
         print(f"\nPipeline complete in {t2 - t1:.2f}s\n")
 
@@ -136,9 +153,28 @@ class RAGASEvaluator:
         # 4. Evaluate with RAGAS
         print("Running RAGAS evaluation (this calls the LLM for scoring)...")
         t3 = time.time()
-        ragas_result = evaluate(dataset=dataset, metrics=self.METRICS)
+        ragas_result = None
+        eval_error = None
+        try:
+            from langchain_openai import ChatOpenAI, OpenAIEmbeddings
+            from ragas.llms import LangchainLLMWrapper
+            from ragas.embeddings import LangchainEmbeddingsWrapper
+
+            llm = LangchainLLMWrapper(ChatOpenAI(model=self.config.LLM_MODEL_NAME))
+            emb = LangchainEmbeddingsWrapper(
+                OpenAIEmbeddings(model=self.config.EMBEDDING_MODEL_NAME)
+            )
+            ragas_result = evaluate(
+                dataset=dataset,
+                metrics=self.METRICS,
+                llm=llm,
+                embeddings=emb,
+            )
+        except Exception as e:
+            eval_error = str(e)
+            logger.error("RAGAS evaluation failed: %s", e)
+            logger.debug("RAGAS traceback:\n%s", traceback.format_exc())
         t4 = time.time()
-        print(f"RAGAS evaluation complete in {t4 - t3:.2f}s\n")
 
         # 5. Format results — B1: guard NaN values so JSON stays valid
         def _safe_float(v) -> float:
@@ -150,8 +186,21 @@ class RAGASEvaluator:
                 return 0.0
 
         scores = {
+            "mode": mode,
+            "pipeline_config": {
+                "use_reranker": self.config.USE_RERANKER,
+                "reranker_model": self.config.RERANKER_MODEL if self.config.USE_RERANKER else None,
+                "use_multi_query": self.config.USE_MULTI_QUERY,
+                "multi_query_count": self.config.MULTI_QUERY_COUNT if self.config.USE_MULTI_QUERY else None,
+                "use_hybrid_search": self.config.USE_HYBRID_SEARCH,
+                "hybrid_fetch_k": self.config.HYBRID_FETCH_K if self.config.USE_HYBRID_SEARCH else None,
+                "top_k": self.config.TOP_K,
+                "rerank_top_k": self.config.RERANK_TOP_K,
+                "embedding_model": self.config.EMBEDDING_MODEL_NAME,
+                "llm_model": self.config.LLM_MODEL_NAME,
+            },
             "aggregate_scores": {
-                metric: _safe_float(ragas_result[metric])
+                metric: _safe_float(ragas_result[metric]) if ragas_result else 0.0
                 for metric in [
                     "faithfulness",
                     "answer_relevancy",
@@ -162,6 +211,8 @@ class RAGASEvaluator:
             "num_questions": len(questions),
             "pipeline_time_s": round(t2 - t1, 2),
             "eval_time_s": round(t4 - t3, 2),
+            "eval_status": "ok" if ragas_result else "failed",
+            "eval_error": eval_error,
         }
 
         # Re-compute overall average ignoring any remaining NaN slots
@@ -173,6 +224,8 @@ class RAGASEvaluator:
 
         # Per-question breakdown from the ragas dataframe
         try:
+            if ragas_result is None:
+                raise RuntimeError("No RAGAS result available due to evaluation failure")
             df = ragas_result.to_pandas()
             per_question = []
             for _, row in df.iterrows():

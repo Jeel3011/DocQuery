@@ -37,6 +37,9 @@ prometheus-fastapi-instrumentator
 # Reranker (cross-encoder)
 sentence-transformers
 
+# Hybrid retrieval (BM25)
+rank-bm25
+
 # Celery worker
 celery[redis]
 

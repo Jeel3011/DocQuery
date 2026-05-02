@@ -27,8 +27,12 @@ class Config:
     TOP_K: int = 5
     SIMILARITY_THRESHOLD: float = 0.30
 
-    # Hybrid search (wired up later)
+    # Hybrid search: BM25 (local) + Dense (Pinecone) merged via Reciprocal Rank Fusion
+    # Set to True to activate HybridRetriever in retrieval.py.
     USE_HYBRID_SEARCH: bool = False
+    # How many candidates to over-fetch from Pinecone for BM25 to rank over.
+    # Larger = better recall for BM25 at the cost of slightly more Pinecone latency.
+    HYBRID_FETCH_K: int = 25
 
     # OpenAI
     OPENAI_API_KEY: str = os.getenv("OPENAI_API_KEY")

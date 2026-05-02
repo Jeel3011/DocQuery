@@ -7,6 +7,17 @@ import os
 
 logger = get_logger(__name__)
 
+# Lazy import — only needed when USE_HYBRID_SEARCH is True
+_HybridRetriever = None
+
+
+def _get_hybrid_retriever_class():
+    global _HybridRetriever
+    if _HybridRetriever is None:
+        from src.components.hybrid_retrieval import HybridRetriever
+        _HybridRetriever = HybridRetriever
+    return _HybridRetriever
+
 
 class RetrievalManager:
 
@@ -26,12 +37,20 @@ class RetrievalManager:
             namespace=self.config.PINECONE_NAMESPACE,
         )
 
-        # ── Optional reranker (Feature 2) ──
+        # ── Optional reranker ──
         self._reranker = None
         if self.config.USE_RERANKER:
             from src.components.reranker import Reranker
-
             self._reranker = Reranker(self.config.RERANKER_MODEL)
+
+        # ── Optional hybrid retriever (BM25 + Dense → RRF) ──
+        self._hybrid = None
+        if self.config.USE_HYBRID_SEARCH:
+            hybrid_retriever_cls = _get_hybrid_retriever_class()
+            self._hybrid = hybrid_retriever_cls(
+                top_k=self.config.RERANK_TOP_K if self._reranker else self.config.TOP_K,
+            )
+            logger.info("HybridRetriever enabled (fetch_k=%d)", self.config.HYBRID_FETCH_K)
 
     # ── Private helper: raw vector search (shared by retrieve & retrieve_multi_query) ──
 
@@ -41,11 +60,19 @@ class RetrievalManager:
         filename_filter: str = None,
         page_filter: str = None,
     ) -> list[Document]:
-        """Run similarity search against Pinecone and return docs above threshold."""
+        """Run similarity search against Pinecone and return docs above threshold.
+
+        When USE_HYBRID_SEARCH is True the caller should pass a larger fetch_k
+        so the BM25 step has enough candidates to re-rank from.
+        """
         similarity_threshold = self.config.SIMILARITY_THRESHOLD
-        fetch_k = (
-            self.config.RERANK_INITIAL_K if self._reranker else self.config.TOP_K
-        )
+        if self._hybrid:
+            # Over-fetch a big candidate pool for BM25 to rank over
+            fetch_k = self.config.HYBRID_FETCH_K
+        elif self._reranker:
+            fetch_k = self.config.RERANK_INITIAL_K
+        else:
+            fetch_k = self.config.TOP_K
 
         try:
             filter_dict = {}
@@ -80,13 +107,17 @@ class RetrievalManager:
         filename_filter: str = None,
         page_filter: str = None,
     ) -> list[Document]:
-        """Retrieve relevant docs, optionally reranked."""
+        """Retrieve relevant docs with optional hybrid BM25+RRF fusion and/or reranking."""
         docs = self._raw_retrieve(query, filename_filter, page_filter)
 
+        # Step 1: Hybrid BM25 + RRF fusion
+        if self._hybrid and docs:
+            docs = self._hybrid.retrieve(query, docs)
+
+        # Step 2: Cross-encoder reranker
         if self._reranker and docs:
-            docs = self._reranker.rerank(
-                query, docs, top_k=self.config.RERANK_TOP_K
-            )
+            top_k = self.config.RERANK_TOP_K
+            docs = self._reranker.rerank(query, docs, top_k=top_k)
 
         return docs
 
@@ -113,6 +144,10 @@ class RetrievalManager:
         self.logger.info(
             "Multi-query: %d variants → %d unique docs", len(queries), len(merged)
         )
+
+        # Hybrid BM25 + RRF fusion (same as single-query path)
+        if self._hybrid and merged:
+            merged = self._hybrid.retrieve(queries[0], merged)
 
         if self._reranker and merged:
             merged = self._reranker.rerank(

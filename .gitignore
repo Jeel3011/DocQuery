@@ -38,5 +38,9 @@ chroma/
 *.pkl
 *.docs.pkl
 
+# Temp directories (eval / upload artifacts)
+tmp_eval_dir/
+tmp_uploads/
+
 pyproject.toml
 test_pipeline.py
