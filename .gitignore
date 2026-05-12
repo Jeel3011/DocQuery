@@ -44,3 +44,10 @@ tmp_uploads/
 
 pyproject.toml
 test_pipeline.py
+
+# ===============================
+# Internal planning docs (not for repo)
+# ===============================
+DocQuery_Production_Plan.md
+DocQuery_System_Design_Infrastructure.md
+DEPLOY.md
