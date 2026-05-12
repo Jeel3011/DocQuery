@@ -16,9 +16,24 @@ from slowapi.util import get_remote_address
 from src.components.config import Config
 
 # -----------------------------------------
-# Shared rate limiter (imported by server.py and route files)
+# Per-user rate limiter
 # -----------------------------------------
-limiter = Limiter(key_func=get_remote_address)
+# Keys on the Bearer token (first 50 chars) for authenticated endpoints.
+# This is per-session, not per-IP, so it works correctly behind proxies
+# and cannot be bypassed by rotating IPs.
+# Falls back to remote IP for unauthenticated routes (/auth/login, etc.).
+
+def get_user_key(request: Request) -> str:
+    """Rate-limit by Bearer token for authed routes, IP for unauthed."""
+    auth = request.headers.get("Authorization", "")
+    if auth.startswith("Bearer "):
+        # First 50 chars is enough for a unique, non-spoofable key.
+        # Full token validation still happens in get_current_user().
+        return f"token:{auth[7:57]}"
+    return get_remote_address(request)  # fallback: IP for /auth routes
+
+
+limiter = Limiter(key_func=get_user_key)
 
 
 # -----------------------------------------

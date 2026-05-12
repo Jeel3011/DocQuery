@@ -176,14 +176,26 @@ class RAGASEvaluator:
             logger.debug("RAGAS traceback:\n%s", traceback.format_exc())
         t4 = time.time()
 
-        # 5. Format results — B1: guard NaN values so JSON stays valid
-        def _safe_float(v) -> float:
-            """Return 0.0 for NaN/None so the score is always a valid JSON number."""
+        # 5. Format results
+        # B1 FIX: Return None for NaN/None instead of silently replacing with 0.0.
+        # Replacing NaN with 0.0 inflates the average and misrepresents quality.
+        # Instead we surface which metrics produced NaN so the caller can report
+        # honestly (e.g. "4/6 valid, 2 NaN on math-heavy questions").
+        def _safe_float(v) -> Optional[float]:
+            """Return None for NaN/None, float otherwise."""
             try:
                 f = float(v)
-                return 0.0 if math.isnan(f) else f
+                return None if math.isnan(f) else f
             except (TypeError, ValueError):
-                return 0.0
+                return None
+
+        _metric_keys = ["faithfulness", "answer_relevancy", "context_precision", "context_recall"]
+        raw_scores = {
+            k: _safe_float(ragas_result[k]) if ragas_result else None
+            for k in _metric_keys
+        }
+        nan_metrics = [k for k, v in raw_scores.items() if v is None]
+        valid_scores_map = {k: v for k, v in raw_scores.items() if v is not None}
 
         scores = {
             "mode": mode,
@@ -199,15 +211,9 @@ class RAGASEvaluator:
                 "embedding_model": self.config.EMBEDDING_MODEL_NAME,
                 "llm_model": self.config.LLM_MODEL_NAME,
             },
-            "aggregate_scores": {
-                metric: _safe_float(ragas_result[metric]) if ragas_result else 0.0
-                for metric in [
-                    "faithfulness",
-                    "answer_relevancy",
-                    "context_precision",
-                    "context_recall",
-                ]
-            },
+            # raw_scores: None means NaN (LLM couldn't score it), float means valid
+            "aggregate_scores": raw_scores,
+            "nan_metrics": nan_metrics,
             "num_questions": len(questions),
             "pipeline_time_s": round(t2 - t1, 2),
             "eval_time_s": round(t4 - t3, 2),
@@ -215,12 +221,19 @@ class RAGASEvaluator:
             "eval_error": eval_error,
         }
 
-        # Re-compute overall average ignoring any remaining NaN slots
-        valid_scores = [
-            v for v in scores["aggregate_scores"].values()
-            if not math.isnan(v)
-        ]
-        scores["average_score"] = round(sum(valid_scores) / len(valid_scores), 4) if valid_scores else 0.0
+        # Average excludes NaN slots — never divide by zero
+        if valid_scores_map:
+            scores["average_score"] = round(sum(valid_scores_map.values()) / len(valid_scores_map), 4)
+            if nan_metrics:
+                scores["average_note"] = (
+                    f"Excludes {len(nan_metrics)} NaN metric(s): {nan_metrics}. "
+                    "NaN typically occurs when RAGAS cannot verify claims in formula-heavy text."
+                )
+            else:
+                scores["average_note"] = "All metrics valid."
+        else:
+            scores["average_score"] = 0.0
+            scores["average_note"] = "No valid metric scores — RAGAS evaluation may have failed entirely."
 
         # Per-question breakdown from the ragas dataframe
         try:
@@ -232,6 +245,7 @@ class RAGASEvaluator:
                 per_question.append({
                     "question": row.get("question", ""),
                     "answer": str(row.get("answer", ""))[:200],
+                    # Use None for NaN here too — honest per-question scores
                     "faithfulness": _safe_float(row.get("faithfulness")),
                     "answer_relevancy": _safe_float(row.get("answer_relevancy")),
                     "context_precision": _safe_float(row.get("context_precision")),
@@ -270,11 +284,12 @@ class RAGASEvaluator:
             print("PER-QUESTION BREAKDOWN")
             print(f"{'='*60}")
             for i, q in enumerate(scores["per_question"], 1):
+                def _fmt(v): return f"{v:.3f}" if v is not None else " NaN"
                 print(f"\n  Q{i}: {q['question'][:55]}...")
-                print(f"      Faith: {q['faithfulness']:.3f} | "
-                      f"Relevancy: {q['answer_relevancy']:.3f} | "
-                      f"Ctx Prec: {q['context_precision']:.3f} | "
-                      f"Ctx Recall: {q['context_recall']:.3f}")
+                print(f"      Faith: {_fmt(q['faithfulness'])} | "
+                      f"Relevancy: {_fmt(q['answer_relevancy'])} | "
+                      f"Ctx Prec: {_fmt(q['context_precision'])} | "
+                      f"Ctx Recall: {_fmt(q['context_recall'])}")
 
         print(f"\n  Pipeline time: {scores['pipeline_time_s']}s")
         print(f"  RAGAS eval time: {scores['eval_time_s']}s")

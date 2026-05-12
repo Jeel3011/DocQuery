@@ -1,9 +1,14 @@
 """
 Document management endpoints — upload (async via Celery), list, delete.
+
+Note on tmp files: We use tempfile.mkstemp() instead of a fixed tmp_uploads/
+directory because Railway has an ephemeral filesystem — the directory is lost
+on redeploy. mkstemp() writes to /tmp which always exists in the container.
 """
 
 import os
 import logging
+import tempfile
 from pathlib import Path
 
 import aiofiles
@@ -60,13 +65,16 @@ async def upload_document(
             detail=f"Unsupported file type: .{file_ext}. Supported: {list(user_config.SUPPORTED_FILE_TYPES)}",
         )
 
-    # P2: Stream file to disk in chunks to avoid large memory spikes
-    os.makedirs(user_config.UPLOAD_DIR, exist_ok=True)
-    tmp_path = os.path.join(user_config.UPLOAD_DIR, safe_filename)
+    # P2: Stream file to disk in chunks to avoid large memory spikes.
+    # Use tempfile.mkstemp() — Railway has an ephemeral filesystem so
+    # a fixed tmp_uploads/ directory disappears between deploys.
+    suffix = Path(safe_filename).suffix  # preserve extension for unstructured
+    tmp_fd, tmp_path = tempfile.mkstemp(suffix=suffix)
     file_size = 0
     max_bytes = MAX_FILE_SIZE_MB * 1024 * 1024
     first_chunk = True
 
+    os.close(tmp_fd)  # close the OS-level fd; aiofiles will reopen
     async with aiofiles.open(tmp_path, "wb") as out:
         while True:
             chunk = await file.read(8192)
@@ -118,15 +126,25 @@ async def upload_document(
     )
     doc_id = doc_record.get("id")
 
-    # 3. Dispatch to Celery worker — pass file PATH, not hex-encoded bytes (L7 fix)
+    # 3. Dispatch to Celery worker — route to priority queue based on file size
     from src.worker.tasks import process_document_task
 
-    process_document_task.delay(
-        filename=safe_filename,
-        doc_id=doc_id,
-        tmp_path=tmp_path,
-        user_id=sb.user_id,
-        pinecone_namespace=user_config.PINECONE_NAMESPACE,
+    if file_size < 500_000:           # < 500 KB → fast queue (txt, tiny PDFs)
+        celery_queue = "documents.fast"
+    elif file_size < 5_000_000:       # < 5 MB  → normal queue
+        celery_queue = "documents.normal"
+    else:                             # ≥ 5 MB  → heavy queue (large PDFs)
+        celery_queue = "documents.heavy"
+
+    process_document_task.apply_async(
+        kwargs=dict(
+            filename=safe_filename,
+            doc_id=doc_id,
+            tmp_path=tmp_path,
+            user_id=sb.user_id,
+            pinecone_namespace=user_config.PINECONE_NAMESPACE,
+        ),
+        queue=celery_queue,
     )
 
     # 4. Return 202 Accepted immediately — client should poll GET /documents

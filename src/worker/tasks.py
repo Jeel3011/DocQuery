@@ -6,6 +6,11 @@ inside FastAPI's BackgroundTasks, freeing the API event loop.
 
 Progress tracking: updates Supabase document status at each stage so
 the frontend can show real progress instead of just "processing".
+
+Note on tmp_path: The API layer (documents.py) uses tempfile.mkstemp()
+to write the file to /tmp before dispatching this task. Railway has an
+ephemeral filesystem so we never rely on a fixed directory existing.
+The finally block always cleans up the temp file regardless of outcome.
 """
 
 import os
@@ -17,7 +22,8 @@ from src.worker.celery_app import celery
 logger = logging.getLogger(__name__)
 
 
-@celery.task(bind=True, max_retries=2, default_retry_delay=30)
+@celery.task(bind=True, max_retries=2, default_retry_delay=30,
+             acks_late=True, reject_on_worker_lost=True)
 def process_document_task(
     self,
     filename: str,
@@ -105,13 +111,35 @@ def process_document_task(
         return {"status": "ready", "chunks": len(chunks), "time_s": round(total_time, 1)}
 
     except Exception as exc:
-        logger.exception("Celery task failed for doc %s", doc_id)
+        retries_left = self.max_retries - self.request.retries
+        logger.exception(
+            "[%s] Task failed (attempt %d/%d, retries_left=%d): %s",
+            doc_id, self.request.retries + 1, self.max_retries + 1, retries_left, exc,
+        )
+        if self.request.retries >= self.max_retries:
+            # All retries exhausted → DLQ path:
+            # 1. Mark document as failed in DB so the user sees it (not stuck on "processing")
+            # 2. Log at ERROR level for alerting
+            # 3. Return cleanly — don't re-raise, task is done
+            logger.error(
+                "[%s] DLQ: document moved to failed after %d retries. "
+                "Manual review required. File: %s",
+                doc_id, self.max_retries, filename,
+            )
+            sb.update_document_status(doc_id, "failed")
+            uploads_total.labels(status="failed").inc()
+            return {"status": "dlq", "doc_id": doc_id, "reason": str(exc)}
+
+        # Still have retries — update DB status and re-raise for Celery retry
         sb.update_document_status(doc_id, "failed")
         uploads_total.labels(status="failed").inc()
-        raise self.retry(exc=exc)  # retry up to max_retries
+        raise self.retry(exc=exc)
 
     finally:
+        # Always clean up the temp file — whether success, retry, or DLQ
         try:
-            os.remove(tmp_path)
-        except OSError:
-            pass
+            if os.path.isfile(tmp_path):
+                os.remove(tmp_path)
+        except OSError as e:
+            logger.warning("[%s] Could not remove temp file %s: %s", doc_id, tmp_path, e)
+

@@ -2,12 +2,20 @@
 DocQuery — Celery Application Factory
 
 Broker & backend: Redis (configurable via REDIS_URL env var).
+
+Queue structure:
+  documents.fast   — txt / small PDFs (<500KB) — concurrency=4
+  documents.normal — medium PDFs (<5MB)        — concurrency=2  [default]
+  documents.heavy  — large PDFs (≥5MB)         — concurrency=1
+  documents.dlq    — failed after max_retries  — manual review / alerting
+
 Start the worker with:
-    celery -A src.worker.celery_app worker --loglevel=info
+    celery -A src.worker.celery_app worker --loglevel=info -Q documents.fast,documents.normal,documents.heavy
 """
 
 import os
 from celery import Celery
+from kombu import Queue, Exchange
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -20,15 +28,38 @@ celery = Celery(
     backend=REDIS_URL,
 )
 
+# Default exchange for all document queues
+_doc_exchange = Exchange("documents", type="direct")
+
 celery.conf.update(
     task_serializer="json",
     accept_content=["json"],
     result_serializer="json",
     timezone="UTC",
     task_track_started=True,
-    task_acks_late=True,            # re-deliver if worker crashes mid-task
-    worker_prefetch_multiplier=1,   # one task at a time per worker (CPU-heavy)
+    task_acks_late=True,             # re-deliver if worker crashes mid-task
+    worker_prefetch_multiplier=1,    # one task at a time per worker (CPU-heavy)
+    task_reject_on_worker_lost=True, # re-queue task if worker is killed mid-task
+
+    # ── Priority queues ──────────────────────────────────────────────────────
+    # Separate queues prevent a 500-page PDF from blocking a 2-page txt.
+    task_queues=(
+        Queue("documents.fast",   _doc_exchange, routing_key="fast"),
+        Queue("documents.normal", _doc_exchange, routing_key="normal"),
+        Queue("documents.heavy",  _doc_exchange, routing_key="heavy"),
+        Queue("documents.dlq",    _doc_exchange, routing_key="dlq"),   # dead letter
+    ),
+    task_default_queue="documents.normal",
+    task_default_exchange="documents",
+    task_default_routing_key="normal",
+
+    # Route process_document_task to documents.normal by default.
+    # The upload endpoint overrides the queue per file size (see documents.py).
+    task_routes={
+        "src.worker.tasks.process_document_task": {"queue": "documents.normal"},
+    },
 )
 
 # Auto-discover tasks in src/worker/tasks.py
 celery.autodiscover_tasks(["src.worker"])
+
