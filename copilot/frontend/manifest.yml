@@ -1,0 +1,34 @@
+# The manifest for the "frontend" service.
+# Read the full specification for the "Load Balanced Web Service" type at:
+#  https://aws.github.io/copilot-cli/docs/manifest/lb-web-service/
+
+# Your service name will be used in naming your resources like log groups, ECS services, etc.
+name: frontend
+type: Load Balanced Web Service
+
+# Distribute traffic to your service.
+http:
+  # Requests to this path will be forwarded to your service.
+  # To match all requests you can use the "/" path.
+  path: 'frontend'
+  # You can specify a custom health check path. The default is "/".
+  healthcheck: '/frontend/healthz'
+
+# Configuration for your containers and service.
+image:
+  build: Dockerfile
+  port: 8501
+
+command: ["streamlit", "run", "frontend/chat.py", "--server.port", "8501", "--server.address", "0.0.0.0", "--server.headless", "true", "--server.baseUrlPath", "frontend", "--server.enableCORS", "false", "--server.enableXsrfProtection", "false"]
+
+cpu: 1024       # Streamlit needs a bit more CPU
+memory: 2048   # and memory to render properly
+platform: linux/x86_64
+count: 1
+exec: true
+network:
+  connect: true # Allow connecting to the 'api' service
+
+variables:
+  API_BASE_URL: "http://api:8000"
+env_file: .env

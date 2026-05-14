@@ -1,0 +1,18 @@
+# Version Control
+.git/
+.gitignore
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+venv/
+env/
+.env
+.venv/
+
+# Application Specific
+tmp_uploads/
+redis_data/
+copilot/

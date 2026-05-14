@@ -1,8 +1,20 @@
+# ===============================
+# Python artifacts
+# ===============================
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg-info/
+
+# ===============================
+# Virtual environments
+# ===============================
 venv/
+.venv/
+env/
 .env
-.__pycache__/
-*.pyc
-.logs/
+
 # ===============================
 # Logs
 # ===============================
@@ -10,44 +22,45 @@ logs/
 *.log
 
 # ===============================
-# Python artifacts
-# ===============================
-__pycache__/
-*.py[cod]
-
-# ===============================
-# Virtual environments
-# ===============================
-venv/
-.env
-
-# ===============================
 # OS / Editor
 # ===============================
 .DS_Store
+*/.DS_Store
 .vscode/
+.idea/
 
-docquery.egg-info/
-
-# Vector databases
+# ===============================
+# Vector databases (local dev)
+# ===============================
 vector_db/
 chroma/
 *.chroma/
 
+# ===============================
 # DocQuery caches
+# ===============================
 *.pkl
 *.docs.pkl
 
-# Temp directories (eval / upload artifacts)
+# ===============================
+# Temp directories
+# ===============================
 tmp_eval_dir/
 tmp_uploads/
-
-pyproject.toml
-test_pipeline.py
+redis_data/
 
 # ===============================
-# Internal planning docs (not for repo)
+# Evaluation artifacts (dev-only)
 # ===============================
-DocQuery_Production_Plan.md
-DocQuery_System_Design_Infrastructure.md
+eval/
+eval_questions*.json
+eval_results*.json
+compare_evals.py
+evaluate_rag.py
+ingest_eval.py
+
+# ===============================
+# Internal planning docs
+# ===============================
+plans/
 DEPLOY.md
