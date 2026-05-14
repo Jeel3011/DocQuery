@@ -140,12 +140,18 @@ async def upload_document(
         kwargs=dict(
             filename=safe_filename,
             doc_id=doc_id,
-            tmp_path=tmp_path,
+            storage_path=storage_path,
             user_id=sb.user_id,
             pinecone_namespace=user_config.PINECONE_NAMESPACE,
         ),
         queue=celery_queue,
     )
+
+    # Clean up local temp file — the worker will download from Supabase Storage
+    try:
+        os.remove(tmp_path)
+    except OSError:
+        pass
 
     # 4. Return 202 Accepted immediately — client should poll GET /documents
     return JSONResponse(

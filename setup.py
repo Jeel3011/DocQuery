@@ -8,12 +8,8 @@ def get_requirements(file_path: str) -> List[str]:
     requirements = []
     with open(file_path) as file_obj:
         requirements = file_obj.readlines()
-        # Remove newline characters
-        requirements = [req.replace("\n", "") for req in requirements]
-
-        # Ignore '-e .' if it is present
-        if "-e ." in requirements:
-            requirements.remove("-e .")
+        # Remove newline characters and pip flags
+        requirements = [req.strip() for req in requirements if req.strip() and not req.startswith("-")]
             
     return requirements
 

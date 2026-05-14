@@ -5,6 +5,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     poppler-utils \
     tesseract-ocr \
     libmagic1 \
+    libgl1 \
+    libglib2.0-0 \
     gcc \
     && rm -rf /var/lib/apt/lists/*
 
@@ -12,10 +14,12 @@ WORKDIR /app
 
 # Install Python deps first (separate layer — only rebuilds on requirements change)
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install --upgrade pip && \
+    pip install --no-cache-dir -r requirements.txt
 
 # Copy source
 COPY . .
+RUN pip install -e .
 
 # Non-root user for security
 RUN useradd -m -r appuser && chown -R appuser:appuser /app

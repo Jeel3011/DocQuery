@@ -324,11 +324,15 @@ with st.sidebar:
     # ── DOCUMENTS ──
     st.subheader("📁 Documents")
 
+    if "uploader_key" not in st.session_state:
+        st.session_state.uploader_key = 0
+
     MAX_FILE_SIZE_MB = 10
     supported_exts = list(config.SUPPORTED_FILE_TYPES)
     uploaded_file = st.file_uploader(
         f"Upload (max {MAX_FILE_SIZE_MB}MB)",
         type=supported_exts,
+        key=f"uploader_{st.session_state.uploader_key}"
     )
 
     if uploaded_file:
@@ -353,6 +357,8 @@ with st.sidebar:
                             st.success(
                                 f"✅ '{doc['filename']}' ready ({doc.get('chunk_count', 0)} chunks)"
                             )
+                        # Increment key to clear the file uploader widget instantly
+                        st.session_state.uploader_key += 1
                         st.rerun()
                     else:
                         detail = resp.json().get("detail", resp.text)

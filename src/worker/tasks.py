@@ -7,10 +7,11 @@ inside FastAPI's BackgroundTasks, freeing the API event loop.
 Progress tracking: updates Supabase document status at each stage so
 the frontend can show real progress instead of just "processing".
 
-Note on tmp_path: The API layer (documents.py) uses tempfile.mkstemp()
-to write the file to /tmp before dispatching this task. Railway has an
-ephemeral filesystem so we never rely on a fixed directory existing.
-The finally block always cleans up the temp file regardless of outcome.
+File transfer: The API uploads the raw file to Supabase Storage, then
+passes the storage_path to this task.  The worker downloads the file
+from Storage into its own /tmp — this is necessary because the API
+and worker run as separate ECS containers with isolated filesystems.
+The finally block always cleans up the local temp file.
 """
 
 import os
@@ -28,7 +29,7 @@ def process_document_task(
     self,
     filename: str,
     doc_id: str,
-    tmp_path: str,
+    storage_path: str,
     user_id: str,
     pinecone_namespace: str,
 ):
@@ -55,13 +56,18 @@ def process_document_task(
     config = Config()
     config.PINECONE_NAMESPACE = pinecone_namespace
 
+    tmp_path = None  # will be set after download
     try:
-        # Verify the file exists on disk
-        if not os.path.isfile(tmp_path):
-            logger.error("File not found at %s for doc %s", tmp_path, doc_id)
+        # Download the file from Supabase Storage into worker's local /tmp
+        logger.info("[%s] Downloading file from storage: %s", doc_id, storage_path)
+        suffix = os.path.splitext(filename)[1]  # e.g. ".pdf"
+        try:
+            tmp_path = sb.download_file_to_temp(storage_path, suffix=suffix)
+        except Exception as dl_exc:
+            logger.error("[%s] Failed to download from storage: %s", doc_id, dl_exc)
             sb.update_document_status(doc_id, "failed")
             uploads_total.labels(status="failed").inc()
-            return {"status": "failed", "reason": "file not found on disk"}
+            return {"status": "failed", "reason": f"storage download failed: {dl_exc}"}
 
         # -- Stage 1: Parse document (the slowest step) --
         sb.update_document_status(doc_id, "processing", progress_pct=10)
@@ -138,7 +144,7 @@ def process_document_task(
     finally:
         # Always clean up the temp file — whether success, retry, or DLQ
         try:
-            if os.path.isfile(tmp_path):
+            if tmp_path and os.path.isfile(tmp_path):
                 os.remove(tmp_path)
         except OSError as e:
             logger.warning("[%s] Could not remove temp file %s: %s", doc_id, tmp_path, e)

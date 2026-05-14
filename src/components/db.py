@@ -222,8 +222,6 @@ class SupabaseManager:
             "status": status,
             "chunk_count": chunk_count,
         }
-        if progress_pct is not None:
-            update_data["processing_progress"] = progress_pct
         self.client.table("documents").update(
             update_data
         ).eq("id", doc_id).eq("user_id", self.user_id).execute()
