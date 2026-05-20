@@ -20,10 +20,30 @@ logger = get_logger(__name__)
 _model_cache: dict[str, CrossEncoder] = {}
 
 
+def _best_device() -> str:
+    """Auto-detect the best available device for the cross-encoder.
+
+    Priority: MPS (Apple Silicon) > CUDA (NVIDIA GPU) > CPU.
+    Falls back to CPU if torch is not available or device check fails.
+    """
+    try:
+        import torch
+        if torch.backends.mps.is_available():
+            return "mps"
+        if torch.cuda.is_available():
+            return "cuda"
+    except Exception:
+        pass
+    return "cpu"
+
+
 def _get_model(model_name: str) -> CrossEncoder:
     if model_name not in _model_cache:
-        _model_cache[model_name] = CrossEncoder(model_name)
-        logger.info("Reranker model loaded (singleton): %s", model_name)
+        device = _best_device()
+        _model_cache[model_name] = CrossEncoder(model_name, device=device)
+        logger.info(
+            "Reranker model loaded (singleton): %s on device=%s", model_name, device
+        )
     return _model_cache[model_name]
 
 
@@ -39,6 +59,11 @@ class Reranker:
         """Score every (query, doc) pair and return the top-k by relevance."""
         if not docs:
             return []
+
+        # Short-circuit: if we already have <= top_k docs, no need to rerank —
+        # they'd all be returned anyway. Skip the model inference entirely.
+        if len(docs) <= top_k:
+            return docs
 
         start = time.perf_counter()
         pairs = [(query, doc.page_content) for doc in docs]

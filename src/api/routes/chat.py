@@ -32,22 +32,38 @@ from src.api.dependencies import (
 )
 from src.components.config import Config
 from src.components.metrics import queries_total, retrieval_docs, cache_hits, cache_misses, cache_latency
+from src.logger import get_logger
 
 router = APIRouter()
+logger = get_logger(__name__)
 
 _REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
 
+# ── Module-level caches ───────────────────────────────────────────────────────
+# SemanticCache: pool one instance per user — avoids opening a new Redis TCP
+# connection + ping on every single request (~5ms saved per request).
+_cache_pool: dict[str, object] = {}
+
+# OpenAIEmbeddings: cache per (model, api_key) pair — the client object is
+# lightweight but recreating it on every request is unnecessary.
+_embedder_cache: dict[str, object] = {}
+
 
 def _get_cache(user_id: str):
-    """Return a SemanticCache scoped to this user. Non-fatal if Redis is down."""
-    from src.components.semantic_cache import SemanticCache
-    return SemanticCache(redis_url=_REDIS_URL, namespace=user_id)
+    """Return a cached SemanticCache scoped to this user. Non-fatal if Redis is down."""
+    if user_id not in _cache_pool:
+        from src.components.semantic_cache import SemanticCache
+        _cache_pool[user_id] = SemanticCache(redis_url=_REDIS_URL, namespace=user_id)
+    return _cache_pool[user_id]
 
 
 async def _embed_query(query: str, model: str, api_key: str) -> list:
-    """Embed a query string for cache lookup. Runs in thread pool to avoid blocking."""
+    """Embed a query string. Caches the embedder object; runs in thread pool."""
     from langchain_openai import OpenAIEmbeddings
-    embedder = OpenAIEmbeddings(model=model, api_key=api_key)
+    cache_key = f"{model}:{api_key[:12]}"
+    if cache_key not in _embedder_cache:
+        _embedder_cache[cache_key] = OpenAIEmbeddings(model=model, api_key=api_key)
+    embedder = _embedder_cache[cache_key]
     return await asyncio.to_thread(embedder.embed_query, query)
 
 
@@ -101,7 +117,24 @@ async def query(
         )
     cache_misses.inc()
 
-    if user_config.USE_MULTI_QUERY:
+    # ── Smart query routing based on complexity ──
+    # classify_query_complexity() uses pure regex rules — no LLM call.
+    # simple   → direct vector retrieval using pre-computed embedding (~1.0s total)
+    # moderate → multi-query variants, skip self-review (~1.5-2.0s total)
+    # complex  → full pipeline (handled by /query/agent endpoint)
+    complexity = generator.classify_query_complexity(body.question)
+    logger.info("Query complexity: %s for: %.60s", complexity, body.question)
+
+    if complexity == "simple" and query_embedding:
+        # Fast path: reuse the pre-computed cache embedding — skip the second API call
+        docs = await asyncio.to_thread(
+            retrieval_mgr.retrieve_by_vector,
+            query_embedding,
+            body.question,
+            body.filename_filter,
+            body.page_filter,
+        )
+    elif user_config.USE_MULTI_QUERY:
         variants = await asyncio.to_thread(
             generator.generate_query_variants, body.question, user_config.MULTI_QUERY_COUNT
         )
@@ -280,16 +313,49 @@ async def query_agent(
     Agentic query endpoint (Phase 6) — Harvey-level accuracy.
 
     Slower than /query but higher accuracy for complex questions:
-      1. Decompose the query into 2-4 atomic sub-questions.
-      2. Retrieve relevant docs for each sub-question.
-      3. Deduplicate and merge retrieved docs.
-      4. Generate with self-critique loop (flags unsupported claims, revises if needed).
+      1. Semantic cache check (repeated complex queries served in <50ms).
+      2. Decompose the query into 2-4 atomic sub-questions.
+      3. Retrieve relevant docs for each sub-question IN PARALLEL.
+      4. Deduplicate and merge retrieved docs.
+      5. Generate with self-critique loop (flags unsupported claims, revises if needed).
 
     Rate limit: 10/min (2x LLM calls per request vs standard 1x).
     """
     from src.components.agentic_retrieval import AgenticRetriever
 
-    # Step 1+2+3: Agentic retrieval
+    # ── Cache check (agent queries can be expensive — cache hits are very valuable) ──
+    t_cache = time.perf_counter()
+    cached = None
+    query_embedding = []
+    try:
+        query_embedding = await _embed_query(
+            body.question, user_config.EMBEDDING_MODEL_NAME, user_config.OPENAI_API_KEY
+        )
+        cache = _get_cache(sb.user_id)
+        cached = cache.get(body.question, query_embedding)
+    except Exception:
+        pass
+    cache_latency.observe(time.perf_counter() - t_cache)
+
+    if cached:
+        cache_hits.labels(tier=cached.get("tier", "unknown")).inc()
+        sources = [
+            SourceInfo(
+                source_id=s.get("source_id", 0),
+                filename=s.get("filename"),
+                page=s.get("page"),
+                chunk_type=s.get("chunk_type"),
+            )
+            for s in cached.get("sources", [])
+        ]
+        return QueryResponse(
+            answer=cached["answer"],
+            sources=sources,
+            num_sources_used=len(sources),
+        )
+    cache_misses.inc()
+
+    # ── Step 1+2+3: Agentic retrieval (parallel sub-queries) ──
     agentic = AgenticRetriever(config=user_config, retrieval_mgr=retrieval_mgr)
     retrieval_result = await asyncio.to_thread(
         agentic.retrieve_and_synthesize,
@@ -309,7 +375,7 @@ async def query_agent(
             num_sources_used=0,
         )
 
-    # Step 4: Self-critique generation
+    # ── Step 4: Self-critique generation ──
     result = await asyncio.to_thread(
         generator.generate_with_self_review,
         query=body.question,
@@ -326,6 +392,18 @@ async def query_agent(
         )
         for s in result["sources"]
     ]
+
+    # ── Store in cache for future identical/similar agent queries ──
+    if query_embedding and result.get("answer"):
+        try:
+            cache.set(
+                body.question,
+                query_embedding,
+                result["answer"],
+                [s.model_dump() for s in sources],
+            )
+        except Exception:
+            pass
 
     return QueryResponse(
         answer=result["answer"],

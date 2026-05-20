@@ -38,12 +38,12 @@ class Config:
     # ≤ PDF_FAST_THRESHOLD_PAGES   → strategy="fast" (no OCR, ~0.5s/doc)
     # ≤ PDF_MEDIUM_THRESHOLD_PAGES → strategy="auto" (~2-5s/doc)
     # > PDF_MEDIUM_THRESHOLD_PAGES → strategy="hi_res" (full OCR, ~15-30s/doc)
-    PDF_FAST_THRESHOLD_PAGES: int = 5
+    PDF_FAST_THRESHOLD_PAGES: int = 10   # Raised from 5 — more PDFs avoid model loading entirely
     PDF_MEDIUM_THRESHOLD_PAGES: int = 30
 
     # Retrieval params
     TOP_K: int = 5
-    SIMILARITY_THRESHOLD: float = 0.30
+    SIMILARITY_THRESHOLD: float = 0.45   # Raised from 0.30 — filters noise, reduces reranker load
 
     # Hybrid search: BM25 (local) + Dense (Pinecone) merged via Reciprocal Rank Fusion
     # Set to True to activate HybridRetriever in retrieval.py.
@@ -78,12 +78,12 @@ class Config:
     # ── Reranker ──
     USE_RERANKER: bool = True
     RERANKER_MODEL: str = "cross-encoder/ms-marco-MiniLM-L-6-v2"
-    RERANK_INITIAL_K: int = 15   # Over-fetch from Pinecone
+    RERANK_INITIAL_K: int = 10   # Lowered from 15 — 10 gives good recall with less Pinecone/reranker work
     RERANK_TOP_K: int = 5        # Final docs after reranking
 
     # ── Multi-Query Retrieval ──
     USE_MULTI_QUERY: bool = True
-    MULTI_QUERY_COUNT: int = 3   # Number of query variants to generate
+    MULTI_QUERY_COUNT: int = 2   # Lowered from 3 — 2 variants + original = 3 Pinecone calls (was 4)
 
     # ── Input limits ──
     MAX_QUERY_LENGTH: int = 2000   # Max characters for user question

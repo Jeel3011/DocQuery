@@ -11,11 +11,19 @@ from src.logger import get_logger
 logger = get_logger(__name__)
 
 class EmbeddingManager:
-    def __init__(self,config : Config):
+    def __init__(self, config: Config):
         self.config = config
         self.logger = logger
         if self.config.PINECONE_API_KEY:
             os.environ["PINECONE_API_KEY"] = self.config.PINECONE_API_KEY
+
+        # Initialize once — reused for all create_vector_store() calls.
+        # Previously this was created fresh inside create_vector_store(), wasting
+        # HTTP client setup on every ingestion task.
+        self.embedding_model = OpenAIEmbeddings(
+            model=self.config.EMBEDDING_MODEL_NAME,
+            openai_api_key=self.config.OPENAI_API_KEY,
+        )
 
     @staticmethod
     def hash_content(text:str) -> str:
@@ -36,12 +44,10 @@ class EmbeddingManager:
         return cleaned
             
 
-    def create_vector_store(self,documents : List[Document],persist_directory: str = None) -> PineconeVectorStore:
-        embedding_model = OpenAIEmbeddings(
-            model=self.config.EMBEDDING_MODEL_NAME,
-            openai_api_key=self.config.OPENAI_API_KEY
-        )
-        
+    def create_vector_store(self, documents: List[Document], persist_directory: str = None) -> PineconeVectorStore:
+        # Use the embedding_model initialized in __init__ — no new HTTP client per call
+        embedding_model = self.embedding_model
+
         # Early exit: if no documents, just return existing vector store
         if not documents:
             print("No new documents to embed. Using existing vector store.")

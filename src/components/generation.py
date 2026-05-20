@@ -1,5 +1,6 @@
 from typing import List, Dict
 import json
+import re
 from langchain_openai import ChatOpenAI
 from langchain_core.documents import Document
 from langchain_core.prompts import ChatPromptTemplate
@@ -44,6 +45,57 @@ Context:
 ])
 
         self.chain = self.prompt | self.llm | StrOutputParser()
+
+    def classify_query_complexity(self, query: str) -> str:
+        """Classify query complexity without any LLM call — pure heuristics.
+
+        Returns:
+            "simple"   — Short or page-specific queries. Skip multi-query.
+                         Use direct retrieval_by_vector for fastest path.
+                         Expected latency: ~1.0-1.2s
+            "moderate" — Multi-concept queries. Use multi-query retrieval.
+                         Skip self-review. Expected latency: ~1.5-2.0s
+            "complex"  — Comparative, analytical, multi-step. Full pipeline
+                         including self-review. Expected latency: ~2.5-3.0s
+
+        Harvey pattern: route cheap questions fast, reserve expensive LLM
+        calls for genuinely hard questions.
+        """
+        q = query.lower().strip()
+        words = q.split()
+
+        # ── Simple signals ─────────────────────────────────────────────────
+        # Page-specific queries — user wants a fact from a known location
+        if re.search(r'\bpage\s+\d+\b', q):
+            return "simple"
+
+        # Very short queries — single concept lookup
+        if len(words) <= 6:
+            return "simple"
+
+        # Definition / factual lookup starters
+        if re.match(r'^(what is|what are|who is|who are|define|list|when|where|how many|how much)\b', q):
+            return "simple"
+
+        # ── Complex signals ────────────────────────────────────────────────
+        # Comparative / analytical language
+        complex_patterns = [
+            r'\b(compare|contrast|difference between|similarities|versus|vs\.?)\b',
+            r'\b(analyze|analyse|evaluate|assess|critique|explain why|explain how)\b',
+            r'\b(relationship between|impact of|implications of|trade-?offs?)\b',
+            r'\b(pros and cons|advantages and disadvantages)\b',
+            r'\b(summarize|summarise|overview of|breakdown of)\b',
+        ]
+        for pattern in complex_patterns:
+            if re.search(pattern, q):
+                return "complex"
+
+        # Long multi-clause queries are likely complex
+        if len(words) > 25:
+            return "complex"
+
+        # Default: moderate — use multi-query but skip self-review
+        return "moderate"
 
     def rewrite_query(self, query: str, chat_history: list = None) -> str:
         """

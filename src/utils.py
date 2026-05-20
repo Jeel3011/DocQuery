@@ -68,6 +68,21 @@ def _create_image_description(el, page_num=None) -> str:
         return "Image content extracted from document."        
 
         
+
+# ── Module-level tiktoken encoder cache ──────────────────────────────────────
+# tiktoken.get_encoding() takes ~5-10ms per call to find/load the encoding file.
+# Cache it once so every format_chat_history() call pays ~0ms.
+_tiktoken_enc = None
+
+
+def _get_tiktoken_enc():
+    global _tiktoken_enc
+    if _tiktoken_enc is None:
+        import tiktoken
+        _tiktoken_enc = tiktoken.get_encoding("cl100k_base")
+    return _tiktoken_enc
+
+
 def format_chat_history(chat_history: list, window: int = 6, max_tokens: int = 2000) -> str:
     """Format last N messages into a string for LLM prompt injection.
 
@@ -87,8 +102,7 @@ def format_chat_history(chat_history: list, window: int = 6, max_tokens: int = 2
 
     # Step 2: Attempt tiktoken truncation to stay under max_tokens
     try:
-        import tiktoken
-        enc = tiktoken.get_encoding("cl100k_base")  # works for GPT-4 / GPT-4o-mini
+        enc = _get_tiktoken_enc()  # cached — ~0ms after first call
 
         while recent:
             lines = []
