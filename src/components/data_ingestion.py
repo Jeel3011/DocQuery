@@ -98,18 +98,55 @@ class DocumentProcessor:
     def __init__(self, config: Config):
         self.config = config
 
-    def _process_pdf_parallel(self, file_path: str) -> List:
+    def _detect_strategy(self, file_path: str, file_ext: str) -> str:
+        """
+        Phase 3: Choose PDF processing strategy based on file type and page count.
+
+        Strategy selection:
+          .txt / .md           → always "fast" (no OCR needed)
+          .docx / .pptx / .xlsx → "auto" (structure-aware, no OCR)
+          .pdf ≤ FAST pages    → "fast"   (~0.5s/doc, no layout model)
+          .pdf ≤ MEDIUM pages  → "auto"   (~2-5s/doc, unstructured decides)
+          .pdf > MEDIUM pages  → "hi_res" (~15-30s/doc, full OCR)
+          .pdf unknown pages   → "auto"   (can't determine, let unstructured choose)
+
+        Falls back to config.PDF_STRATEGY if page count cannot be determined.
+        """
+        if file_ext in [".txt", ".md"]:
+            return "fast"
+
+        if file_ext in [".docx", ".pptx", ".xlsx"]:
+            return "auto"
+
+        if file_ext == ".pdf":
+            page_count = _get_pdf_page_count(file_path)
+            if page_count == 0:
+                # Could not determine page count — fall back to config default
+                return self.config.PDF_STRATEGY
+            if page_count <= self.config.PDF_FAST_THRESHOLD_PAGES:
+                return "fast"
+            if page_count <= self.config.PDF_MEDIUM_THRESHOLD_PAGES:
+                return "auto"
+            return "hi_res"
+
+        # Unknown extension — let unstructured decide
+        return "auto"
+
+    def _process_pdf_parallel(self, file_path: str, strategy: str = None) -> List:
         """Split a PDF into page-range chunks and process in parallel.
 
         Gives ~3-5x speedup on multi-core machines for large PDFs.
         Falls back to single-pass for small PDFs or if splitting fails.
+        Uses the provided strategy (from _detect_strategy) rather than always
+        reading config.PDF_STRATEGY so tiered processing applies per-file.
         """
+        strategy = strategy or self.config.PDF_STRATEGY
         total_pages = _get_pdf_page_count(file_path)
         workers = self.config.PDF_PARALLEL_WORKERS
 
         # Not worth parallelizing small PDFs (overhead > benefit)
         if total_pages < 6 or workers <= 1:
-            return self._process_pdf_single(file_path)
+            return self._process_pdf_single(file_path, strategy=strategy)
 
         # Split into roughly equal page ranges
         pages_per_worker = math.ceil(total_pages / workers)
@@ -131,7 +168,7 @@ class DocumentProcessor:
                     file_path,
                     start,
                     end,
-                    self.config.PDF_STRATEGY,
+                    strategy,   # Phase 3: use tiered strategy, not always config.PDF_STRATEGY
                     self.config.EXTRACT_IMAGES,
                 ): (start, end)
                 for start, end in ranges
@@ -157,11 +194,12 @@ class DocumentProcessor:
         print(f"  Parallel processing complete: {len(all_elements)} elements in {elapsed:.1f}s")
         return all_elements
 
-    def _process_pdf_single(self, file_path: str) -> List:
+    def _process_pdf_single(self, file_path: str, strategy: str = None) -> List:
         """Standard single-pass PDF processing."""
+        strategy = strategy or self.config.PDF_STRATEGY
         pdf_kwargs = {
             "filename": file_path,
-            "strategy": self.config.PDF_STRATEGY,
+            "strategy": strategy,
             "infer_table_structure": True,
         }
         if self.config.EXTRACT_IMAGES:
@@ -169,17 +207,32 @@ class DocumentProcessor:
             pdf_kwargs["extract_image_block_to_payload"] = True
         return partition_pdf(**pdf_kwargs)
 
-    def process_documents(self, file_paths: str) -> List:
-        """Process documents and return a list of processed data."""
+    def process_documents(self, file_paths: str, force_strategy: str = None) -> List:
+        """Process documents and return a list of processed elements.
+
+        Args:
+            file_paths:      Path to the file to process.
+            force_strategy:  Optional override for PDF strategy (e.g. 'hi_res' for
+                             user-requested high-quality scan). If None, auto-detects
+                             via _detect_strategy() based on file type + page count.
+        """
         file_extension = Path(file_paths).suffix.lower()
         file_name = Path(file_paths).name
+
+        # Phase 3: auto-detect strategy unless caller forces one
+        strategy = force_strategy or self._detect_strategy(file_paths, file_extension)
+        import logging as _logging
+        _logging.getLogger(__name__).info(
+            "Processing %s with strategy=%s (pages detected via pypdf)",
+            file_name, strategy,
+        )
 
         try:
             if file_extension == ".pdf":
                 if self.config.PARALLEL_PDF_PAGES:
-                    elements = self._process_pdf_parallel(file_paths)
+                    elements = self._process_pdf_parallel(file_paths, strategy=strategy)
                 else:
-                    elements = self._process_pdf_single(file_paths)
+                    elements = self._process_pdf_single(file_paths, strategy=strategy)
 
             elif file_extension == ".docx":
                 elements = partition_docx(

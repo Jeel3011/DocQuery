@@ -24,13 +24,22 @@ class Config:
     CHUNK_OVERLAP: int = 500
 
     # ── Document Processing ──
-    # "auto" = unstructured auto-detects (fast for text, hi_res for scans)
-    # "fast" = no OCR/layout model — 5-10x faster for text-heavy PDFs
-    # "hi_res" = full layout detection + OCR — best accuracy, slowest
-    PDF_STRATEGY: str = "auto"
-    EXTRACT_IMAGES: bool = True   # False = skip image extraction (faster)
-    PARALLEL_PDF_PAGES: bool = True   # Process PDF page-ranges in parallel (3-5x faster)
-    PDF_PARALLEL_WORKERS: int = 4     # Max parallel workers for page processing
+    # PDF_STRATEGY: used for explicit overrides or non-PDF files.
+    # For PDFs, _detect_strategy() in data_ingestion.py auto-selects based on page count.
+    #   "fast"   — no OCR/layout model, 5-10x faster, text-heavy PDFs ≤ PDF_FAST_THRESHOLD_PAGES
+    #   "auto"   — unstructured auto-detects, medium PDFs
+    #   "hi_res" — full layout + OCR, scanned/large PDFs > PDF_MEDIUM_THRESHOLD_PAGES
+    PDF_STRATEGY: str = "auto"          # fallback for non-PDFs and force-override
+    EXTRACT_IMAGES: bool = True          # False = skip image extraction (faster)
+    PARALLEL_PDF_PAGES: bool = True      # Process PDF page-ranges in parallel (3-5x faster)
+    PDF_PARALLEL_WORKERS: int = 4        # Max parallel workers for page processing
+
+    # ── Phase 3: Tiered PDF strategy thresholds ──
+    # ≤ PDF_FAST_THRESHOLD_PAGES   → strategy="fast" (no OCR, ~0.5s/doc)
+    # ≤ PDF_MEDIUM_THRESHOLD_PAGES → strategy="auto" (~2-5s/doc)
+    # > PDF_MEDIUM_THRESHOLD_PAGES → strategy="hi_res" (full OCR, ~15-30s/doc)
+    PDF_FAST_THRESHOLD_PAGES: int = 5
+    PDF_MEDIUM_THRESHOLD_PAGES: int = 30
 
     # Retrieval params
     TOP_K: int = 5

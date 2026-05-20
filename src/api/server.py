@@ -13,10 +13,26 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from src.api.dependencies import init_config, limiter
 from src.api.routes import health, auth, documents, chat
+from src.api.routes import admin as admin_routes
 from src.api.middleware import CorrelationIDMiddleware, SecurityHeadersMiddleware
 
 from slowapi.errors import RateLimitExceeded
 from slowapi import _rate_limit_exceeded_handler
+
+# Phase 5: Sentry error tracking + performance tracing
+# Initialise before anything else so all exceptions are captured.
+_SENTRY_DSN = os.getenv("SENTRY_DSN", "")
+if _SENTRY_DSN:
+    import sentry_sdk
+    from sentry_sdk.integrations.fastapi import FastApiIntegration
+    from sentry_sdk.integrations.celery import CeleryIntegration
+    sentry_sdk.init(
+        dsn=_SENTRY_DSN,
+        integrations=[FastApiIntegration(), CeleryIntegration()],
+        traces_sample_rate=0.1,   # 10% of requests traced (cost control)
+        environment="production" if os.getenv("IS_PROD") == "true" else "development",
+    )
+
 
 # S9: disable interactive API docs in production
 _IS_PROD = os.getenv("IS_PROD", "false").lower() == "true"
@@ -73,10 +89,11 @@ app.add_middleware(SecurityHeadersMiddleware)
 # -- Routes --
 API_PREFIX = "/api/v1"
 
-app.include_router(health.router, prefix=API_PREFIX, tags=["Health"])
-app.include_router(auth.router,   prefix=API_PREFIX, tags=["Auth"])
+app.include_router(health.router,    prefix=API_PREFIX, tags=["Health"])
+app.include_router(auth.router,      prefix=API_PREFIX, tags=["Auth"])
 app.include_router(documents.router, prefix=API_PREFIX, tags=["Documents"])
-app.include_router(chat.router,   prefix=API_PREFIX, tags=["Chat"])
+app.include_router(chat.router,      prefix=API_PREFIX, tags=["Chat"])
+app.include_router(admin_routes.router, prefix=API_PREFIX, tags=["Admin"])   # Phase 5
 
 
 # -- Prometheus Metrics --

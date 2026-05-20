@@ -1,4 +1,5 @@
-from typing import List,Dict
+from typing import List, Dict
+import json
 from langchain_openai import ChatOpenAI
 from langchain_core.documents import Document
 from langchain_core.prompts import ChatPromptTemplate
@@ -79,9 +80,8 @@ Conversation History:
         logger.info(f"Rewrote query: '{query}' -> '{standalone_query}'")
         return standalone_query.strip()
 
-    def generate(self,query:str,retrieved_docs: List[Document], chat_history: list = None) -> Dict:
+    def generate(self, query: str, retrieved_docs: List[Document], chat_history: list = None) -> Dict:
 
-            
             context_parts=[]
             sources = []
 
@@ -100,7 +100,6 @@ Conversation History:
                                      
             context = "\n---\n".join(context_parts)
 
-
             answer = self.chain.invoke({
                 "context":context,
                 "question":query,
@@ -108,6 +107,137 @@ Conversation History:
             })
 
             return {"answer":answer,"sources":sources,"num_sources_used":len(retrieved_docs)}
+
+    def generate_with_self_review(
+        self,
+        query: str,
+        retrieved_docs: List[Document],
+        chat_history: list = None,
+        user_id: str = None,
+    ) -> Dict:
+        """
+        Phase 6: Harvey-style self-critique loop.
+
+        Step 1 — Generate an initial answer normally.
+        Step 2 — Ask the same LLM to identify any claims NOT directly supported
+                  by the retrieved context. If all claims check out, respond VERIFIED.
+                  If hallucinations are found, respond REVISE: [list].
+        Step 3 — On REVISE, regenerate with an explicit strict-grounding instruction
+                  that forbids adding information beyond the sources.
+
+        Why this matters:
+        - Harvey reports 0.2% error rate via citation-backed generation.
+        - RAGAS faithfulness measures the same property. This loop directly
+          addresses faithfulness failures on ambiguous or formula-heavy text.
+        - Two LLM calls adds ~300-600ms latency — acceptable for the /query/agent
+          endpoint (users expect it to be slower but more accurate).
+
+        Returns the same dict as generate(), with extra fields:
+            "self_reviewed": bool — whether the critique ran
+            "revised":       bool — whether a revision was needed
+            "critique":      str  — the raw critique output (for logging/debugging)
+        """
+        context_parts = []
+        sources = []
+        for i, doc in enumerate(retrieved_docs, 1):
+            meta = doc.metadata
+            source_info = f"[Source{i}: {meta.get('filename','unknown')}, Page: {meta.get('page_number', 'N/A')}, Type: {meta.get('chunk_type', 'text')} ]"
+            context_parts.append(f"{source_info}\n{doc.page_content}\n")
+            sources.append({
+                "source_id": i,
+                "filename": meta.get('filename'),
+                "page": meta.get('page_number'),
+                "chunk_type": meta.get('chunk_type'),
+                "chunk_id": meta.get('chunk_id'),
+            })
+        context = "\n---\n".join(context_parts)
+
+        # Step 1: Generate initial answer
+        initial_answer = self.chain.invoke({
+            "context": context,
+            "question": query,
+            "chat_history": format_chat_history(chat_history) if chat_history else "",
+        })
+
+        # Phase 4: token cost tracking (rough heuristic: len/4 ≈ tokens)
+        if user_id:
+            try:
+                from src.components.metrics import user_llm_cost
+                user_llm_cost.labels(
+                    user_id=user_id,
+                    model=self.config.LLM_MODEL_NAME,
+                    operation="generate",
+                ).inc(len(context) // 4)
+            except Exception:
+                pass
+
+        # Step 2: Self-critique
+        critique_prompt = ChatPromptTemplate.from_messages([
+            ("system", """You are a fact-checker reviewing an AI-generated answer.
+
+The source documents contain:
+{context}
+
+The AI answered: "{answer}"
+
+Identify any claims in the answer NOT directly supported by the sources above.
+- If ALL claims are supported by the sources, respond exactly: VERIFIED
+- If there are unsupported claims, respond: REVISE: [list the unsupported claims]
+
+Respond with ONLY 'VERIFIED' or 'REVISE: ...' — nothing else."""),
+            ("user", "Is the answer above fully supported by the source documents?"),
+        ])
+        critique_chain = critique_prompt | self.llm | StrOutputParser()
+
+        critique = ""
+        revised = False
+        final_answer = initial_answer
+
+        try:
+            critique = critique_chain.invoke({
+                "context": context,
+                "answer": initial_answer,
+            })
+
+            if critique.strip().upper().startswith("REVISE"):
+                logger.info("Self-review: revision needed. Critique: %s", critique[:120])
+                revised = True
+
+                # Step 3: Strict-grounding regeneration
+                strict_prompt = ChatPromptTemplate.from_messages([
+                    ("system", """You are a helpful assistant answering questions based ONLY on the provided documents.
+
+CRITICAL: Do NOT add any information not explicitly present in the context below.
+If the context does not contain enough information, say so explicitly.
+Every claim must be directly traceable to a source document.
+
+Context:
+{context}
+
+Conversation History:
+{chat_history}"""),
+                    ("user", "{question}"),
+                ])
+                strict_chain = strict_prompt | self.llm | StrOutputParser()
+                final_answer = strict_chain.invoke({
+                    "context": context,
+                    "question": query,
+                    "chat_history": format_chat_history(chat_history) if chat_history else "",
+                })
+            else:
+                logger.info("Self-review: VERIFIED — no revision needed.")
+
+        except Exception as exc:
+            logger.warning("Self-review failed (non-fatal, using initial answer): %s", exc)
+
+        return {
+            "answer": final_answer,
+            "sources": sources,
+            "num_sources_used": len(retrieved_docs),
+            "self_reviewed": True,
+            "revised": revised,
+            "critique": critique,
+        }
 
     def generate_query_variants(self, query: str, n: int = 3) -> list[str]:
         """Generate N diverse search queries from the user's question for multi-query retrieval."""

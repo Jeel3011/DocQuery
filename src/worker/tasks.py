@@ -149,3 +149,46 @@ def process_document_task(
         except OSError as e:
             logger.warning("[%s] Could not remove temp file %s: %s", doc_id, tmp_path, e)
 
+
+@celery.task(bind=True)
+def run_evaluation_task(
+    self,
+    questions_path: str = "eval_questions_v2.json",
+    output_path: str = "eval_results.json",
+    user_id: str = None,
+):
+    """
+    Phase 5: Async RAGAS evaluation task.
+
+    Triggered by POST /api/v1/admin/eval/run. Runs the full RAGAS evaluation
+    pipeline in the background so the API stays responsive. Results are written
+    to output_path for GET /admin/eval/results to serve.
+
+    Why async via Celery?
+    - 6 questions x 4 RAGAS metrics = 24 LLM calls at ~1-3s/call = 24-72s.
+    - Running this synchronously would time out the HTTP request.
+    """
+    from src.components.config import Config
+    from src.components.evaluation import RAGASEvaluator
+
+    logger.info("[eval] Starting RAGAS evaluation from %s", questions_path)
+    try:
+        config = Config()
+        if user_id:
+            config.PINECONE_NAMESPACE = user_id
+
+        evaluator = RAGASEvaluator(config)
+        results = evaluator.evaluate(
+            eval_dataset_path=questions_path,
+            output_path=output_path,
+            mode="baseline",
+        )
+        logger.info(
+            "[eval] Complete. avg_score=%.4f, nan_metrics=%s",
+            results.get("average_score", 0),
+            results.get("nan_metrics", []),
+        )
+        return {"status": "complete", "average_score": results.get("average_score")}
+    except Exception as exc:
+        logger.exception("[eval] Evaluation task failed: %s", exc)
+        return {"status": "failed", "error": str(exc)}

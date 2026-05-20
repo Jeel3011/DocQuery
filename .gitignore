@@ -64,3 +64,7 @@ ingest_eval.py
 # ===============================
 plans/
 DEPLOY.md
+
+attention-is-all-you-need.pdf
+test_pipeline.py
+pyproject.toml

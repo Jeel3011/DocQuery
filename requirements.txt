@@ -44,3 +44,9 @@ rank-bm25==0.2.2
 
 # Celery worker
 celery[redis]
+
+# Semantic cache (Redis client for vector similarity cache)
+redis>=5.0.0
+
+# Sentry error tracking + performance monitoring
+sentry-sdk[fastapi]>=2.0.0

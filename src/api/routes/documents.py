@@ -153,6 +153,18 @@ async def upload_document(
     except OSError:
         pass
 
+    # Phase 2: Invalidate semantic cache — uploaded docs change what answers are valid
+    try:
+        import os as _os
+        from src.components.semantic_cache import SemanticCache
+        _cache = SemanticCache(
+            redis_url=_os.getenv("REDIS_URL", "redis://localhost:6379/0"),
+            namespace=sb.user_id,
+        )
+        _cache.invalidate_namespace()
+    except Exception:
+        pass  # cache invalidation failure is non-fatal
+
     # 4. Return 202 Accepted immediately — client should poll GET /documents
     return JSONResponse(
         status_code=202,
@@ -210,8 +222,19 @@ async def delete_document(
         retrieval_mgr.delete_document_by_filename(filename)
 
         sb.delete_file(storage_path)
-        sb.delete_document_chunks(doc_id)      # BX: remove orphaned text chunks from Supabase
+        sb.delete_document_chunks(doc_id)
         sb.delete_document_record(doc_id)
+
+        # Phase 2: Invalidate semantic cache — deleted doc makes old answers stale
+        try:
+            from src.components.semantic_cache import SemanticCache
+            _cache = SemanticCache(
+                redis_url=os.getenv("REDIS_URL", "redis://localhost:6379/0"),
+                namespace=sb.user_id,
+            )
+            _cache.invalidate_namespace()
+        except Exception:
+            pass  # cache invalidation failure is non-fatal
 
         return {"message": f"Document '{filename}' deleted successfully"}
 
