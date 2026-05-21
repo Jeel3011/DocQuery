@@ -424,6 +424,14 @@ with st.sidebar:
     )
     filename_filter = selected_filter if selected_filter != "All Documents" else None
 
+    st.divider()
+    
+    use_agentic = st.toggle(
+        "🤖 Agentic RAG (Deep Research)", 
+        value=False, 
+        help="Enable for complex, multi-part questions. Will break the question into sub-queries and self-critique the answer. Takes longer but is more accurate."
+    )
+
     # Auto-refresh loop if any documents are currently processing
     # NOTE: Streamlit is single-threaded per session; time.sleep is the standard
     # polling pattern. For multi-user production, consider streamlit-autorefresh.
@@ -497,43 +505,55 @@ if prompt := st.chat_input("Ask a question about your documents…"):
     with st.chat_message("assistant"):
         try:
             headers = _auth_headers()
-            headers["Accept"] = "text/event-stream"
-
             answer_placeholder = st.empty()
             full_answer = ""
             sources = []
 
-            # Stream response from FastAPI SSE endpoint
-            with httpx.Client(timeout=120) as client:
-                with client.stream(
-                    "POST",
-                    f"{API_V1}/query/stream",
-                    json=payload,
-                    headers=headers,
-                ) as response:
-                    if response.status_code != 200:
-                        err_body = response.read().decode()
-                        st.error(f"API error {response.status_code}: {err_body}")
-                    else:
-                        for line in response.iter_lines():
-                            if not line or not line.startswith("data: "):
-                                continue
-                            data_str = line[6:]  # strip "data: " prefix
-                            if data_str == "[DONE]":
-                                break
-                            try:
-                                data = json.loads(data_str)
-                                if data.get("type") == "token":
-                                    full_answer += data.get("content", "")
-                                    answer_placeholder.markdown(full_answer + "▌")
-                                elif data.get("type") == "sources":
-                                    sources = data.get("sources", [])
-                                elif data.get("type") == "error":
-                                    st.error(data.get("message", "Unknown error"))
-                            except json.JSONDecodeError:
-                                pass
-
+            if use_agentic:
+                # ── Agentic RAG (Blocking JSON response) ──
+                with st.spinner("Agent is researching..."):
+                    resp = api_post("/query/agent", json=payload)
+                    if resp.status_code == 200:
+                        data = resp.json()
+                        full_answer = data.get("answer", "")
+                        sources = data.get("sources", [])
                         answer_placeholder.markdown(full_answer)
+                    else:
+                        st.error(f"API error {resp.status_code}: {resp.text}")
+            else:
+                # ── Standard Streaming RAG ──
+                headers["Accept"] = "text/event-stream"
+                # Stream response from FastAPI SSE endpoint
+                with httpx.Client(timeout=120) as client:
+                    with client.stream(
+                        "POST",
+                        f"{API_V1}/query/stream",
+                        json=payload,
+                        headers=headers,
+                    ) as response:
+                        if response.status_code != 200:
+                            err_body = response.read().decode()
+                            st.error(f"API error {response.status_code}: {err_body}")
+                        else:
+                            for line in response.iter_lines():
+                                if not line or not line.startswith("data: "):
+                                    continue
+                                data_str = line[6:]  # strip "data: " prefix
+                                if data_str == "[DONE]":
+                                    break
+                                try:
+                                    data = json.loads(data_str)
+                                    if data.get("type") == "token":
+                                        full_answer += data.get("content", "")
+                                        answer_placeholder.markdown(full_answer + "▌")
+                                    elif data.get("type") == "sources":
+                                        sources = data.get("sources", [])
+                                    elif data.get("type") == "error":
+                                        st.error(data.get("message", "Unknown error"))
+                                except json.JSONDecodeError:
+                                    pass
+
+                            answer_placeholder.markdown(full_answer)
 
             if full_answer:
                 # Persist assistant answer directly to Supabase — no second LLM call

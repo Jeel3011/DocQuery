@@ -254,7 +254,20 @@ async def query_stream(
         generator.rewrite_query, body.question, chat_history
     )
 
-    if user_config.USE_MULTI_QUERY:
+    # ── Smart query routing based on complexity ──
+    complexity = generator.classify_query_complexity(search_query)
+    logger.info("Query stream complexity: %s for: %.60s", complexity, search_query)
+
+    if complexity == "simple" and query_embedding:
+        # Fast path: reuse the pre-computed cache embedding — skip the second API call
+        docs = await asyncio.to_thread(
+            retrieval_mgr.retrieve_by_vector,
+            query_embedding,
+            search_query,
+            body.filename_filter,
+            body.page_filter,
+        )
+    elif user_config.USE_MULTI_QUERY:
         variants = await asyncio.to_thread(
             generator.generate_query_variants, search_query, user_config.MULTI_QUERY_COUNT
         )
