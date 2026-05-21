@@ -2,42 +2,49 @@
 # Read the full specification for the "Backend Service" type at:
 #  https://aws.github.io/copilot-cli/docs/manifest/backend-service/
 
-# Your service name will be used in naming your resources like log groups, ECS services, etc.
 name: worker
 type: Backend Service
 
-# Your service does not allow any traffic.
-
-# Configuration for your containers and service.
 image:
-  # Docker build arguments. For additional overrides: https://aws.github.io/copilot-cli/docs/manifest/backend-service/#image-build
   build: Dockerfile
 
-command: ["celery", "-A", "src.worker.celery_app", "worker", "--loglevel=info", "--concurrency=2"]
+# Celery worker: listen on all 3 priority queues + DLQ
+command: ["celery", "-A", "src.worker.celery_app", "worker",
+          "--loglevel=info", "--concurrency=2",
+          "-Q", "documents.fast,documents.normal,documents.heavy"]
 
-cpu: 1024       # Number of CPU units for the task.
-memory: 2048    # Amount of memory in MiB used by the task.
-platform: linux/x86_64     # See https://aws.github.io/copilot-cli/docs/manifest/backend-service/#platform
-count: 1       # Number of tasks that should be running in your service.
-exec: true     # Enable running commands in your container.
+# Increased from 1024/2048 — unstructured YOLOX layout model needs ~1.5GB RAM.
+# 2 vCPU gives meaningful speedup for parallel PDF page processing.
+cpu: 2048       # 2 vCPU per worker task
+memory: 4096    # 4 GB RAM (YOLOX ~500MB + PDF bytes in memory per worker)
+platform: linux/x86_64
+exec: true      # Allow `copilot svc exec` for debugging
+
+# Layer 3: CPU-based autoscaling (simple, works today without custom metrics).
+# ECS scales when CPU exceeds 70% — correlates with active PDF processing.
+# Workers 2-5 use Fargate Spot (70% cheaper); worker 1 is always on-demand
+# so there's always one warm container ready.
+# Celery handles Spot reclamation gracefully via task_acks_late + task_reject_on_worker_lost.
+count:
+  range:
+    min: 1
+    max: 5
+    spot_from: 2    # Workers 2-5 use Fargate Spot; worker 1 is always on-demand
+  cpu_percentage: 70
 
 network:
   connect: true
-# storage:
-  # readonly_fs: true       # Limit to read-only access to mounted root filesystems.
 
-# Optional fields for more advanced use-cases.
-#
 variables:
   REDIS_URL: redis://redis:6379/0
 env_file: .env
 
-#secrets:                      # Pass secrets from AWS Systems Manager (SSM) Parameter Store.
-#  GITHUB_TOKEN: GITHUB_TOKEN  # The key is the name of the environment variable, the value is the name of the SSM parameter.
-
-# You can override any of the values defined above by environment.
+# Environment overrides
 #environments:
-#  test:
-#    count: 2               # Number of tasks to run for the "test" environment.
-#    deployment:            # The deployment strategy for the "test" environment.
-#       rolling: 'recreate' # Stops existing tasks before new ones are started for faster deployments.
+#  prod:
+#    count:
+#      range:
+#        min: 1
+#        max: 10    # Allow more workers in prod if needed
+#        spot_from: 2
+#      cpu_percentage: 70

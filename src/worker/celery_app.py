@@ -63,3 +63,36 @@ celery.conf.update(
 # Auto-discover tasks in src/worker/tasks.py
 celery.autodiscover_tasks(["src.worker"])
 
+
+# \u2500\u2500 Model pre-warming at worker startup (Layer 1) \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+# When this worker container boots, create the persistent PDF pool and submit
+# warm-up tasks to each child process.
+#
+# Models are warmed INSIDE pool child processes, not in the parent Celery
+# process. This is safe for PyTorch: no PyTorch state crosses the fork()
+# boundary, eliminating file descriptor leaks and potential deadlocks.
+#
+# Cost: ~8-10s at container boot (paid once).
+# Saves: ~20s on EVERY subsequent PDF processed by this worker.
+from celery.signals import worker_init
+
+
+@worker_init.connect
+def on_worker_init(sender, **kwargs):
+    import logging
+    logger = logging.getLogger(__name__)
+    try:
+        from src.components.config import Config
+        from src.components.data_ingestion import warm_pdf_pool
+        cfg = Config()
+        logger.info(
+            "Worker startup: pre-warming PDF pool (%d workers)...",
+            cfg.PDF_PARALLEL_WORKERS,
+        )
+        warm_pdf_pool(n_workers=cfg.PDF_PARALLEL_WORKERS, timeout=90)
+        logger.info("Worker startup: PDF pool ready.")
+    except Exception as exc:
+        # Non-fatal \u2014 first PDF upload will still work, just slower
+        logging.getLogger(__name__).warning(
+            "Worker startup warm-up failed (non-fatal, first PDF will be slower): %s", exc
+        )
