@@ -94,13 +94,6 @@ class SemanticCache:
     def _vector_key(self, query_hash: str) -> str:
         return f"cache:{self.namespace}:vec:{query_hash}"
 
-    @staticmethod
-    def _cosine_similarity(a: list, b: list) -> float:
-        va = np.array(a, dtype=np.float32)
-        vb = np.array(b, dtype=np.float32)
-        norm = np.linalg.norm(va) * np.linalg.norm(vb)
-        return float(np.dot(va, vb) / norm) if norm > 0 else 0.0
-
     # ── Public API ─────────────────────────────────────────────────────────────
 
     def get(self, query: str, query_embedding: list) -> Optional[dict]:
