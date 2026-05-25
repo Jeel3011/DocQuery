@@ -66,6 +66,8 @@ _frontend_url = os.getenv("FRONTEND_URL", "")
 _cors_origins = [
     "http://localhost:3000",    # React dev server
     "http://127.0.0.1:3000",
+    "http://localhost:3001",    # React dev server fallback
+    "http://127.0.0.1:3001",
     "http://localhost:8501",    # Streamlit (local dev only)
     "http://127.0.0.1:8501",
 ]

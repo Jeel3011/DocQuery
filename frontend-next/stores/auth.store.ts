@@ -6,7 +6,7 @@
 "use client";
 
 import { create } from "zustand";
-import { persist } from "zustand/middleware";
+import { persist, createJSONStorage } from "zustand/middleware";
 import { supabase } from "@/lib/supabase";
 
 interface User {
@@ -62,7 +62,7 @@ export const useAuthStore = create<AuthStore>()(
         set({ isLoading: false });
 
         // Listen for token refresh + sign-out from any tab
-        supabase.auth.onAuthStateChange((event, session) => {
+        supabase.auth.onAuthStateChange((event: any, session: any) => {
           if (session) {
             set({
               user: {
@@ -82,6 +82,13 @@ export const useAuthStore = create<AuthStore>()(
       // Only persist user object — NOT the token.
       // Token is always restored from the Supabase cookie on initialize().
       partialize: (state) => ({ user: state.user }),
+      storage: createJSONStorage(() => 
+        typeof window !== 'undefined' ? localStorage : {
+          getItem: () => null,
+          setItem: () => {},
+          removeItem: () => {}
+        }
+      ),
     }
   )
 );

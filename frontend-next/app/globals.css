@@ -55,7 +55,6 @@ body {
   -moz-osx-font-smoothing: grayscale;
   min-height: 100dvh;
   margin: 0;
-  overflow: hidden;
 }
 
 /* ── Card / Surface styles ────────────────────────────────────────────────── */

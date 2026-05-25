@@ -5,7 +5,7 @@
 
 import { useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { FileText, ChevronDown, ChevronUp } from "lucide-react";
+import { FileText, ChevronDown } from "lucide-react";
 import { SourceInfo } from "@/lib/api";
 
 interface SourceCardProps {
@@ -75,7 +75,7 @@ export function SourceCard({ source, index }: SourceCardProps) {
             <div className="px-4 pb-3 pt-0">
               <div className="border-t border-white/5 pt-3">
                 <p className="text-xs text-text-secondary leading-relaxed italic">
-                  "{source.content}"
+                  &quot;{source.content}&quot;
                 </p>
               </div>
             </div>

@@ -179,11 +179,8 @@ export async function deleteConversation(
 
 // NOTE: renameConversation requires a PATCH /conversations/:id endpoint
 // in FastAPI (not yet implemented). Tracked in deferred items.
-export async function renameConversation(
-  _token: string,
-  _convId: string,
-  _title: string
-): Promise<void> {
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+export async function renameConversation(token: string, convId: string, title: string): Promise<void> {
   throw new APIError(501, "Rename not yet implemented in FastAPI backend.");
 }
 

@@ -103,12 +103,18 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
 
   async function delConv(id: string) {
     if (!token) return;
+    setDelConvId(null);
+    // Optimistic: remove immediately
+    const prev = convs;
+    setConvs((p) => p.filter((c) => c.id !== id));
+    if (activeId === id) router.push("/app/chat");
     try {
       await deleteConversation(token, id);
-      setConvs((p) => p.filter((c) => c.id !== id));
-      if (activeId === id) router.push("/app/chat");
-    } catch { toast.error("Failed to delete"); }
-    setDelConvId(null);
+    } catch {
+      // Restore on failure
+      setConvs(prev);
+      toast.error("Failed to delete conversation");
+    }
   }
 
   async function upload(file: File) {
@@ -129,11 +135,17 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
 
   async function delDoc(id: string) {
     if (!token) return;
+    setDelDocId(null);
+    // Optimistic: remove immediately
+    const prev = docs;
+    setDocs((p) => p.filter((d) => d.id !== id));
     try {
       await deleteDocument(token, id);
-      setDocs((p) => p.filter((d) => d.id !== id));
-    } catch { toast.error("Failed to delete"); }
-    setDelDocId(null);
+    } catch {
+      // Restore on failure
+      setDocs(prev);
+      toast.error("Failed to delete document");
+    }
   }
 
   // ── Sidebar ────────────────────────────────────────────────────────────────
@@ -149,10 +161,10 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
             </span>
           )}
           <button
-            onClick={() => window.innerWidth < 768 ? setMobileOpen(false) : setCollapsed(!collapsed)}
-            className="ml-auto p-1.5 rounded-lg hover:bg-[var(--bg-hover)] text-[var(--text-muted)] hover:text-[var(--text-primary)] transition-colors"
+            onClick={() => typeof window !== "undefined" && window.innerWidth < 768 ? setMobileOpen(false) : setCollapsed(!collapsed)}
+            className="w-8 h-8 flex items-center justify-center rounded-lg bg-[var(--bg-hover)] text-[var(--text-secondary)] hover:text-[var(--text-primary)] transition-colors"
           >
-            {window.innerWidth < 768 ? <X size={16} /> : collapsed ? <ChevronRight size={16} /> : <ChevronLeft size={16} />}
+            {typeof window !== "undefined" && window.innerWidth < 768 ? <X size={16} /> : collapsed ? <ChevronRight size={16} /> : <ChevronLeft size={16} />}
           </button>
         </div>
 

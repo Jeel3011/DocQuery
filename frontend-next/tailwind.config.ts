@@ -49,10 +49,16 @@ const config: Config = {
           "0%": { backgroundPosition: "-200% 0" },
           "100%": { backgroundPosition: "200% 0" },
         },
+        "aurora-drift": {
+          "0%, 100%": { transform: "translate(0, 0) scale(1)" },
+          "33%": { transform: "translate(30px, -20px) scale(1.05)" },
+          "66%": { transform: "translate(-20px, 30px) scale(0.95)" },
+        },
       },
       animation: {
         "cursor-blink": "cursor-blink 0.7s ease-in-out infinite",
         shimmer: "shimmer 2s linear infinite",
+        "aurora-drift": "aurora-drift 20s ease-in-out infinite",
       },
     },
   },
