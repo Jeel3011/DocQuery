@@ -40,10 +40,23 @@ def _best_device() -> str:
 def _get_model(model_name: str) -> CrossEncoder:
     if model_name not in _model_cache:
         device = _best_device()
-        _model_cache[model_name] = CrossEncoder(model_name, device=device)
-        logger.info(
-            "Reranker model loaded (singleton): %s on device=%s", model_name, device
-        )
+        # Try loading from local HuggingFace cache first (skips ~15s of Hub checks).
+        # Falls back to online download if the model hasn't been cached yet.
+        import os
+        try:
+            os.environ["TRANSFORMERS_OFFLINE"] = "1"
+            _model_cache[model_name] = CrossEncoder(model_name, device=device)
+            logger.info(
+                "Reranker model loaded (local cache): %s on device=%s", model_name, device
+            )
+        except Exception:
+            os.environ.pop("TRANSFORMERS_OFFLINE", None)
+            _model_cache[model_name] = CrossEncoder(model_name, device=device)
+            logger.info(
+                "Reranker model downloaded: %s on device=%s", model_name, device
+            )
+        finally:
+            os.environ.pop("TRANSFORMERS_OFFLINE", None)
     return _model_cache[model_name]
 
 

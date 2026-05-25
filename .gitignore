@@ -48,6 +48,7 @@ chroma/
 tmp_eval_dir/
 tmp_uploads/
 redis_data/
+.pids/
 
 # ===============================
 # Evaluation artifacts (dev-only)

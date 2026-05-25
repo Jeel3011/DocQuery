@@ -43,7 +43,7 @@ class Config:
 
     # Retrieval params
     TOP_K: int = 5
-    SIMILARITY_THRESHOLD: float = 0.45   # Raised from 0.30 — filters noise, reduces reranker load
+    SIMILARITY_THRESHOLD: float = 0.30   # Noise floor — reranker handles precision; 0.45 was too aggressive for text-embedding-3-small
 
     # Hybrid search: BM25 (local) + Dense (Pinecone) merged via Reciprocal Rank Fusion
     # Set to True to activate HybridRetriever in retrieval.py.

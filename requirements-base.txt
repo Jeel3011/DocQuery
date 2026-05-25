@@ -1,0 +1,26 @@
+--extra-index-url https://download.pytorch.org/whl/cpu
+
+# ── Heavy / Stable Dependencies ────────────────────────────────────────────
+# These packages total ~800MB+ and take 8-10 minutes to install from scratch.
+# They live in a separate Docker layer so code-only deploys skip them entirely.
+# Only modify this file when upgrading ML models or document processing libs.
+
+# Cross-encoder reranker (pulls in torch ~250MB, numpy, scipy, transformers)
+sentence-transformers==5.3.0
+
+# Document processing engine (PDF parsing, OCR, layout models ~300MB)
+unstructured[all-docs]==0.18.27
+unstructured-client==0.42.6
+
+# PDF / Office file processing
+pdf2image==1.17.0
+pypdf==6.6.0
+python-pptx==1.0.2
+openpyxl==3.1.5
+
+# RAG evaluation framework (pulls in pandas, datasets, numpy)
+ragas==0.4.3
+datasets>=3.0.0
+
+# Frontend (pulls in many deps including protobuf, altair, etc.)
+streamlit==1.55.0

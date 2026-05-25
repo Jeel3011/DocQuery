@@ -80,6 +80,13 @@ def process_document_task(
         t_parse = time.perf_counter() - t_start
         logger.info("[%s] Parsing complete: %d elements in %.1fs", doc_id, len(elements), t_parse)
 
+        # Fix filename metadata: process_documents uses the temp file name
+        # (e.g. "tmpijcn_7da.pdf") but we need the original user-facing filename
+        # so Pinecone metadata filters work correctly.
+        for el in elements:
+            if hasattr(el, 'metadata') and el.metadata:
+                el.metadata.filename = filename
+
         if not elements:
             sb.update_document_status(doc_id, "failed")
             uploads_total.labels(status="failed").inc()

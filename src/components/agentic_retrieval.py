@@ -41,9 +41,28 @@ class AgenticRetriever:
     def decompose_query(self, query: str) -> List[str]:
         """Break a complex query into atomic sub-questions. Falls back to [query] on error."""
         prompt = ChatPromptTemplate.from_messages([
-            ("system", f"""Break the user's question into {self.MAX_SUB_QUERIES} or fewer
-atomic sub-questions that together fully answer the original. Return ONLY the
-sub-questions, one per line, no numbering. If already atomic, return it unchanged."""),
+            ("system", f"""You are a document search query decomposer. Your job is to break
+the user's question into {self.MAX_SUB_QUERIES} or fewer specific search queries
+that can be used to find relevant information in a document collection.
+
+Rules:
+- Each sub-query MUST be a search query, NOT a clarifying question.
+- Never generate questions like "What topic are you interested in?" — those are useless for search.
+- If the query is vague (e.g. "tell me more about"), generate broad search queries that cover the main topics likely in the documents.
+- If already atomic and specific, return it unchanged.
+- Return ONLY the search queries, one per line, no numbering.
+
+Examples:
+  Input: "tell me more about"
+  Output:
+  main topics and overview
+  key projects and experience
+  summary of document contents
+
+  Input: "explain the architecture and performance"
+  Output:
+  system architecture and design
+  performance benchmarks and results"""),
             ("user", "{query}"),
         ])
         try:
@@ -90,6 +109,15 @@ sub-questions, one per line, no numbering. If already atomic, return it unchange
                         seen[key] = doc
 
         merged = list(seen.values())
+
+        # Fallback: if all sub-queries returned nothing, try the original query directly
+        if not merged:
+            logger.info("Agentic: sub-queries returned 0 docs, falling back to original query")
+            try:
+                merged = self.retrieval_mgr.retrieve(query, filename_filter, page_filter)
+            except Exception as exc:
+                logger.warning("Fallback retrieval failed: %s", exc)
+
         logger.info(
             "Agentic: %d sub-queries (parallel) → %d unique docs",
             len(sub_queries), len(merged)

@@ -52,11 +52,19 @@ async def health_check():
     all_ok = supabase_ok and pinecone_ok
     status = "ok" if all_ok else "degraded"
 
+    from src.components.circuit_breaker import get_openai_breaker, get_pinecone_breaker
+    openai_breaker = get_openai_breaker()
+    pinecone_breaker = get_pinecone_breaker()
+
     return {
         "status": status,
         "version": "0.1.0",
         "dependencies": {
             "supabase": "ok" if supabase_ok else "unreachable",
             "pinecone": "ok" if pinecone_ok else "unreachable",
+        },
+        "circuit_breakers": {
+            "openai": openai_breaker.status,
+            "pinecone": pinecone_breaker.status,
         },
     }

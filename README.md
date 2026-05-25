@@ -7,18 +7,21 @@
 
 A production-grade Retrieval-Augmented Generation (RAG) system that enables intelligent question-answering over your documents using semantic search and AI-powered generation.
 
+> ### 📐 [Full System Architecture →](ARCHITECTURE.md)
+> **Designed for production scale** — distributed Celery workers with priority queues, horizontal auto-scaling on AWS ECS Fargate (Spot), circuit breakers for fault tolerance, two-tier semantic cache, hybrid BM25+Dense retrieval with Reciprocal Rank Fusion, Harvey AI-inspired self-review for hallucination reduction, and RAGAS-validated quality (0.97 overall score). See the [Architecture Document](ARCHITECTURE.md) for the complete system design with diagrams.
+
 ## Recent Updates
 
 The project has been upgraded to a production-grade decoupled architecture:
-- the Streamlit interface now acts entirely as a thin client, while a new FastAPI backend handles all business logic, document processing, and RAG pipelines.
+- the original Streamlit interface has been completely replaced by a modern **Next.js 14 (App Router)** frontend using a "Dark Glassmorphism" design system, Tailwind CSS, and Framer Motion.
 - Supabase PostgreSQL replaces local serialization to securely store user authentication, conversation history, and document chunks.
 - asynchronous tasks are now used for heavy document parsing and embedding, keeping the system responsive during larger file uploads.
 - the system now rewrites conversational follow-up questions to resolve pronouns into standalone queries before searching the vector database, drastically improving context retrieval.
-- to run the system locally, you must now start the FastAPI server and the Streamlit frontend in two separate terminals.
+- to run the system locally, you must now start the FastAPI server, the Celery worker, and the Next.js frontend in separate terminals.
 
 ## 🎯 Features
 
-- **Decoupled Architecture**: FastAPI backend and Streamlit thin-client frontend
+- **Decoupled Architecture**: FastAPI backend and Next.js React frontend (App Router)
 - **Multi-Format Support**: Process PDF, DOCX, PPTX, XLSX, TXT, and Markdown files
 - **Advanced Document Processing**: 
   - Table extraction with HTML structure preservation
@@ -49,14 +52,15 @@ The project has been upgraded to a production-grade decoupled architecture:
 
 ```
 ┌─────────────────┐
-│ Streamlit UI    │
-│ (Thin Client)   │
+│ Next.js UI      │
+│ (App Router)    │
 └────────┬────────┘
          │ REST API (FastAPI) + SSE
          ▼
 ┌─────────────────────────────────────────────┐
 │               FastAPI Layer                 │
 │  - Auth & Rate Limiting (SlowAPI)           │
+│  - Circuit Breakers & Exponential Backoff   │
 │  - Prometheus Metrics Integration           │
 │  - Request Routing                          │
 └────────┬──────────────────────────┬─────────┘
@@ -192,19 +196,23 @@ The project has been upgraded to a production-grade decoupled architecture:
    celery -A src.worker.celery_app worker --loglevel=info
    ```
 
-   **Terminal 3:** Start the Streamlit Frontend
+   **Terminal 3:** Start the Next.js Frontend
    ```bash
-   streamlit run frontend/chat.py
+   cd frontend-next
+   npm run dev
    ```
 
-   The app will be available at `http://localhost:8501`
+   The app will be available at `http://localhost:3000`
 
 ## 📁 Project Structure
 
 ```bash
 DocQuery/
-├── frontend/
-│   └── chat.py                # Streamlit web interface client
+├── frontend-next/             # Next.js 14 Web Interface
+│   ├── app/                   # App Router pages & layouts
+│   ├── components/            # UI components (Tailwind + Framer Motion)
+│   ├── lib/                   # API clients & SSE streaming logic
+│   └── stores/                # Zustand state management
 ├── src/
 │   ├── api/                   # FastAPI backend implementation
 │   │   ├── routes/            # API endpoints (auth, chat, documents, health)
@@ -402,7 +410,10 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 - [Unstructured](https://unstructured.io/) - Document processing library
 - [Pinecone](https://www.pinecone.io/) - Serverless Vector Database
 - [OpenAI](https://openai.com/) - Embeddings and LLM API
-- [Streamlit](https://streamlit.io/) - Web interface framework
+- [Next.js](https://nextjs.org/) - React framework (App Router)
+- [Tailwind CSS](https://tailwindcss.com/) - Utility-first CSS framework
+- [Framer Motion](https://www.framer.com/motion/) - Animation library
+- [Zustand](https://zustand-demo.pmnd.rs/) - State management
 
 ## 👤 Author
 

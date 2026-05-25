@@ -125,7 +125,7 @@ class RetrievalManager:
             if page_filter:
                 filter_dict["page_number"] = page_filter
 
-            docs_and_scores = self.vectorstore.similarity_search_by_vector_with_relevance_scores(
+            docs_and_scores = self.vectorstore.similarity_search_by_vector_with_score(
                 query_embedding,
                 k=fetch_k,
                 filter=filter_dict if filter_dict else None,
