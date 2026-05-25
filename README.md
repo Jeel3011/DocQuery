@@ -10,6 +10,15 @@ A production-grade Retrieval-Augmented Generation (RAG) system that enables inte
 > ### 📐 [Full System Architecture →](ARCHITECTURE.md)
 > **Designed for production scale** — distributed Celery workers with priority queues, horizontal auto-scaling on AWS ECS Fargate (Spot), circuit breakers for fault tolerance, two-tier semantic cache, hybrid BM25+Dense retrieval with Reciprocal Rank Fusion, Harvey AI-inspired self-review for hallucination reduction, and RAGAS-validated quality (0.97 overall score). See the [Architecture Document](ARCHITECTURE.md) for the complete system design with diagrams.
 
+## 🚀 Engineering Highlights & Production Patterns
+
+This project was built to demonstrate enterprise-grade engineering:
+
+- **Serverless Cloud Deployment**: Fully containerized and deployed to **AWS ECS Fargate** using AWS Copilot. Handles automated load balancing (ALB), NAT Gateways, and private subnets.
+- **Cost-Optimized Infrastructure**: Features custom lifecycle scripts (`services_on.sh` / `services_off.sh`) to scale the entire Fargate infrastructure to zero when not in use, reducing baseline AWS costs by 95% while preserving all state.
+- **Distributed Asynchronous Processing**: Uses **Celery** workers and **Redis** to offload heavy PDF parsing and vector embeddings. The API remains lightning-fast and never blocks during massive document uploads.
+- **Fault Tolerance & Resilience**: Implements **Circuit Breakers** and **Exponential Backoff with Jitter** for all external LLM API calls, preventing cascading failures and "thundering herd" problems during OpenAI rate limits.
+
 ## Recent Updates
 
 The project has been upgraded to a production-grade decoupled architecture:
@@ -50,88 +59,77 @@ The project has been upgraded to a production-grade decoupled architecture:
 
 ## 🏗️ Architecture
 
-```
-┌─────────────────┐
-│ Next.js UI      │
-│ (App Router)    │
-└────────┬────────┘
-         │ REST API (FastAPI) + SSE
-         ▼
-┌─────────────────────────────────────────────┐
-│               FastAPI Layer                 │
-│  - Auth & Rate Limiting (SlowAPI)           │
-│  - Circuit Breakers & Exponential Backoff   │
-│  - Prometheus Metrics Integration           │
-│  - Request Routing                          │
-└────────┬──────────────────────────┬─────────┘
-         │                          │ Async Document
-         │ Chat Query               │ Upload
-         ▼                          ▼
-┌─────────────────┐       ┌───────────────────┐
-│ Query Rewriting │       │ Celery Worker     │
-│ & Preprocessing │       │ (Background Task) │
-└────────┬────────┘       └─────────┬─────────┘
-         │                          │
-         │                          ▼
-         │        ┌─────────────────────────────────────────────┐
-         │        │         Document Processing Layer            │
-         │        │  ┌──────────────────────────────────────┐   │
-         │        │  │ Unstructured Library (hi_res)        │   │
-         │        │  │ - PDF: Tables + Images extraction    │   │
-         │        │  │ - DOCX/PPTX/XLSX: Structure parsing  │   │
-         │        │  └──────────────────────────────────────┘   │
-         │        └─────────────────────────────────────────────┘
-         │                          │
-         │                          ▼
-         │        ┌─────────────────────────────────────────────┐
-         │        │            Chunking Layer                    │
-         │        │  - Title-based chunking                      │
-         │        │  - Max 3000 chars/chunk                      │
-         │        │  - 500 char overlap                          │
-         │        │  - Metadata enrichment                       │
-         │        └─────────────────────────────────────────────┘
-         │                          │
-         ▼                          ▼
-┌─────────────────────────────────────────────┐
-│          Embedding Layer                     │
-│  OpenAI text-embedding-3-small               │
-│  - 512 dimensions                            │
-│  - Deduplication via content hashing         │
-└─────────────────────────────────────────────┘
-         │
-         ▼
-┌─────────────────────────────────────────────┐
-│         Storage Layer                        │
-│  - Pinecone Serverless (Vector Store)        │
-│  - Supabase PostgreSQL (Relational Data)     │
-└─────────────────────────────────────────────┘
-         │
-         ▼
-┌─────────────────────────────────────────────┐
-│          Retrieval Layer                     │
-│  - Multi-query similarity search             │
-│  - Cross-Encoder Reranker prioritization     │
-│  - Top-K similarity selection (K=5)          │
-│  - Threshold filtering (0.30)                │
-└─────────────────────────────────────────────┘
-         │
-         ▼
-┌─────────────────────────────────────────────┐
-│         Generation Layer                     │
-│  GPT-4o-mini with RAG prompting              │
-│  - Context injection                         │
-│  - Source attribution                        │
-│  - Streaming responses                       │
-└─────────────────────────────────────────────┘
-         │
-         ▼
-┌─────────────────┐
-│ Answer & Sources│
-│ (SSE Stream)    │
-└─────────────────┘
+```mermaid
+graph TB
+    subgraph Client["Client Layer"]
+        UI["Next.js 14 Frontend"]
+    end
+
+    subgraph API["API Gateway Layer (FastAPI)"]
+        AUTH["Supabase JWT Auth"]
+        RL["Rate Limiter (SlowAPI)"]
+        CB["Circuit Breakers"]
+        ROUTES["API Routes (v1)"]
+    end
+
+    subgraph Processing["Distributed Processing Layer"]
+        REDIS["Redis (Broker + Semantic Cache)"]
+        CELERY["Celery Workers (Auto-scaled)"]
+    end
+
+    subgraph RAG["RAG Pipeline"]
+        INGEST["Document Processor\n(Unstructured hi_res)"]
+        CHUNK["Title-Based Chunker"]
+        
+        subgraph Retrieval["Multi-Strategy Retrieval"]
+            DENSE["Dense Search (Pinecone)"]
+            BM25["BM25 Sparse Search"]
+            RRF["Reciprocal Rank Fusion"]
+            RERANK["Cross-Encoder Reranker"]
+        end
+        
+        subgraph Generation["Generation Layer"]
+            MQ["Multi-Query Expansion"]
+            GEN["GPT-4o-mini Generation"]
+            REVIEW["Self-Review Loop"]
+        end
+    end
+
+    subgraph Storage["Storage Layer"]
+        SUPA["Supabase PostgreSQL"]
+        PINE["Pinecone Serverless"]
+    end
+
+    UI --> AUTH --> RL --> CB --> ROUTES
+    ROUTES -->|"Chat Query"| REDIS
+    ROUTES -->|"Document Upload"| CELERY
+    CELERY --> INGEST --> CHUNK --> PINE
+    REDIS -->|"Cache Miss"| MQ --> DENSE
+    DENSE --> BM25 --> RRF --> RERANK --> GEN --> REVIEW
+    REVIEW --> UI
+    CELERY --> SUPA
 ```
 
-## 🚀 Installation
+## ☁️ Deployment (AWS Copilot)
+
+The entire infrastructure is defined as Infrastructure-as-Code (IaC) via AWS Copilot.
+
+- **Backend API**: Load-balanced Web Service on ECS Fargate
+- **Celery Worker**: Backend Service on ECS Fargate
+
+To interact with the deployment:
+```bash
+# Deploy a new backend version to AWS
+copilot svc deploy --name api
+
+# Scale the infrastructure up for use (Desired Count = 1)
+./scripts/services_on.sh
+
+# Scale to zero to save costs when inactive (Desired Count = 0)
+./scripts/services_off.sh
+```
+
+## 💻 Installation & Running Locally
 
 ### Prerequisites
 
@@ -273,30 +271,28 @@ Title-based chunking creates semantic units:
 }
 ```
 
-### 3. Vector Storage
+### 3. Storage & Semantic Cache
 
-- Embeddings are generated using OpenAI's `text-embedding-3-small`
-- Stored in Pinecone Serverless vector database
-- Deduplication prevents redundant storage via content hashing
-- Multi-user isolation is enforced natively via Pinecone namespaces
+- **Embeddings**: Generated using OpenAI's `text-embedding-3-small` and stored in Pinecone Serverless.
+- **Deduplication**: SHA-256 content hashes prevent redundant storage.
+- **Multi-Tenant Security**: Isolation is enforced natively via Pinecone namespaces and Supabase RLS.
+- **Semantic Cache**: A two-tier Redis semantic cache traps repetitive queries (e.g., "What is attention?" ≈ "Explain the attention mechanism"), resolving them in <50ms without hitting Pinecone or OpenAI.
 
-### 4. Retrieval
+### 4. Hybrid Retrieval Pipeline
 
-- Conversational query rewriting for robust context understanding
-- Query is embedded using same model
-- Multi-query similarity search fetches candidate chunks
-- Cross-Encoder reranker prioritizes the most highly relevant candidates
-- Top-K most similar chunks finalize the context
-- Optional filtering by document name
-- Results include metadata for source attribution
+1. **Query Expansion**: Generates 2 query variants to maximize recall.
+2. **Dense Search**: Pinecone vector similarity search (cosine distance).
+3. **Sparse Search**: BM25 exact keyword matching over the candidate pool.
+4. **Fusion**: Reciprocal Rank Fusion (RRF) merges dense and sparse results.
+5. **Reranking**: A cross-encoder (`ms-marco-MiniLM-L-6-v2`) scores pairs, selecting the absolute best context chunks.
 
-### 5. Answer Generation
+### 5. Generation & Self-Review Loop
 
-- Retrieved chunks form context
-- GPT-4o-mini generates answer with:
-  - Strict grounding in provided context
-  - Source citations in `[Source: filename, Page: X]` format
-  - Fallback response if no relevant info found
+- Retrieved chunks form the context window.
+- GPT-4o-mini generates an initial answer.
+- **Agentic Self-Review**: A second LLM pass verifies if the answer contains hallucinations (claims not supported by the context). If unverified, it forces a regeneration with strict grounding rules.
+- Results stream back via Server-Sent Events (SSE) with inline citations in `[Source: filename, Page: X]` format.
+- **Fail-Safe**: If the OpenAI Circuit Breaker is OPEN due to an outage, the system degrades gracefully by returning a "Retrieval-Only Fallback" (directly surfacing the best document passage without LLM synthesis).
 
 
 ## 🤝 Contributing
