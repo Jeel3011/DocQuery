@@ -1,3 +1,4 @@
+import Link from "next/link";
 import { HeroSection } from "@/components/landing/HeroSection";
 import { FeaturesBento } from "@/components/landing/FeaturesBento";
 import { HowItWorks } from "@/components/landing/HowItWorks";
@@ -15,9 +16,12 @@ export default function RootPage() {
             </div>
             <span className="font-bold text-lg tracking-tight text-[var(--text-primary)]">DocQuery</span>
           </div>
-          <div className="text-xs font-medium text-[var(--text-muted)] border border-[var(--border)] px-3 py-1 rounded-full bg-[var(--bg-surface)]">
-            Phase 2C Complete
-          </div>
+          <Link
+            href="/login"
+            className="text-sm font-medium text-[var(--text-primary)] border border-[var(--border)] px-4 py-2 rounded-full bg-[var(--bg-surface)] hover:bg-[var(--bg-hover)] transition-colors"
+          >
+            Sign In →
+          </Link>
         </header>
 
         <HeroSection />

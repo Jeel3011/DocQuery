@@ -1,27 +1,46 @@
 "use client";
 
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import { motion } from "framer-motion";
 import { FileText, Search } from "lucide-react";
 
 export function HeroChatPreview() {
   const [step, setStep] = useState(0);
+  const cancelledRef = useRef(false);
 
-  // Auto-playing sequence
+  // Auto-playing sequence with proper cleanup
   useEffect(() => {
+    cancelledRef.current = false;
+
+    const wait = (ms: number) =>
+      new Promise<void>((resolve) => {
+        const id = setTimeout(() => {
+          if (!cancelledRef.current) resolve();
+        }, ms);
+        // Store timeout for cleanup
+        return () => clearTimeout(id);
+      });
+
     const sequence = async () => {
-      while (true) {
+      while (!cancelledRef.current) {
         setStep(0);
-        await new Promise((r) => setTimeout(r, 1000));
+        await wait(1000);
+        if (cancelledRef.current) break;
         setStep(1);
-        await new Promise((r) => setTimeout(r, 1500));
+        await wait(1500);
+        if (cancelledRef.current) break;
         setStep(2);
-        await new Promise((r) => setTimeout(r, 1500));
+        await wait(1500);
+        if (cancelledRef.current) break;
         setStep(3);
-        await new Promise((r) => setTimeout(r, 6000));
+        await wait(6000);
       }
     };
     sequence();
+
+    return () => {
+      cancelledRef.current = true;
+    };
   }, []);
 
   return (

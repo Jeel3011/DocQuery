@@ -3,16 +3,16 @@
 // app/app/chat/[id]/page.tsx
 // Active conversation — SSE streaming, inline source citations, message history.
 // Supports both Standard and Agentic (Deep) query modes.
+// Reads ?q= query param from suggestion buttons to auto-submit on mount.
 
 import { useEffect, useRef, useState, useCallback } from "react";
-import { useParams } from "next/navigation";
+import { useParams, useSearchParams } from "next/navigation";
 import { AnimatePresence, motion } from "framer-motion";
 import { ChatMessage } from "@/components/chat/ChatMessage";
 import { ChatInput } from "@/components/chat/ChatInput";
 import { useAuthStore } from "@/stores/auth.store";
 import { getMessages, MessageResponse, SourceInfo } from "@/lib/api";
-import { streamQuery } from "@/lib/streaming";
-import { streamAgenticQuery } from "@/lib/streaming";
+import { streamQuery, streamAgenticQuery } from "@/lib/streaming";
 import { toast } from "sonner";
 import { Search } from "lucide-react";
 
@@ -28,6 +28,7 @@ interface LocalMessage {
 
 export default function ChatPage() {
   const { id: convId } = useParams<{ id: string }>();
+  const searchParams = useSearchParams();
   const { token, user } = useAuthStore();
 
   const [messages, setMessages] = useState<LocalMessage[]>([]);
@@ -39,34 +40,9 @@ export default function ChatPage() {
   const bottomRef = useRef<HTMLDivElement>(null);
   const abortRef = useRef<AbortController | null>(null);
   const streamingIdRef = useRef<string | null>(null);
+  const autoSubmittedRef = useRef(false);
 
   const userInitials = user?.email?.slice(0, 2).toUpperCase() ?? "U";
-
-  // ── Load message history ──────────────────────────────────────────────────
-  useEffect(() => {
-    if (!token || !convId) return;
-    setLoading(true);
-    setMessages([]);
-
-    getMessages(token, convId)
-      .then((msgs) => {
-        setMessages(
-          msgs.map((m: MessageResponse) => ({
-            id: m.id ?? crypto.randomUUID(),
-            role: m.role,
-            content: m.content,
-            sources: m.sources ?? undefined,
-          }))
-        );
-      })
-      .catch(() => toast.error("Failed to load messages"))
-      .finally(() => setLoading(false));
-  }, [convId, token]);
-
-  // ── Auto-scroll to bottom ─────────────────────────────────────────────────
-  useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: "instant" });
-  }, [messages]);
 
   // ── Stream handler ────────────────────────────────────────────────────────
   const handleSubmit = useCallback(
@@ -153,6 +129,43 @@ export default function ChatPage() {
     },
     [token, convId, isStreaming, agenticMode]
   );
+
+  // ── Load message history ──────────────────────────────────────────────────
+  useEffect(() => {
+    if (!token || !convId) return;
+    setLoading(true);
+    setMessages([]);
+    autoSubmittedRef.current = false;
+
+    getMessages(token, convId)
+      .then((msgs) => {
+        setMessages(
+          msgs.map((m: MessageResponse) => ({
+            id: m.id ?? crypto.randomUUID(),
+            role: m.role,
+            content: m.content,
+            sources: m.sources ?? undefined,
+          }))
+        );
+        return msgs;
+      })
+      .then((msgs) => {
+        // Auto-submit if ?q= param exists and conversation is empty (from suggestion buttons)
+        const q = searchParams.get("q");
+        if (q && msgs.length === 0 && !autoSubmittedRef.current) {
+          autoSubmittedRef.current = true;
+          // Small delay to let state settle
+          setTimeout(() => handleSubmit(q), 100);
+        }
+      })
+      .catch(() => toast.error("Failed to load messages"))
+      .finally(() => setLoading(false));
+  }, [convId, token, searchParams, handleSubmit]);
+
+  // ── Auto-scroll to bottom ─────────────────────────────────────────────────
+  useEffect(() => {
+    bottomRef.current?.scrollIntoView({ behavior: "instant" });
+  }, [messages]);
 
   function handleCancel() {
     abortRef.current?.abort();

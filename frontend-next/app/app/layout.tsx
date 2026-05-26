@@ -19,6 +19,7 @@ import {
   AlertCircle,
   ChevronLeft,
   ChevronRight,
+  Pencil,
 } from "lucide-react";
 
 import { useAuthStore } from "@/stores/auth.store";
@@ -257,12 +258,22 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
                           <button onClick={() => setDelConvId(null)} className="text-[9px] text-[var(--text-muted)] px-1.5 py-0.5 rounded border border-[var(--border)]">No</button>
                         </div>
                       ) : (
-                        <button
-                          onClick={(e) => { e.stopPropagation(); setDelConvId(c.id); }}
-                          className="opacity-0 group-hover:opacity-100 p-1 rounded text-[var(--text-muted)] hover:text-[var(--status-failed)] transition-all"
-                        >
-                          <Trash2 size={11} />
-                        </button>
+                        <div className="flex gap-0.5 opacity-0 group-hover:opacity-100 transition-all">
+                          <button
+                            onClick={(e) => { e.stopPropagation(); startRename(c); }}
+                            className="p-1 rounded text-[var(--text-muted)] hover:text-[var(--accent)] transition-all"
+                            title="Rename"
+                          >
+                            <Pencil size={11} />
+                          </button>
+                          <button
+                            onClick={(e) => { e.stopPropagation(); setDelConvId(c.id); }}
+                            className="p-1 rounded text-[var(--text-muted)] hover:text-[var(--status-failed)] transition-all"
+                            title="Delete"
+                          >
+                            <Trash2 size={11} />
+                          </button>
+                        </div>
                       )}
                     </div>
                   </li>
