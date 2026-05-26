@@ -1,9 +1,10 @@
 "use client";
 
 // components/chat/ChatInput.tsx — Monochrome
+// Supports agentic mode toggle
 
 import { useRef, useState, useCallback, KeyboardEvent } from "react";
-import { ArrowUp, Square, Loader2 } from "lucide-react";
+import { ArrowUp, Square, Loader2, Zap } from "lucide-react";
 
 interface ChatInputProps {
   onSubmit: (message: string) => void;
@@ -11,9 +12,19 @@ interface ChatInputProps {
   isStreaming: boolean;
   placeholder?: string;
   disabled?: boolean;
+  agenticMode?: boolean;
+  onToggleAgentic?: () => void;
 }
 
-export function ChatInput({ onSubmit, onCancel, isStreaming, placeholder = "Ask a question about your documents…", disabled = false }: ChatInputProps) {
+export function ChatInput({
+  onSubmit,
+  onCancel,
+  isStreaming,
+  placeholder = "Ask a question about your documents…",
+  disabled = false,
+  agenticMode = false,
+  onToggleAgentic,
+}: ChatInputProps) {
   const [value, setValue] = useState("");
   const ref = useRef<HTMLTextAreaElement>(null);
 
@@ -44,7 +55,7 @@ export function ChatInput({ onSubmit, onCancel, isStreaming, placeholder = "Ask 
         {isStreaming && (
           <div className="flex items-center gap-2 mb-2 text-xs text-[var(--text-muted)]">
             <Loader2 size={12} className="animate-spin" />
-            <span>Generating response…</span>
+            <span>{agenticMode ? "Agentic analysis in progress…" : "Generating response…"}</span>
           </div>
         )}
 
@@ -55,13 +66,28 @@ export function ChatInput({ onSubmit, onCancel, isStreaming, placeholder = "Ask 
             value={value}
             onChange={(e) => { setValue(e.target.value); adjustHeight(); }}
             onKeyDown={onKey}
-            placeholder={placeholder}
+            placeholder={agenticMode ? "Ask a complex question (agentic deep analysis)…" : placeholder}
             disabled={disabled}
             rows={1}
             className="flex-1 bg-transparent text-sm text-[var(--text-primary)] leading-6
               placeholder:text-[var(--text-muted)] resize-none outline-none min-h-[24px]"
             style={{ maxHeight: 120 }}
           />
+
+          {/* Agentic mode toggle */}
+          {onToggleAgentic && (
+            <button
+              onClick={onToggleAgentic}
+              title={agenticMode ? "Agentic mode ON — deeper analysis with query decomposition" : "Standard mode — click for agentic deep analysis"}
+              className={`w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0 transition-all duration-150
+                ${agenticMode
+                  ? "bg-[var(--accent)] text-white shadow-sm"
+                  : "bg-[var(--bg-hover)] text-[var(--text-muted)] hover:text-[var(--text-secondary)]"
+                }`}
+            >
+              <Zap size={14} className={agenticMode ? "fill-current" : ""} />
+            </button>
+          )}
 
           {isStreaming ? (
             <button onClick={onCancel}
@@ -80,7 +106,7 @@ export function ChatInput({ onSubmit, onCancel, isStreaming, placeholder = "Ask 
         </div>
 
         <p className="text-[10px] text-[var(--text-muted)] mt-2 text-center">
-          ⌘↵ to send · DocQuery can make mistakes — verify sources
+          ⌘↵ to send{agenticMode ? " · ⚡ Agentic mode" : ""} · DocQuery can make mistakes — verify sources
         </p>
       </div>
     </div>

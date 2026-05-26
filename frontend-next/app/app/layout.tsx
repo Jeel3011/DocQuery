@@ -27,6 +27,7 @@ import {
   listDocuments,
   createConversation,
   deleteConversation,
+  renameConversation,
   uploadDocument,
   deleteDocument,
   ConversationResponse,
@@ -64,8 +65,11 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
   const [uploading, setUploading] = useState(false);
   const [delDocId, setDelDocId] = useState<string | null>(null);
   const [delConvId, setDelConvId] = useState<string | null>(null);
+  const [renamingId, setRenamingId] = useState<string | null>(null);
+  const [renameValue, setRenameValue] = useState("");
   const pollRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
+  const renameRef = useRef<HTMLInputElement>(null);
 
   const activeId = (params?.id as string) ?? null;
 
@@ -99,6 +103,26 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
       router.push(`/app/chat/${c.id}`);
       setMobileOpen(false);
     } catch { toast.error("Failed to create conversation"); }
+  }
+
+  function startRename(c: ConversationResponse) {
+    setRenamingId(c.id);
+    setRenameValue(c.title || "");
+    setTimeout(() => renameRef.current?.select(), 50);
+  }
+
+  async function commitRename(id: string) {
+    const title = renameValue.trim();
+    setRenamingId(null);
+    if (!title || !token) return;
+    const prev = convs;
+    setConvs((p) => p.map((c) => c.id === id ? { ...c, title } : c));
+    try {
+      await renameConversation(token, id, title);
+    } catch {
+      setConvs(prev);
+      toast.error("Failed to rename");
+    }
   }
 
   async function delConv(id: string) {
@@ -203,7 +227,28 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
                     >
                       <MessageSquare size={13} className={activeId === c.id ? "text-[var(--accent)]" : "text-[var(--text-muted)]"} />
                       <div className="flex-1 min-w-0">
-                        <p className="text-xs text-[var(--text-primary)] truncate">{c.title || "Untitled"}</p>
+                        {renamingId === c.id ? (
+                          <input
+                            ref={renameRef}
+                            value={renameValue}
+                            onChange={(e) => setRenameValue(e.target.value)}
+                            onBlur={() => commitRename(c.id)}
+                            onKeyDown={(e) => {
+                              if (e.key === "Enter") commitRename(c.id);
+                              if (e.key === "Escape") setRenamingId(null);
+                            }}
+                            onClick={(e) => e.stopPropagation()}
+                            className="text-xs text-[var(--text-primary)] bg-[var(--bg-surface)] border border-[var(--accent)] rounded px-1 py-0.5 w-full outline-none"
+                          />
+                        ) : (
+                          <p
+                            className="text-xs text-[var(--text-primary)] truncate"
+                            onDoubleClick={(e) => { e.stopPropagation(); startRename(c); }}
+                            title="Double-click to rename"
+                          >
+                            {c.title || "Untitled"}
+                          </p>
+                        )}
                         <p className="text-[10px] text-[var(--text-muted)]">{timeAgo(c.updated_at)}</p>
                       </div>
                       {delConvId === c.id ? (

@@ -425,6 +425,82 @@ async def query_agent(
     )
 
 
+@router.post("/query/agent/stream")
+@limiter.limit("10/minute")
+async def agent_query_stream(
+    request: Request,
+    body: QueryRequest,
+    sb=Depends(get_current_user),
+    user_config: Config = Depends(get_user_config),
+    retrieval_mgr=Depends(get_retrieval_mgr),
+    generator=Depends(get_generator),
+):
+    """
+    Agentic query with SSE streaming (Phase 6).
+
+    Same decompose → parallel retrieve → self-review pipeline as /query/agent,
+    but streams the answer token-by-token via SSE for better UX.
+    Emits: sub_queries → sources → token* → done
+    """
+    from src.components.agentic_retrieval import AgenticRetriever
+
+    chat_history = []
+    if body.conversation_id:
+        existing_msgs = sb.get_messages(body.conversation_id)
+        chat_history = [
+            {"role": m["role"], "content": m["content"]}
+            for m in existing_msgs
+        ]
+
+    # Agentic retrieval: decompose → parallel retrieve → deduplicate
+    agentic = AgenticRetriever(config=user_config, retrieval_mgr=retrieval_mgr)
+    retrieval_result = await asyncio.to_thread(
+        agentic.retrieve_and_synthesize,
+        body.question,
+        body.filename_filter,
+        body.page_filter,
+    )
+    docs = retrieval_result["docs"]
+    sub_queries = retrieval_result.get("sub_queries", [])
+
+    queries_total.labels(endpoint="query_agent_stream", has_results=str(len(docs) > 0)).inc()
+    retrieval_docs.observe(len(docs))
+
+    if not docs:
+        async def no_results():
+            yield f"data: {json.dumps({'type': 'sub_queries', 'queries': sub_queries})}\n\n"
+            yield f"data: {json.dumps({'type': 'token', 'content': 'I could not find relevant information in your documents for this question.'})}\n\n"
+            yield f"data: {json.dumps({'type': 'sources', 'sources': []})}\n\n"
+            yield "data: [DONE]\n\n"
+        return StreamingResponse(no_results(), media_type="text/event-stream")
+
+    async def agentic_stream():
+        # 1. Emit sub-queries so the UI can show decomposition
+        yield f"data: {json.dumps({'type': 'sub_queries', 'queries': sub_queries})}\n\n"
+
+        # 2. Emit sources
+        source_infos = []
+        for i, doc in enumerate(docs):
+            source_infos.append({
+                "source_id": i + 1,
+                "filename": doc.metadata.get("filename"),
+                "page": doc.metadata.get("page_number"),
+                "chunk_type": doc.metadata.get("chunk_type"),
+                "content": doc.page_content[:300] if doc.page_content else None,
+            })
+        yield f"data: {json.dumps({'type': 'sources', 'sources': source_infos})}\n\n"
+
+        # 3. Stream answer via generate_stream (same as /query/stream)
+        for chunk in generator.generate_stream(
+            query=body.question,
+            retrieved_docs=docs,
+            chat_history=chat_history,
+        ):
+            yield chunk
+
+    return StreamingResponse(agentic_stream(), media_type="text/event-stream")
+
+
 # -----------------------------------------
 # CONVERSATIONS
 # -----------------------------------------
@@ -475,6 +551,32 @@ async def delete_conversation(
         return {"message": "Conversation deleted successfully"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to delete conversation: {str(e)}")
+
+
+@router.patch("/conversations/{conversation_id}")
+async def rename_conversation(
+    conversation_id: str,
+    body: dict,
+    sb=Depends(get_current_user),
+):
+    """Rename a conversation."""
+    title = body.get("title", "").strip()
+    if not title:
+        raise HTTPException(status_code=400, detail="Title cannot be empty.")
+
+    result = (
+        sb.client
+        .table("conversations")
+        .update({"title": title})
+        .eq("id", conversation_id)
+        .eq("user_id", sb.user_id)
+        .execute()
+    )
+
+    if not result.data:
+        raise HTTPException(status_code=404, detail="Conversation not found.")
+
+    return {"id": conversation_id, "title": title}
 
 
 # -----------------------------------------

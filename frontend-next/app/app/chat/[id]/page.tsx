@@ -2,17 +2,19 @@
 
 // app/app/chat/[id]/page.tsx
 // Active conversation — SSE streaming, inline source citations, message history.
-// Per UX_MASTERPLAN Section 7: sources are inline below the message, not a side panel.
+// Supports both Standard and Agentic (Deep) query modes.
 
 import { useEffect, useRef, useState, useCallback } from "react";
 import { useParams } from "next/navigation";
-import { AnimatePresence } from "framer-motion";
+import { AnimatePresence, motion } from "framer-motion";
 import { ChatMessage } from "@/components/chat/ChatMessage";
 import { ChatInput } from "@/components/chat/ChatInput";
 import { useAuthStore } from "@/stores/auth.store";
 import { getMessages, MessageResponse, SourceInfo } from "@/lib/api";
 import { streamQuery } from "@/lib/streaming";
+import { streamAgenticQuery } from "@/lib/streaming";
 import { toast } from "sonner";
+import { Search } from "lucide-react";
 
 interface LocalMessage {
   id: string;
@@ -21,6 +23,7 @@ interface LocalMessage {
   sources?: SourceInfo[];
   isStreaming?: boolean;
   isFallback?: boolean;
+  subQueries?: string[];
 }
 
 export default function ChatPage() {
@@ -30,6 +33,7 @@ export default function ChatPage() {
   const [messages, setMessages] = useState<LocalMessage[]>([]);
   const [isStreaming, setIsStreaming] = useState(false);
   const [loading, setLoading] = useState(true);
+  const [agenticMode, setAgenticMode] = useState(false);
 
   const scrollRef = useRef<HTMLDivElement>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
@@ -61,7 +65,6 @@ export default function ChatPage() {
 
   // ── Auto-scroll to bottom ─────────────────────────────────────────────────
   useEffect(() => {
-    // Instant scroll, not smooth — per UX_MASTERPLAN Section 11
     bottomRef.current?.scrollIntoView({ behavior: "instant" });
   }, [messages]);
 
@@ -86,49 +89,69 @@ export default function ChatPage() {
 
       let isFallback = false;
 
-      await streamQuery(
-        token,
-        { question, conversation_id: convId },
-        {
-          onSources: (sources) => {
-            setMessages((prev) =>
-              prev.map((m) =>
-                m.id === assistantMsgId ? { ...m, sources } : m
-              )
-            );
-          },
-          onToken: (tok) => {
-            setMessages((prev) =>
-              prev.map((m) =>
-                m.id === assistantMsgId
-                  ? { ...m, content: m.content + tok }
-                  : m
-              )
-            );
-          },
-          onFallback: () => {
-            isFallback = true;
-          },
-          onDone: () => {
-            setMessages((prev) =>
-              prev.map((m) =>
-                m.id === assistantMsgId
-                  ? { ...m, isStreaming: false, isFallback }
-                  : m
-              )
-            );
-            setIsStreaming(false);
-          },
-          onError: (msg) => {
-            toast.error(msg);
-            setMessages((prev) => prev.filter((m) => m.id !== assistantMsgId));
-            setIsStreaming(false);
-          },
+      const callbacks = {
+        onSources: (sources: SourceInfo[]) => {
+          setMessages((prev) =>
+            prev.map((m) =>
+              m.id === assistantMsgId ? { ...m, sources } : m
+            )
+          );
         },
-        abortRef.current.signal
-      );
+        onToken: (tok: string) => {
+          setMessages((prev) =>
+            prev.map((m) =>
+              m.id === assistantMsgId
+                ? { ...m, content: m.content + tok }
+                : m
+            )
+          );
+        },
+        onFallback: () => {
+          isFallback = true;
+        },
+        onDone: () => {
+          setMessages((prev) =>
+            prev.map((m) =>
+              m.id === assistantMsgId
+                ? { ...m, isStreaming: false, isFallback }
+                : m
+            )
+          );
+          setIsStreaming(false);
+        },
+        onError: (msg: string) => {
+          toast.error(msg);
+          setMessages((prev) => prev.filter((m) => m.id !== assistantMsgId));
+          setIsStreaming(false);
+        },
+      };
+
+      if (agenticMode) {
+        await streamAgenticQuery(
+          token,
+          { question, conversation_id: convId },
+          {
+            ...callbacks,
+            onSubQueries: (queries) => {
+              setMessages((prev) =>
+                prev.map((m) =>
+                  m.id === assistantMsgId ? { ...m, subQueries: queries } : m
+                )
+              );
+            },
+          },
+          abortRef.current.signal
+        );
+      } else {
+        await streamQuery(
+          token,
+          { question, conversation_id: convId },
+          callbacks,
+          abortRef.current.signal
+        );
+      }
     },
-    [token, convId, isStreaming]
+    [token, convId, isStreaming, agenticMode]
   );
 
   function handleCancel() {
@@ -148,7 +171,6 @@ export default function ChatPage() {
       {/* Messages — scrollable */}
       <div ref={scrollRef} className="flex-1 overflow-y-auto scrollbar-thin">
         {loading ? (
-          // Skeleton loading per UX_MASTERPLAN Section 11
           <div className="max-w-3xl mx-auto px-4 md:px-8 py-6 space-y-4">
             {[1, 2, 3].map((i) => (
               <div key={i} className="flex gap-3">
@@ -167,15 +189,38 @@ export default function ChatPage() {
           <div className="py-4">
             <AnimatePresence initial={false}>
               {messages.map((msg) => (
-                <ChatMessage
-                  key={msg.id}
-                  role={msg.role}
-                  content={msg.content}
-                  sources={msg.sources}
-                  isStreaming={msg.isStreaming}
-                  isFallback={msg.isFallback}
-                  userInitials={userInitials}
-                />
+                <div key={msg.id}>
+                  {/* Sub-queries indicator for agentic mode */}
+                  {msg.subQueries && msg.subQueries.length > 0 && msg.role === "assistant" && (
+                    <motion.div
+                      initial={{ opacity: 0, height: 0 }}
+                      animate={{ opacity: 1, height: "auto" }}
+                      className="max-w-3xl mx-auto px-4 md:px-8 mb-2"
+                    >
+                      <div className="card-dotted p-3 text-xs">
+                        <div className="flex items-center gap-2 text-[var(--text-muted)] font-medium mb-2">
+                          <Search size={12} />
+                          Decomposed into {msg.subQueries.length} sub-queries
+                        </div>
+                        <ul className="space-y-1 pl-5">
+                          {msg.subQueries.map((sq, i) => (
+                            <li key={i} className="text-[var(--text-secondary)] list-disc">
+                              {sq}
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
+                    </motion.div>
+                  )}
+                  <ChatMessage
+                    role={msg.role}
+                    content={msg.content}
+                    sources={msg.sources}
+                    isStreaming={msg.isStreaming}
+                    isFallback={msg.isFallback}
+                    userInitials={userInitials}
+                  />
+                </div>
               ))}
             </AnimatePresence>
             <div ref={bottomRef} className="h-4" />
@@ -188,6 +233,8 @@ export default function ChatPage() {
         onSubmit={handleSubmit}
         onCancel={handleCancel}
         isStreaming={isStreaming}
+        agenticMode={agenticMode}
+        onToggleAgentic={() => setAgenticMode((v) => !v)}
       />
     </div>
   );

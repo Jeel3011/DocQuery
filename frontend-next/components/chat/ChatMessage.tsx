@@ -2,9 +2,9 @@
 
 // components/chat/ChatMessage.tsx — Monochrome
 // Both user and assistant left-aligned. Black user avatar, "D" assistant avatar.
-// Sources collapsed by default. Clean card borders.
+// Sources collapsed by default. Citation inline highlighting (Perplexity-style).
 
-import { memo, useState } from "react";
+import { memo, useState, useCallback, useMemo } from "react";
 import { motion } from "framer-motion";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -20,12 +20,90 @@ interface ChatMessageProps {
   userInitials?: string;
 }
 
+/**
+ * Parse `[Source: filename, Page: X]` patterns in the answer and replace them
+ * with clickable superscript citation badges [1], [2], etc.
+ * Returns React elements with data-source-id for cross-highlighting.
+ */
+function parseCitations(
+  text: string,
+  sources: SourceInfo[],
+  hoveredSource: number | null,
+  setHoveredSource: (id: number | null) => void
+): React.ReactNode[] {
+  // Match [Source: filename, Page: X] or [Source: filename]
+  const pattern = /\[Source:\s*([^,\]]+)(?:,\s*Page:\s*(\d+))?\]/gi;
+
+  const parts: React.ReactNode[] = [];
+  let lastIndex = 0;
+  let match: RegExpExecArray | null;
+
+  // Build a source lookup: filename → source_id
+  const sourceMap = new Map<string, number>();
+  sources.forEach((s, i) => {
+    const key = s.filename?.toLowerCase() ?? "";
+    if (!sourceMap.has(key)) sourceMap.set(key, s.source_id ?? i + 1);
+  });
+
+  while ((match = pattern.exec(text)) !== null) {
+    // Push text before the match
+    if (match.index > lastIndex) {
+      parts.push(text.slice(lastIndex, match.index));
+    }
+
+    const filename = match[1].trim();
+    const sourceId = sourceMap.get(filename.toLowerCase()) ?? (parts.length + 1);
+    const isHighlighted = hoveredSource === sourceId;
+
+    parts.push(
+      <span
+        key={`cite-${match.index}`}
+        data-source-id={sourceId}
+        className={`inline-flex items-center justify-center w-4 h-4 text-[9px] font-bold rounded
+          border cursor-pointer align-super -translate-y-0.5 mx-0.5 transition-all duration-150
+          ${isHighlighted
+            ? "bg-[var(--accent)] text-white border-[var(--accent)] scale-110"
+            : "border-dashed border-[var(--border-dotted)] text-[var(--text-secondary)] hover:bg-[var(--bg-active)]"
+          }`}
+        onMouseEnter={() => setHoveredSource(sourceId)}
+        onMouseLeave={() => setHoveredSource(null)}
+        title={`${filename}${match[2] ? `, Page ${match[2]}` : ""}`}
+      >
+        {sourceId}
+      </span>
+    );
+
+    lastIndex = match.index + match[0].length;
+  }
+
+  // Push remaining text
+  if (lastIndex < text.length) {
+    parts.push(text.slice(lastIndex));
+  }
+
+  return parts.length > 0 ? parts : [text];
+}
+
 export const ChatMessage = memo(function ChatMessage({
   role, content, sources, isStreaming, isFallback, userInitials = "U",
 }: ChatMessageProps) {
   const isUser = role === "user";
   const [sourcesOpen, setSourcesOpen] = useState(false);
+  const [hoveredSource, setHoveredSource] = useState<number | null>(null);
   const hasSources = !isUser && sources && sources.length > 0 && !isStreaming;
+
+  // Check if content has [Source: ...] patterns for inline citation rendering
+  const hasCitations = useMemo(() => /\[Source:/i.test(content), [content]);
+
+  // Build processed content with citations replaced
+  const processedContent = useMemo(() => {
+    if (!hasCitations || !sources || isStreaming) return null;
+    return parseCitations(content, sources, hoveredSource, setHoveredSource);
+  }, [content, sources, hasCitations, hoveredSource, isStreaming]);
+
+  const handleSourceHover = useCallback((sourceId: number | null) => {
+    setHoveredSource(sourceId);
+  }, []);
 
   return (
     <motion.div
@@ -62,6 +140,16 @@ export const ChatMessage = memo(function ChatMessage({
 
             {isUser ? (
               <p className="text-sm text-[var(--text-primary)] leading-relaxed whitespace-pre-wrap">{content}</p>
+            ) : processedContent ? (
+              /* Render with inline citation badges */
+              <div className={`text-sm text-[var(--text-primary)] leading-relaxed
+                prose prose-sm max-w-none
+                prose-p:my-1.5 prose-headings:text-[var(--text-primary)] prose-headings:font-semibold
+                prose-code:text-[var(--text-primary)] prose-code:bg-[var(--bg-hover)] prose-code:px-1.5 prose-code:py-0.5 prose-code:rounded prose-code:text-xs prose-code:font-mono
+                prose-pre:bg-[var(--bg-hover)] prose-pre:border prose-pre:border-[var(--border)] prose-pre:rounded-xl
+                prose-strong:font-semibold prose-a:text-[var(--accent)] prose-a:underline`}>
+                <p className="whitespace-pre-wrap">{processedContent}</p>
+              </div>
             ) : (
               <div className={`text-sm text-[var(--text-primary)] leading-relaxed
                 prose prose-sm max-w-none
@@ -75,7 +163,7 @@ export const ChatMessage = memo(function ChatMessage({
             )}
           </div>
 
-          {/* Sources — collapsed by default */}
+          {/* Sources — collapsed by default, with cross-highlighting */}
           {hasSources && (
             <div className="mt-2">
               <button onClick={() => setSourcesOpen(!sourcesOpen)}
@@ -87,22 +175,36 @@ export const ChatMessage = memo(function ChatMessage({
               {sourcesOpen && (
                 <motion.div initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: "auto" }}
                   className="mt-2 space-y-1.5 overflow-hidden">
-                  {sources!.map((src, i) => (
-                    <div key={i} className="card px-3 py-2 text-xs">
-                      <div className="flex items-center gap-2">
-                        <span className="w-4 h-4 rounded border border-dashed border-[var(--border-dotted)] text-[9px] font-bold flex items-center justify-center flex-shrink-0 text-[var(--text-secondary)]">
-                          {src.source_id ?? i + 1}
-                        </span>
-                        <span className="text-[var(--text-primary)] truncate">{src.filename ?? "Unknown"}</span>
-                        {src.page && <span className="text-[var(--text-muted)]">p.{src.page}</span>}
+                  {sources!.map((src, i) => {
+                    const sourceId = src.source_id ?? i + 1;
+                    const isHighlighted = hoveredSource === sourceId;
+                    return (
+                      <div
+                        key={i}
+                        className={`card px-3 py-2 text-xs transition-all duration-150
+                          ${isHighlighted ? "border-[var(--accent)] shadow-[0_0_0_3px_rgba(10,10,10,0.06)] bg-[var(--bg-hover)]" : ""}`}
+                        onMouseEnter={() => handleSourceHover(sourceId)}
+                        onMouseLeave={() => handleSourceHover(null)}
+                      >
+                        <div className="flex items-center gap-2">
+                          <span className={`w-4 h-4 rounded text-[9px] font-bold flex items-center justify-center flex-shrink-0 transition-all duration-150
+                            ${isHighlighted
+                              ? "bg-[var(--accent)] text-white border border-[var(--accent)]"
+                              : "border border-dashed border-[var(--border-dotted)] text-[var(--text-secondary)]"
+                            }`}>
+                            {sourceId}
+                          </span>
+                          <span className="text-[var(--text-primary)] truncate">{src.filename ?? "Unknown"}</span>
+                          {src.page && <span className="text-[var(--text-muted)]">p.{src.page}</span>}
+                        </div>
+                        {src.content && (
+                          <p className="text-[11px] text-[var(--text-secondary)] mt-1.5 leading-relaxed italic line-clamp-3">
+                            &quot;{src.content}&quot;
+                          </p>
+                        )}
                       </div>
-                      {src.content && (
-                        <p className="text-[11px] text-[var(--text-secondary)] mt-1.5 leading-relaxed italic line-clamp-3">
-                          &quot;{src.content}&quot;
-                        </p>
-                      )}
-                    </div>
-                  ))}
+                    );
+                  })}
                 </motion.div>
               )}
             </div>
