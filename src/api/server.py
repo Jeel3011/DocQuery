@@ -14,6 +14,11 @@ from fastapi.middleware.cors import CORSMiddleware
 from src.api.dependencies import init_config, limiter
 from src.api.routes import health, auth, documents, chat
 from src.api.routes import admin as admin_routes
+from src.api.routes import collections as collections_routes
+from src.api.routes import export as export_routes
+from src.api.routes import analytics as analytics_routes
+from src.api.routes import document_comparison as comparison_routes
+from src.api.routes import audit as audit_routes
 from src.api.middleware import CorrelationIDMiddleware, SecurityHeadersMiddleware
 
 from slowapi.errors import RateLimitExceeded
@@ -96,6 +101,11 @@ app.include_router(auth.router,      prefix=API_PREFIX, tags=["Auth"])
 app.include_router(documents.router, prefix=API_PREFIX, tags=["Documents"])
 app.include_router(chat.router,      prefix=API_PREFIX, tags=["Chat"])
 app.include_router(admin_routes.router, prefix=API_PREFIX, tags=["Admin"])   # Phase 5
+app.include_router(collections_routes.router, prefix=API_PREFIX, tags=["Collections"])  # Phase 1
+app.include_router(export_routes.router, prefix=API_PREFIX, tags=["Export"])  # Phase 3
+app.include_router(analytics_routes.router, prefix=API_PREFIX, tags=["Analytics"])  # Phase 4
+app.include_router(comparison_routes.router, prefix=API_PREFIX, tags=["Comparison"])  # Phase 5
+app.include_router(audit_routes.router, prefix=API_PREFIX, tags=["Audit"])  # Phase 6
 
 
 # -- Prometheus Metrics --

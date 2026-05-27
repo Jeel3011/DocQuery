@@ -202,6 +202,188 @@ export async function getMessages(
   }
 }
 
+// ─── Collections ──────────────────────────────────────────────────────────────
+
+export interface CollectionResponse {
+  id: string;
+  name: string;
+  description: string | null;
+  document_count: number;
+  created_at: string | null;
+  updated_at: string | null;
+}
+
+export async function listCollections(
+  token: string
+): Promise<CollectionResponse[]> {
+  try {
+    const res = await makeClient(token).get<{
+      collections: CollectionResponse[];
+      total: number;
+    }>("/collections");
+    return res.data.collections;
+  } catch (err) {
+    handleAxiosError(err);
+  }
+}
+
+export async function createCollection(
+  token: string,
+  name: string,
+  description?: string
+): Promise<CollectionResponse> {
+  try {
+    const res = await makeClient(token).post<CollectionResponse>(
+      "/collections",
+      { name, description }
+    );
+    return res.data;
+  } catch (err) {
+    handleAxiosError(err);
+  }
+}
+
+export async function deleteCollection(
+  token: string,
+  collectionId: string
+): Promise<void> {
+  try {
+    await makeClient(token).delete(`/collections/${collectionId}`);
+  } catch (err) {
+    handleAxiosError(err);
+  }
+}
+
+export async function renameCollection(
+  token: string,
+  collectionId: string,
+  name: string
+): Promise<void> {
+  try {
+    await makeClient(token).patch(`/collections/${collectionId}`, { name });
+  } catch (err) {
+    handleAxiosError(err);
+  }
+}
+
+export async function addDocToCollection(
+  token: string,
+  collectionId: string,
+  documentId: string
+): Promise<void> {
+  try {
+    await makeClient(token).post(`/collections/${collectionId}/documents`, {
+      document_id: documentId,
+    });
+  } catch (err) {
+    handleAxiosError(err);
+  }
+}
+
+export async function removeDocFromCollection(
+  token: string,
+  collectionId: string,
+  documentId: string
+): Promise<void> {
+  try {
+    await makeClient(token).delete(
+      `/collections/${collectionId}/documents/${documentId}`
+    );
+  } catch (err) {
+    handleAxiosError(err);
+  }
+}
+
+export async function getCollectionDocuments(
+  token: string,
+  collectionId: string
+): Promise<DocumentResponse[]> {
+  try {
+    const res = await makeClient(token).get<{
+      documents: DocumentResponse[];
+      total: number;
+    }>(`/collections/${collectionId}/documents`);
+    return res.data.documents;
+  } catch (err) {
+    handleAxiosError(err);
+  }
+}
+
+// ─── Export ───────────────────────────────────────────────────────────────────
+
+export async function exportConversation(
+  token: string,
+  conversationId: string,
+  format: "md" | "pdf" = "md"
+): Promise<Blob> {
+  try {
+    const res = await makeClient(token).get(
+      `/conversations/${conversationId}/export`,
+      {
+        params: { format },
+        responseType: "blob",
+        timeout: 60_000,
+      }
+    );
+    return res.data;
+  } catch (err) {
+    handleAxiosError(err);
+  }
+}
+
+// ─── Analytics ────────────────────────────────────────────────────────────────
+
+export interface DailyQueryCount {
+  date: string;
+  count: number;
+}
+
+export interface AnalyticsSummary {
+  total_queries: number;
+  avg_latency_ms: number | null;
+  cache_hit_rate: number | null;
+  agentic_query_rate: number | null;
+  web_search_rate: number | null;
+  queries_today: number;
+  queries_this_week: number;
+  top_documents: { query: string; count: number }[];
+  daily_queries: DailyQueryCount[];
+}
+
+export interface UsageSummary {
+  documents_count: number;
+  total_chunks: number;
+  collections_count: number;
+  conversations_count: number;
+  total_messages: number;
+}
+
+export async function getAnalyticsSummary(
+  token: string,
+  days = 30
+): Promise<AnalyticsSummary> {
+  try {
+    const res = await makeClient(token).get<AnalyticsSummary>(
+      "/analytics/summary",
+      { params: { days } }
+    );
+    return res.data;
+  } catch (err) {
+    handleAxiosError(err);
+  }
+}
+
+export async function getUsageSummary(
+  token: string
+): Promise<UsageSummary> {
+  try {
+    const res = await makeClient(token).get<UsageSummary>("/analytics/usage");
+    return res.data;
+  } catch (err) {
+    handleAxiosError(err);
+  }
+}
+
 // ─── Health ───────────────────────────────────────────────────────────────────
 
 export async function getHealth(): Promise<{

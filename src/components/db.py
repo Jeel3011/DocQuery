@@ -318,3 +318,104 @@ class SupabaseManager:
         """Set conversation title from first user message (truncated)."""
         title = first_question[:50] + ("..." if len(first_question) > 50 else "")
         self.rename_conversation(conversation_id, title)
+
+    # ─────────────────────────────────────────
+    # COLLECTIONS
+    # ─────────────────────────────────────────
+
+    def create_collection(self, name: str, description: str = None) -> dict:
+        """Create a new collection for the current user."""
+        if not self.user_id:
+            raise ValueError("User must be logged in.")
+        res = self.client.table("collections").insert({
+            "user_id": self.user_id,
+            "name": name,
+            "description": description,
+        }).execute()
+        return res.data[0] if res.data else {}
+
+    def get_collections(self) -> list:
+        """Get all collections for the current user."""
+        if not self.user_id:
+            return []
+        res = self.client.table("collections").select("*").eq(
+            "user_id", self.user_id
+        ).order("updated_at", desc=True).execute()
+        return res.data or []
+
+    def get_collection(self, collection_id: str) -> dict:
+        """Get a single collection by ID for the current user."""
+        if not self.user_id:
+            return {}
+        res = self.client.table("collections").select("*").eq(
+            "user_id", self.user_id
+        ).eq("id", collection_id).execute()
+        return res.data[0] if res.data else {}
+
+    def update_collection(self, collection_id: str, name: str = None, description: str = None) -> dict:
+        """Rename or update description of a collection."""
+        if not self.user_id:
+            return {}
+        update_data = {}
+        if name is not None:
+            update_data["name"] = name
+        if description is not None:
+            update_data["description"] = description
+        if not update_data:
+            return {}
+        res = self.client.table("collections").update(
+            update_data
+        ).eq("id", collection_id).eq("user_id", self.user_id).execute()
+        return res.data[0] if res.data else {}
+
+    def delete_collection(self, collection_id: str):
+        """Delete a collection (documents stay, just unlinked)."""
+        if not self.user_id:
+            return
+        self.client.table("collections").delete().eq(
+            "id", collection_id
+        ).eq("user_id", self.user_id).execute()
+
+    def add_document_to_collection(self, collection_id: str, document_id: str) -> dict:
+        """Add a document to a collection."""
+        res = self.client.table("collection_documents").insert({
+            "collection_id": collection_id,
+            "document_id": document_id,
+        }).execute()
+        return res.data[0] if res.data else {}
+
+    def remove_document_from_collection(self, collection_id: str, document_id: str):
+        """Remove a document from a collection."""
+        self.client.table("collection_documents").delete().eq(
+            "collection_id", collection_id
+        ).eq("document_id", document_id).execute()
+
+    def get_collection_document_ids(self, collection_id: str) -> list[str]:
+        """Get all document IDs in a collection."""
+        res = self.client.table("collection_documents").select(
+            "document_id"
+        ).eq("collection_id", collection_id).execute()
+        return [row["document_id"] for row in (res.data or [])]
+
+    def get_collection_documents(self, collection_id: str) -> list:
+        """Get full document records for all documents in a collection."""
+        doc_ids = self.get_collection_document_ids(collection_id)
+        if not doc_ids:
+            return []
+        res = self.client.table("documents").select("*").in_(
+            "id", doc_ids
+        ).eq("user_id", self.user_id).execute()
+        return res.data or []
+
+    def get_document_collections(self, document_id: str) -> list:
+        """Get all collections that contain a specific document."""
+        res = self.client.table("collection_documents").select(
+            "collection_id"
+        ).eq("document_id", document_id).execute()
+        collection_ids = [row["collection_id"] for row in (res.data or [])]
+        if not collection_ids:
+            return []
+        res = self.client.table("collections").select("*").in_(
+            "id", collection_ids
+        ).eq("user_id", self.user_id).execute()
+        return res.data or []

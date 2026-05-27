@@ -31,6 +31,7 @@ export interface StreamQueryRequest {
   filename_filter?: string | null;
   page_filter?: number | null;
   conversation_id?: string | null;
+  collection_id?: string | null;  // Phase 1
 }
 
 // ─── Main streaming function ───────────────────────────────────────────────────

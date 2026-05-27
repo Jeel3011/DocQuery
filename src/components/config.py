@@ -87,3 +87,8 @@ class Config:
 
     # ── Input limits ──
     MAX_QUERY_LENGTH: int = 2000   # Max characters for user question
+
+    # ── Phase 2: Web Search Fallback ──
+    TAVILY_API_KEY: str = os.getenv("TAVILY_API_KEY", "")
+    USE_WEB_FALLBACK: bool = True    # Enable web search when docs return no results
+    WEB_SEARCH_MAX_RESULTS: int = 3  # Max web results to merge with doc results

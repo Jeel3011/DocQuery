@@ -21,22 +21,16 @@ interface ChatMessageProps {
 }
 
 /**
- * Parse `[Source: filename, Page: X]` patterns in the answer and replace them
- * with clickable superscript citation badges [1], [2], etc.
- * Returns React elements with data-source-id for cross-highlighting.
+ * Strip [Source: filename, Page: X] patterns from content and replace with
+ * superscript-style [n] markers. Returns cleaned markdown + a map of which
+ * source IDs were referenced.
  */
-function parseCitations(
+function cleanCitations(
   text: string,
-  sources: SourceInfo[],
-  hoveredSource: number | null,
-  setHoveredSource: (id: number | null) => void
-): React.ReactNode[] {
-  // Match [Source: filename, Page: X] or [Source: filename]
+  sources: SourceInfo[]
+): { cleaned: string; citedIds: Set<number> } {
   const pattern = /\[Source:\s*([^,\]]+)(?:,\s*Page:\s*(\d+))?\]/gi;
-
-  const parts: React.ReactNode[] = [];
-  let lastIndex = 0;
-  let match: RegExpExecArray | null;
+  const citedIds = new Set<number>();
 
   // Build a source lookup: filename → source_id
   const sourceMap = new Map<string, number>();
@@ -45,44 +39,22 @@ function parseCitations(
     if (!sourceMap.has(key)) sourceMap.set(key, s.source_id ?? i + 1);
   });
 
-  while ((match = pattern.exec(text)) !== null) {
-    // Push text before the match
-    if (match.index > lastIndex) {
-      parts.push(text.slice(lastIndex, match.index));
-    }
+  const cleaned = text.replace(pattern, (_, filename) => {
+    const sourceId = sourceMap.get(filename.trim().toLowerCase()) ?? 1;
+    citedIds.add(sourceId);
+    return `**[${sourceId}]**`;
+  });
 
-    const filename = match[1].trim();
-    const sourceId = sourceMap.get(filename.toLowerCase()) ?? (parts.length + 1);
-    const isHighlighted = hoveredSource === sourceId;
-
-    parts.push(
-      <span
-        key={`cite-${match.index}`}
-        data-source-id={sourceId}
-        className={`inline-flex items-center justify-center w-4 h-4 text-[9px] font-bold rounded
-          border cursor-pointer align-super -translate-y-0.5 mx-0.5 transition-all duration-150
-          ${isHighlighted
-            ? "bg-[var(--accent)] text-white border-[var(--accent)] scale-110"
-            : "border-dashed border-[var(--border-dotted)] text-[var(--text-secondary)] hover:bg-[var(--bg-active)]"
-          }`}
-        onMouseEnter={() => setHoveredSource(sourceId)}
-        onMouseLeave={() => setHoveredSource(null)}
-        title={`${filename}${match[2] ? `, Page ${match[2]}` : ""}`}
-      >
-        {sourceId}
-      </span>
-    );
-
-    lastIndex = match.index + match[0].length;
-  }
-
-  // Push remaining text
-  if (lastIndex < text.length) {
-    parts.push(text.slice(lastIndex));
-  }
-
-  return parts.length > 0 ? parts : [text];
+  return { cleaned, citedIds };
 }
+
+const markdownClasses = `text-sm text-[var(--text-primary)] leading-relaxed
+  prose prose-sm max-w-none
+  prose-p:my-1.5 prose-headings:text-[var(--text-primary)] prose-headings:font-semibold
+  prose-code:text-[var(--text-primary)] prose-code:bg-[var(--bg-hover)] prose-code:px-1.5 prose-code:py-0.5 prose-code:rounded prose-code:text-xs prose-code:font-mono
+  prose-pre:bg-[var(--bg-hover)] prose-pre:border prose-pre:border-[var(--border)] prose-pre:rounded-xl
+  prose-strong:font-semibold prose-a:text-[var(--accent)] prose-a:underline
+  prose-li:my-0.5 prose-ul:my-1 prose-ol:my-1`;
 
 export const ChatMessage = memo(function ChatMessage({
   role, content, sources, isStreaming, isFallback, userInitials = "U",
@@ -92,14 +64,12 @@ export const ChatMessage = memo(function ChatMessage({
   const [hoveredSource, setHoveredSource] = useState<number | null>(null);
   const hasSources = !isUser && sources && sources.length > 0 && !isStreaming;
 
-  // Check if content has [Source: ...] patterns for inline citation rendering
-  const hasCitations = useMemo(() => /\[Source:/i.test(content), [content]);
-
-  // Build processed content with citations replaced
-  const processedContent = useMemo(() => {
-    if (!hasCitations || !sources || isStreaming) return null;
-    return parseCitations(content, sources, hoveredSource, setHoveredSource);
-  }, [content, sources, hasCitations, hoveredSource, isStreaming]);
+  // Clean citations from content — always render through ReactMarkdown
+  const displayContent = useMemo(() => {
+    if (isUser || !sources || isStreaming) return content;
+    const { cleaned } = cleanCitations(content, sources);
+    return cleaned;
+  }, [content, sources, isUser, isStreaming]);
 
   const handleSourceHover = useCallback((sourceId: number | null) => {
     setHoveredSource(sourceId);
@@ -140,25 +110,9 @@ export const ChatMessage = memo(function ChatMessage({
 
             {isUser ? (
               <p className="text-sm text-[var(--text-primary)] leading-relaxed whitespace-pre-wrap">{content}</p>
-            ) : processedContent ? (
-              /* Render with inline citation badges */
-              <div className={`text-sm text-[var(--text-primary)] leading-relaxed
-                prose prose-sm max-w-none
-                prose-p:my-1.5 prose-headings:text-[var(--text-primary)] prose-headings:font-semibold
-                prose-code:text-[var(--text-primary)] prose-code:bg-[var(--bg-hover)] prose-code:px-1.5 prose-code:py-0.5 prose-code:rounded prose-code:text-xs prose-code:font-mono
-                prose-pre:bg-[var(--bg-hover)] prose-pre:border prose-pre:border-[var(--border)] prose-pre:rounded-xl
-                prose-strong:font-semibold prose-a:text-[var(--accent)] prose-a:underline`}>
-                <p className="whitespace-pre-wrap">{processedContent}</p>
-              </div>
             ) : (
-              <div className={`text-sm text-[var(--text-primary)] leading-relaxed
-                prose prose-sm max-w-none
-                prose-p:my-1.5 prose-headings:text-[var(--text-primary)] prose-headings:font-semibold
-                prose-code:text-[var(--text-primary)] prose-code:bg-[var(--bg-hover)] prose-code:px-1.5 prose-code:py-0.5 prose-code:rounded prose-code:text-xs prose-code:font-mono
-                prose-pre:bg-[var(--bg-hover)] prose-pre:border prose-pre:border-[var(--border)] prose-pre:rounded-xl
-                prose-strong:font-semibold prose-a:text-[var(--accent)] prose-a:underline
-                ${isStreaming ? "streaming-cursor" : ""}`}>
-                <ReactMarkdown remarkPlugins={[remarkGfm]}>{content}</ReactMarkdown>
+              <div className={`${markdownClasses} ${isStreaming ? "streaming-cursor" : ""}`}>
+                <ReactMarkdown remarkPlugins={[remarkGfm]}>{displayContent}</ReactMarkdown>
               </div>
             )}
           </div>

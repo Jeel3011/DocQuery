@@ -59,6 +59,7 @@ class RetrievalManager:
         query: str,
         filename_filter: str = None,
         page_filter: str = None,
+        filename_filters: list[str] = None,
     ) -> list[Document]:
         """Run similarity search against Pinecone and return docs above threshold.
 
@@ -75,7 +76,9 @@ class RetrievalManager:
 
         try:
             filter_dict = {}
-            if filename_filter:
+            if filename_filters:
+                filter_dict["filename"] = {"$in": filename_filters}
+            elif filename_filter:
                 filter_dict["filename"] = filename_filter
             if page_filter:
                 filter_dict["page_number"] = page_filter
@@ -103,6 +106,7 @@ class RetrievalManager:
         query_embedding: list,
         filename_filter: str = None,
         page_filter: str = None,
+        filename_filters: list[str] = None,
     ) -> list[Document]:
         """Run similarity search using a pre-computed embedding vector.
 
@@ -120,7 +124,9 @@ class RetrievalManager:
 
         try:
             filter_dict = {}
-            if filename_filter:
+            if filename_filters:
+                filter_dict["filename"] = {"$in": filename_filters}
+            elif filename_filter:
                 filter_dict["filename"] = filename_filter
             if page_filter:
                 filter_dict["page_number"] = page_filter
@@ -151,9 +157,10 @@ class RetrievalManager:
         query: str,
         filename_filter: str = None,
         page_filter: str = None,
+        filename_filters: list[str] = None,
     ) -> list[Document]:
         """Retrieve relevant docs with optional hybrid BM25+RRF fusion and/or reranking."""
-        docs = self._raw_retrieve(query, filename_filter, page_filter)
+        docs = self._raw_retrieve(query, filename_filter, page_filter, filename_filters=filename_filters)
 
         # Step 1: Hybrid BM25 + RRF fusion
         if self._hybrid and docs:
@@ -172,6 +179,7 @@ class RetrievalManager:
         query: str,
         filename_filter: str = None,
         page_filter: str = None,
+        filename_filters: list[str] = None,
     ) -> list[Document]:
         """Retrieve using a pre-computed embedding — skips the OpenAI embed API call.
 
@@ -183,8 +191,9 @@ class RetrievalManager:
             query: Original query string (used for reranking, hybrid search).
             filename_filter: Optional Pinecone metadata filter.
             page_filter: Optional page number filter.
+            filename_filters: Optional list of filenames for collection-scoped search.
         """
-        docs = self._raw_retrieve_by_vector(query_embedding, filename_filter, page_filter)
+        docs = self._raw_retrieve_by_vector(query_embedding, filename_filter, page_filter, filename_filters=filename_filters)
 
         # Step 1: Hybrid BM25 + RRF fusion (needs string query for BM25)
         if self._hybrid and docs:
@@ -204,6 +213,7 @@ class RetrievalManager:
         queries: list[str],
         filename_filter: str = None,
         page_filter: str = None,
+        filename_filters: list[str] = None,
     ) -> list[Document]:
         """Retrieve docs for multiple query variants, deduplicate, optional rerank.
 
@@ -214,7 +224,7 @@ class RetrievalManager:
         all_docs: dict[str, Document] = {}
 
         def _fetch(q: str) -> list[Document]:
-            return self._raw_retrieve(q, filename_filter, page_filter)
+            return self._raw_retrieve(q, filename_filter, page_filter, filename_filters=filename_filters)
 
         # Run all Pinecone queries in parallel (I/O-bound)
         max_workers = min(len(queries), 4)

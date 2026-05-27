@@ -39,6 +39,89 @@ logger = get_logger(__name__)
 
 _REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
 
+
+def _resolve_collection_filters(sb, collection_id: str = None) -> list[str] | None:
+    """Resolve a collection_id to a list of filenames for Pinecone filtering.
+
+    Returns None if no collection_id is provided (= search all docs).
+    Returns a list of filenames if collection_id is provided.
+    """
+    if not collection_id:
+        return None
+    doc_ids = sb.get_collection_document_ids(collection_id)
+    if not doc_ids:
+        return []  # empty collection = no results
+    docs_in_coll = sb.client.table("documents").select("filename").in_(
+        "id", doc_ids
+    ).eq("user_id", sb.user_id).execute()
+    return [d["filename"] for d in (docs_in_coll.data or [])]
+
+
+def _saving_stream_wrapper(
+    inner_gen, sb, conversation_id: str, question: str,
+    is_agentic: bool = False, is_cache_hit: bool = False,
+):
+    """Wrap an SSE generator to capture tokens and save messages to DB after streaming.
+
+    Intercepts 'token' events to collect the full answer text.
+    After the stream ends ([DONE]), saves both the user question and
+    assistant response to the conversation in the database.
+    Also logs the query to query_logs for analytics.
+    """
+    collected_tokens = []
+    collected_sources = []
+    t_start = time.perf_counter()
+
+    for chunk in inner_gen:
+        yield chunk  # Forward to client immediately
+
+        # Parse the SSE line to capture tokens
+        line = chunk.strip()
+        if not line.startswith("data: ") or line == "data: [DONE]":
+            continue
+        try:
+            data = json.loads(line[6:])
+            if data.get("type") == "token" and data.get("content"):
+                collected_tokens.append(data["content"])
+            elif data.get("type") == "sources":
+                collected_sources = data.get("sources", [])
+            elif data.get("type") == "meta" and data.get("cache_hit"):
+                is_cache_hit = True
+        except (json.JSONDecodeError, KeyError):
+            pass
+
+    # Stream finished — save messages to DB
+    full_answer = "".join(collected_tokens)
+    latency_ms = int((time.perf_counter() - t_start) * 1000)
+
+    if conversation_id and full_answer:
+        try:
+            sb.save_message(conversation_id, "user", question)
+            sb.save_message(conversation_id, "assistant", full_answer, sources=collected_sources)
+            # Auto-title if this is the first message
+            existing = sb.get_messages(conversation_id)
+            if len(existing) <= 2:
+                sb.auto_title_conversation(conversation_id, question)
+        except Exception as e:
+            logger.warning("Failed to save streamed messages: %s", e)
+
+    # Log query for analytics (Phase 4)
+    try:
+        sb.client.table("query_logs").insert({
+            "user_id": sb.user_id,
+            "conversation_id": conversation_id,
+            "question": question[:2000],
+            "answer_length": len(full_answer),
+            "sources_count": len(collected_sources),
+            "retrieval_docs_count": len(collected_sources),
+            "latency_ms": latency_ms,
+            "cache_hit": is_cache_hit,
+            "agentic": is_agentic,
+            "web_search_used": False,
+        }).execute()
+    except Exception as e:
+        logger.warning("Failed to log query analytics: %s", e)
+
 # ── Module-level caches ───────────────────────────────────────────────────────
 # SemanticCache: pool one instance per user — avoids opening a new Redis TCP
 # connection + ping on every single request (~5ms saved per request).
@@ -122,6 +205,9 @@ async def query(
     # simple   → direct vector retrieval using pre-computed embedding (~1.0s total)
     # moderate → multi-query variants, skip self-review (~1.5-2.0s total)
     # complex  → full pipeline (handled by /query/agent endpoint)
+    # Phase 1: Collection-scoped retrieval
+    filename_filters = _resolve_collection_filters(sb, getattr(body, 'collection_id', None))
+
     complexity = generator.classify_query_complexity(body.question)
     logger.info("Query complexity: %s for: %.60s", complexity, body.question)
 
@@ -133,6 +219,7 @@ async def query(
             body.question,
             body.filename_filter,
             body.page_filter,
+            filename_filters=filename_filters,
         )
     elif user_config.USE_MULTI_QUERY:
         variants = await asyncio.to_thread(
@@ -144,6 +231,7 @@ async def query(
             variants,
             body.filename_filter,
             body.page_filter,
+            filename_filters=filename_filters,
         )
     else:
         docs = await asyncio.to_thread(
@@ -151,6 +239,7 @@ async def query(
             body.question,
             body.filename_filter,
             body.page_filter,
+            filename_filters=filename_filters,
         )
 
     # ── Prometheus metrics ──
@@ -236,7 +325,7 @@ async def query_stream(
 
     if cached:
         cache_hits.labels(tier=cached.get("tier", "unknown")).inc()
-        async def cached_stream():
+        def cached_stream():
             yield f"data: {json.dumps({'type': 'sources', 'sources': cached.get('sources', [])})}\n\n"
             # Stream the cached answer token by token (words) for natural UX
             words = cached["answer"].split(" ")
@@ -245,7 +334,10 @@ async def query_stream(
                 yield f"data: {json.dumps({'type': 'token', 'content': token})}\n\n"
             yield f"data: {json.dumps({'type': 'meta', 'cache_hit': True, 'similarity': cached.get('similarity', 1.0)})}\n\n"
             yield "data: [DONE]\n\n"
-        return StreamingResponse(cached_stream(), media_type="text/event-stream")
+        return StreamingResponse(
+            _saving_stream_wrapper(cached_stream(), sb, body.conversation_id, body.question),
+            media_type="text/event-stream"
+        )
 
     cache_misses.inc()
 
@@ -253,6 +345,9 @@ async def query_stream(
     search_query = await asyncio.to_thread(
         generator.rewrite_query, body.question, chat_history
     )
+
+    # Phase 1: Collection-scoped retrieval
+    filename_filters = _resolve_collection_filters(sb, getattr(body, 'collection_id', None))
 
     # ── Smart query routing based on complexity ──
     complexity = generator.classify_query_complexity(search_query)
@@ -266,6 +361,7 @@ async def query_stream(
             search_query,
             body.filename_filter,
             body.page_filter,
+            filename_filters=filename_filters,
         )
     elif user_config.USE_MULTI_QUERY:
         variants = await asyncio.to_thread(
@@ -277,6 +373,7 @@ async def query_stream(
             variants,
             body.filename_filter,
             body.page_filter,
+            filename_filters=filename_filters,
         )
     else:
         docs = await asyncio.to_thread(
@@ -284,6 +381,7 @@ async def query_stream(
             search_query,
             body.filename_filter,
             body.page_filter,
+            filename_filters=filename_filters,
         )
 
     # ── Prometheus metrics ──
@@ -291,18 +389,24 @@ async def query_stream(
     retrieval_docs.observe(len(docs))
 
     if not docs:
-        async def no_results():
+        def no_results():
             yield f"data: {json.dumps({'type': 'token', 'content': 'I could not find relevant information in your documents for this question.'})}\n\n"
             yield f"data: {json.dumps({'type': 'sources', 'sources': []})}\n\n"
             yield "data: [DONE]\n\n"
-        return StreamingResponse(no_results(), media_type="text/event-stream")
+        return StreamingResponse(
+            _saving_stream_wrapper(no_results(), sb, body.conversation_id, body.question),
+            media_type="text/event-stream"
+        )
 
     # B3 FIX: Pass search_query (rewritten standalone query) to the generator
     return StreamingResponse(
-        generator.generate_stream(
-            query=search_query,
-            retrieved_docs=docs,
-            chat_history=chat_history
+        _saving_stream_wrapper(
+            generator.generate_stream(
+                query=search_query,
+                retrieved_docs=docs,
+                chat_history=chat_history
+            ),
+            sb, body.conversation_id, body.question
         ),
         media_type="text/event-stream"
     )
@@ -368,6 +472,9 @@ async def query_agent(
         )
     cache_misses.inc()
 
+    # Phase 1: Collection-scoped retrieval
+    filename_filters = _resolve_collection_filters(sb, getattr(body, 'collection_id', None))
+
     # ── Step 1+2+3: Agentic retrieval (parallel sub-queries) ──
     agentic = AgenticRetriever(config=user_config, retrieval_mgr=retrieval_mgr)
     retrieval_result = await asyncio.to_thread(
@@ -375,6 +482,7 @@ async def query_agent(
         body.question,
         body.filename_filter,
         body.page_filter,
+        filename_filters=filename_filters,
     )
     docs = retrieval_result["docs"]
 
@@ -452,6 +560,9 @@ async def agent_query_stream(
             for m in existing_msgs
         ]
 
+    # Phase 1: Collection-scoped retrieval
+    filename_filters = _resolve_collection_filters(sb, getattr(body, 'collection_id', None))
+
     # Agentic retrieval: decompose → parallel retrieve → deduplicate
     agentic = AgenticRetriever(config=user_config, retrieval_mgr=retrieval_mgr)
     retrieval_result = await asyncio.to_thread(
@@ -459,6 +570,7 @@ async def agent_query_stream(
         body.question,
         body.filename_filter,
         body.page_filter,
+        filename_filters=filename_filters,
     )
     docs = retrieval_result["docs"]
     sub_queries = retrieval_result.get("sub_queries", [])
@@ -467,14 +579,17 @@ async def agent_query_stream(
     retrieval_docs.observe(len(docs))
 
     if not docs:
-        async def no_results():
+        def no_results():
             yield f"data: {json.dumps({'type': 'sub_queries', 'queries': sub_queries})}\n\n"
             yield f"data: {json.dumps({'type': 'token', 'content': 'I could not find relevant information in your documents for this question.'})}\n\n"
             yield f"data: {json.dumps({'type': 'sources', 'sources': []})}\n\n"
             yield "data: [DONE]\n\n"
-        return StreamingResponse(no_results(), media_type="text/event-stream")
+        return StreamingResponse(
+            _saving_stream_wrapper(no_results(), sb, body.conversation_id, body.question),
+            media_type="text/event-stream"
+        )
 
-    async def agentic_stream():
+    def agentic_stream():
         # 1. Emit sub-queries so the UI can show decomposition
         yield f"data: {json.dumps({'type': 'sub_queries', 'queries': sub_queries})}\n\n"
 
@@ -498,7 +613,10 @@ async def agent_query_stream(
         ):
             yield chunk
 
-    return StreamingResponse(agentic_stream(), media_type="text/event-stream")
+    return StreamingResponse(
+        _saving_stream_wrapper(agentic_stream(), sb, body.conversation_id, body.question, is_agentic=True),
+        media_type="text/event-stream"
+    )
 
 
 # -----------------------------------------
@@ -646,6 +764,9 @@ async def send_message(
         generator.rewrite_query, body.question, chat_history
     )
 
+    # Phase 1: Collection-scoped retrieval
+    filename_filters = _resolve_collection_filters(sb, getattr(body, 'collection_id', None))
+
     if user_config.USE_MULTI_QUERY:
         variants = await asyncio.to_thread(
             generator.generate_query_variants, search_query, user_config.MULTI_QUERY_COUNT
@@ -656,6 +777,7 @@ async def send_message(
             variants,
             body.filename_filter,
             page_filter,
+            filename_filters=filename_filters,
         )
     else:
         docs = await asyncio.to_thread(
@@ -663,6 +785,7 @@ async def send_message(
             search_query,
             body.filename_filter,
             page_filter,
+            filename_filters=filename_filters,
         )
 
     # -- Prometheus metrics --

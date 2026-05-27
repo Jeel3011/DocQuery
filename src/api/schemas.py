@@ -67,6 +67,7 @@ class QueryRequest(BaseModel):
     filename_filter: Optional[str] = None
     page_filter: Optional[int] = None
     conversation_id: Optional[str] = None
+    collection_id: Optional[str] = None  # Phase 1: scope retrieval to a collection
 
 
 class QueryResponse(BaseModel):
@@ -103,6 +104,7 @@ class SendMessageRequest(BaseModel):
     question: str = Field(..., min_length=1, max_length=2000)
     filename_filter: Optional[str] = None
     page_filter: Optional[int] = None
+    collection_id: Optional[str] = None  # Phase 1: scope retrieval to a collection
 
 
 class MessageResponse(BaseModel):
@@ -125,3 +127,35 @@ class MessageListResponse(BaseModel):
 class HealthResponse(BaseModel):
     status: str
     version: str
+
+
+# ─────────────────────────────────────────
+# COLLECTIONS
+# ─────────────────────────────────────────
+
+class CreateCollectionRequest(BaseModel):
+    name: str = Field(..., min_length=1, max_length=100)
+    description: Optional[str] = None
+
+
+class UpdateCollectionRequest(BaseModel):
+    name: Optional[str] = Field(None, min_length=1, max_length=100)
+    description: Optional[str] = None
+
+
+class CollectionResponse(BaseModel):
+    id: str
+    name: str
+    description: Optional[str] = None
+    document_count: Optional[int] = 0
+    created_at: Optional[str] = None
+    updated_at: Optional[str] = None
+
+
+class CollectionListResponse(BaseModel):
+    collections: List[CollectionResponse]
+    total: int
+
+
+class AddDocumentToCollectionRequest(BaseModel):
+    document_id: str

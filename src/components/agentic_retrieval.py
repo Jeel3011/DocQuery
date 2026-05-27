@@ -80,6 +80,7 @@ Examples:
         query: str,
         filename_filter: Optional[str] = None,
         page_filter: Optional[int] = None,
+        filename_filters: Optional[list[str]] = None,
     ) -> Dict:
         """Decompose → retrieve per sub-query in parallel → deduplicate → return merged docs.
 
@@ -93,7 +94,7 @@ Examples:
 
         def _fetch(sq: str) -> list:
             try:
-                return self.retrieval_mgr.retrieve(sq, filename_filter, page_filter)
+                return self.retrieval_mgr.retrieve(sq, filename_filter, page_filter, filename_filters=filename_filters)
             except Exception as exc:
                 logger.warning("Retrieval failed for sub-query '%s': %s", sq, exc)
                 return []
@@ -114,12 +115,32 @@ Examples:
         if not merged:
             logger.info("Agentic: sub-queries returned 0 docs, falling back to original query")
             try:
-                merged = self.retrieval_mgr.retrieve(query, filename_filter, page_filter)
+                merged = self.retrieval_mgr.retrieve(query, filename_filter, page_filter, filename_filters=filename_filters)
             except Exception as exc:
                 logger.warning("Fallback retrieval failed: %s", exc)
+
+        # Phase 2: Web search fallback — if documents returned nothing, search the web
+        web_search_used = False
+        if not merged and self.config.USE_WEB_FALLBACK:
+            try:
+                from src.components.web_search import WebSearcher
+                searcher = WebSearcher(self.config)
+                if searcher.is_available():
+                    web_docs = searcher.search(query, max_results=self.config.WEB_SEARCH_MAX_RESULTS)
+                    if web_docs:
+                        merged.extend(web_docs)
+                        web_search_used = True
+                        logger.info("Agentic: web fallback added %d results", len(web_docs))
+            except Exception as exc:
+                logger.warning("Web search fallback failed (non-fatal): %s", exc)
 
         logger.info(
             "Agentic: %d sub-queries (parallel) → %d unique docs",
             len(sub_queries), len(merged)
         )
-        return {"docs": merged, "sub_queries": sub_queries, "unique_docs": len(merged)}
+        return {
+            "docs": merged,
+            "sub_queries": sub_queries,
+            "unique_docs": len(merged),
+            "web_search_used": web_search_used,
+        }

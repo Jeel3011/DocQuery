@@ -20,6 +20,9 @@ import {
   ChevronLeft,
   ChevronRight,
   Pencil,
+  FolderOpen,
+  FolderPlus,
+  BarChart3,
 } from "lucide-react";
 
 import { useAuthStore } from "@/stores/auth.store";
@@ -31,9 +34,17 @@ import {
   renameConversation,
   uploadDocument,
   deleteDocument,
+  listCollections,
+  createCollection,
+  deleteCollection,
+  addDocToCollection,
+  removeDocFromCollection,
+  getCollectionDocuments,
   ConversationResponse,
   DocumentResponse,
+  CollectionResponse,
 } from "@/lib/api";
+import { useCollectionStore } from "@/stores/collection.store";
 import { toast } from "sonner";
 
 const ACCEPTED = ".pdf,.docx,.pptx,.txt,.xlsx";
@@ -68,6 +79,12 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
   const [delConvId, setDelConvId] = useState<string | null>(null);
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [renameValue, setRenameValue] = useState("");
+  const [collections, setCollections] = useState<CollectionResponse[]>([]);
+  const { activeCollectionId, setActiveCollectionId } = useCollectionStore();
+  const [showNewCollection, setShowNewCollection] = useState(false);
+  const [newCollectionName, setNewCollectionName] = useState("");
+  const [delCollId, setDelCollId] = useState<string | null>(null);
+  const [collectionDocIds, setCollectionDocIds] = useState<Set<string>>(new Set());
   const pollRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
   const renameRef = useRef<HTMLInputElement>(null);
@@ -87,7 +104,23 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
     try { setDocs(await listDocuments(token)); } catch {}
   }, [token]);
 
-  useEffect(() => { loadConvs(); loadDocs(); }, [loadConvs, loadDocs]);
+  const loadCollections = useCallback(async () => {
+    if (!token) return;
+    try { setCollections(await listCollections(token)); } catch {}
+  }, [token]);
+
+  useEffect(() => { loadConvs(); loadDocs(); loadCollections(); }, [loadConvs, loadDocs, loadCollections]);
+
+  // Load docs in active collection to show checkmarks
+  useEffect(() => {
+    if (!token || !activeCollectionId) {
+      setCollectionDocIds(new Set());
+      return;
+    }
+    getCollectionDocuments(token, activeCollectionId)
+      .then((docs) => setCollectionDocIds(new Set(docs.map((d) => d.id))))
+      .catch(() => setCollectionDocIds(new Set()));
+  }, [token, activeCollectionId]);
 
   useEffect(() => {
     if (docs.some((d) => d.status === "processing")) {
@@ -104,6 +137,74 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
       router.push(`/app/chat/${c.id}`);
       setMobileOpen(false);
     } catch { toast.error("Failed to create conversation"); }
+  }
+
+  async function handleCreateCollection() {
+    if (!token || !newCollectionName.trim()) return;
+    try {
+      const c = await createCollection(token, newCollectionName.trim());
+      setCollections((p) => [c, ...p]);
+      setNewCollectionName("");
+      setShowNewCollection(false);
+      toast.success(`Created collection "${c.name}"`);
+    } catch { toast.error("Failed to create collection"); }
+  }
+
+  async function handleDeleteCollection(id: string) {
+    if (!token) return;
+    setDelCollId(null);
+    const prev = collections;
+    setCollections((p) => p.filter((c) => c.id !== id));
+    if (activeCollectionId === id) setActiveCollectionId(null);
+    try {
+      await deleteCollection(token, id);
+    } catch {
+      setCollections(prev);
+      toast.error("Failed to delete collection");
+    }
+  }
+
+  async function handleToggleDocInCollection(docId: string) {
+    if (!token || !activeCollectionId) return;
+    const isInCollection = collectionDocIds.has(docId);
+    // Optimistic update
+    setCollectionDocIds((prev) => {
+      const next = new Set(prev);
+      if (isInCollection) next.delete(docId);
+      else next.add(docId);
+      return next;
+    });
+    // Update collection doc count optimistically
+    setCollections((prev) =>
+      prev.map((c) =>
+        c.id === activeCollectionId
+          ? { ...c, document_count: (c.document_count ?? 0) + (isInCollection ? -1 : 1) }
+          : c
+      )
+    );
+    try {
+      if (isInCollection) {
+        await removeDocFromCollection(token, activeCollectionId, docId);
+      } else {
+        await addDocToCollection(token, activeCollectionId, docId);
+      }
+    } catch {
+      // Revert on failure
+      setCollectionDocIds((prev) => {
+        const next = new Set(prev);
+        if (isInCollection) next.add(docId);
+        else next.delete(docId);
+        return next;
+      });
+      setCollections((prev) =>
+        prev.map((c) =>
+          c.id === activeCollectionId
+            ? { ...c, document_count: (c.document_count ?? 0) + (isInCollection ? 1 : -1) }
+            : c
+        )
+      );
+      toast.error(isInCollection ? "Failed to remove from collection" : "Failed to add to collection");
+    }
   }
 
   function startRename(c: ConversationResponse) {
@@ -203,6 +304,93 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
             {!collapsed && <span>New Chat</span>}
           </button>
         </div>
+
+        {/* Collections */}
+        {!collapsed && (
+          <div className="px-2 pb-1">
+            <div className="flex items-center gap-2 px-2 py-1.5">
+              <FolderOpen size={12} className="text-[var(--text-muted)]" />
+              <span className="text-[10px] font-medium text-[var(--text-muted)] uppercase tracking-[0.12em]">Collections</span>
+              <button
+                onClick={() => setShowNewCollection(!showNewCollection)}
+                className="ml-auto p-0.5 rounded text-[var(--text-muted)] hover:text-[var(--accent)] transition-all"
+                title="New Collection"
+              >
+                <FolderPlus size={12} />
+              </button>
+            </div>
+
+            {/* New collection input */}
+            {showNewCollection && (
+              <div className="px-2 pb-2">
+                <div className="flex gap-1">
+                  <input
+                    value={newCollectionName}
+                    onChange={(e) => setNewCollectionName(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") handleCreateCollection();
+                      if (e.key === "Escape") { setShowNewCollection(false); setNewCollectionName(""); }
+                    }}
+                    placeholder="Collection name..."
+                    className="flex-1 text-xs px-2 py-1 rounded-lg bg-[var(--bg-surface)] border border-[var(--border)] text-[var(--text-primary)] placeholder:text-[var(--text-muted)] outline-none focus:border-[var(--accent)] transition-colors"
+                    autoFocus
+                  />
+                  <button
+                    onClick={handleCreateCollection}
+                    className="text-[10px] px-2 py-1 rounded-lg bg-[var(--accent)] text-white hover:opacity-90 transition-opacity"
+                  >
+                    Add
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {/* "All Documents" button */}
+            <button
+              onClick={() => setActiveCollectionId(null)}
+              className={`w-full flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs transition-all ${
+                activeCollectionId === null
+                  ? "bg-[var(--bg-surface)] text-[var(--text-primary)] font-medium"
+                  : "text-[var(--text-secondary)] hover:bg-[var(--bg-hover)]"
+              }`}
+            >
+              <span className="truncate">All Documents</span>
+              <span className="ml-auto text-[10px] text-[var(--text-muted)]">{docs.length}</span>
+            </button>
+
+            {/* Collection list */}
+            {collections.map((coll) => (
+              <div
+                key={coll.id}
+                className={`group flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs cursor-pointer transition-all ${
+                  activeCollectionId === coll.id
+                    ? "bg-[var(--bg-surface)] text-[var(--text-primary)] font-medium border border-[var(--accent)]"
+                    : "text-[var(--text-secondary)] hover:bg-[var(--bg-hover)] border border-transparent"
+                }`}
+                onClick={() => setActiveCollectionId(activeCollectionId === coll.id ? null : coll.id)}
+              >
+                <FolderOpen size={12} className={activeCollectionId === coll.id ? "text-[var(--accent)]" : "text-[var(--text-muted)]"} />
+                <span className="truncate flex-1">{coll.name}</span>
+                <span className="text-[10px] text-[var(--text-muted)]">{coll.document_count ?? 0}</span>
+                {delCollId === coll.id ? (
+                  <div className="flex gap-1" onClick={(e) => e.stopPropagation()}>
+                    <button onClick={() => handleDeleteCollection(coll.id)} className="text-[9px] text-[var(--status-failed)] px-1.5 py-0.5 rounded border border-red-200">Yes</button>
+                    <button onClick={() => setDelCollId(null)} className="text-[9px] text-[var(--text-muted)] px-1.5 py-0.5 rounded border border-[var(--border)]">No</button>
+                  </div>
+                ) : (
+                  <button
+                    onClick={(e) => { e.stopPropagation(); setDelCollId(coll.id); }}
+                    className="p-0.5 rounded text-[var(--text-muted)] hover:text-[var(--status-failed)] opacity-0 group-hover:opacity-100 transition-all"
+                  >
+                    <Trash2 size={10} />
+                  </button>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
+
+        {!collapsed && <hr className="divider-dotted mx-3" />}
 
         {/* Conversations */}
         {!collapsed && (
@@ -329,18 +517,37 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
                     <span className="text-[9px] text-[var(--text-muted)]">
                       {doc.status === "processing" ? `Processing${doc.processing_progress != null ? ` (${doc.processing_progress}%)` : "…"}` : `${doc.chunk_count} chunks · ${fmtBytes(doc.file_size_bytes)}`}
                     </span>
-                    {doc.status !== "processing" && (
-                      delDocId === doc.id ? (
-                        <div className="flex gap-1">
-                          <button onClick={() => delDoc(doc.id)} className="text-[8px] text-[var(--status-failed)] px-1 py-0.5 rounded border border-red-200">Delete</button>
-                          <button onClick={() => setDelDocId(null)} className="text-[8px] text-[var(--text-muted)] px-1 py-0.5 rounded border border-[var(--border)]">Cancel</button>
-                        </div>
-                      ) : (
-                        <button onClick={() => setDelDocId(doc.id)} className="opacity-0 group-hover:opacity-100 text-[var(--text-muted)] hover:text-[var(--status-failed)] transition-all">
-                          <Trash2 size={10} />
+                    <div className="flex items-center gap-1">
+                      {/* Add/Remove from collection button */}
+                      {activeCollectionId && doc.status === "ready" && (
+                        <button
+                          onClick={() => handleToggleDocInCollection(doc.id)}
+                          className={`p-0.5 rounded transition-all ${
+                            collectionDocIds.has(doc.id)
+                              ? "text-[var(--accent)] opacity-100"
+                              : "text-[var(--text-muted)] hover:text-[var(--accent)] opacity-0 group-hover:opacity-100"
+                          }`}
+                          title={collectionDocIds.has(doc.id) ? "Remove from collection" : "Add to collection"}
+                        >
+                          {collectionDocIds.has(doc.id)
+                            ? <CheckCircle size={11} />
+                            : <FolderPlus size={11} />
+                          }
                         </button>
-                      )
-                    )}
+                      )}
+                      {doc.status !== "processing" && (
+                        delDocId === doc.id ? (
+                          <div className="flex gap-1">
+                            <button onClick={() => delDoc(doc.id)} className="text-[8px] text-[var(--status-failed)] px-1 py-0.5 rounded border border-red-200">Delete</button>
+                            <button onClick={() => setDelDocId(null)} className="text-[8px] text-[var(--text-muted)] px-1 py-0.5 rounded border border-[var(--border)]">Cancel</button>
+                          </div>
+                        ) : (
+                          <button onClick={() => setDelDocId(doc.id)} className="opacity-0 group-hover:opacity-100 text-[var(--text-muted)] hover:text-[var(--status-failed)] transition-all">
+                            <Trash2 size={10} />
+                          </button>
+                        )
+                      )}
+                    </div>
                   </div>
                   {doc.status === "processing" && (
                     <div className="mt-1.5 h-0.5 bg-[var(--bg-active)] rounded-full overflow-hidden">
@@ -360,8 +567,13 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
               <p className="text-xs text-[var(--text-primary)] truncate">{user?.email}</p>
             </div>
           )}
+          <button onClick={() => router.push("/app/settings")}
+            className="p-1.5 rounded-lg hover:bg-[var(--bg-hover)] text-[var(--text-muted)] hover:text-[var(--accent)] transition-colors"
+            title="Analytics & Settings">
+            <BarChart3 size={14} />
+          </button>
           <button onClick={async () => { await logout(); router.push("/login"); }}
-            className="p-1.5 rounded-lg hover:bg-[var(--bg-hover)] text-[var(--text-muted)] hover:text-[var(--status-failed)] transition-colors ml-auto">
+            className="p-1.5 rounded-lg hover:bg-[var(--bg-hover)] text-[var(--text-muted)] hover:text-[var(--status-failed)] transition-colors">
             <LogOut size={14} />
           </button>
         </div>
