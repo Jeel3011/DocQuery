@@ -37,6 +37,9 @@ network:
 
 variables:
   REDIS_URL: redis://redis:6379/0
+  # A1: match per-doc page parallelism to the 2 vCPUs above (was 4 → oversubscribed).
+  # With --concurrency=2, keep this at 2 so we don't exceed 2 CPU-bound processes.
+  PDF_PARALLEL_WORKERS: "2"
 env_file: .env
 
 # Environment overrides

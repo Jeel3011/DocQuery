@@ -8,6 +8,7 @@ import asyncio
 import re
 import json
 import time
+import threading
 
 from fastapi import APIRouter, HTTPException, Depends, Request
 from fastapi.responses import StreamingResponse
@@ -62,6 +63,7 @@ def _saving_stream_wrapper(
     inner_gen, sb, conversation_id: str, question: str,
     is_agentic: bool = False, is_cache_hit: bool = False,
     retrieval_docs_count: int = 0, web_search_used: bool = False,
+    history_len: int | None = None,
 ):
     """Wrap an SSE generator to capture tokens and save messages to DB after streaming.
 
@@ -100,40 +102,50 @@ def _saving_stream_wrapper(
 
     if conversation_id and full_answer:
         try:
-            sb.save_message(conversation_id, "user", question)
-            sb.save_message(conversation_id, "assistant", full_answer, sources=collected_sources)
-            # Auto-title if this is the first message
-            existing = sb.get_messages(conversation_id)
-            if len(existing) <= 2:
+            # B4: one bulk INSERT + one updated_at bump instead of 2×(insert+update).
+            sb.save_messages(conversation_id, [
+                {"role": "user", "content": question},
+                {"role": "assistant", "content": full_answer, "sources": collected_sources},
+            ])
+            # Auto-title on the first turn. Use the caller-provided history length
+            # so we don't re-read the whole message list just to count it.
+            is_first_turn = (
+                history_len == 0 if history_len is not None
+                else len(sb.get_messages(conversation_id)) <= 2
+            )
+            if is_first_turn:
                 sb.auto_title_conversation(conversation_id, question)
         except Exception as e:
             logger.warning("Failed to save streamed messages: %s", e)
 
-    # Log query for analytics (Phase 4)
-    try:
-        sb.client.table("query_logs").insert({
-            "user_id": sb.user_id,
-            "conversation_id": conversation_id,
-            "question": question[:2000],
-            "answer_length": len(full_answer),
-            "sources_count": len(collected_sources),
-            "retrieval_docs_count": retrieval_docs_count,
+    # B4: analytics (query_logs + audit) are non-critical and would otherwise hold
+    # the streaming connection/thread open after [DONE]. Fire-and-forget them.
+    def _write_analytics():
+        try:
+            sb.client.table("query_logs").insert({
+                "user_id": sb.user_id,
+                "conversation_id": conversation_id,
+                "question": question[:2000],
+                "answer_length": len(full_answer),
+                "sources_count": len(collected_sources),
+                "retrieval_docs_count": retrieval_docs_count,
+                "latency_ms": latency_ms,
+                "cache_hit": is_cache_hit,
+                "agentic": is_agentic,
+                "web_search_used": web_search_used,
+            }).execute()
+        except Exception as e:
+            logger.warning("Failed to log query analytics: %s", e)
+
+        action = "query.agentic" if is_agentic else "query.ask"
+        log_audit(sb, action, "conversation", conversation_id, {
+            "question": question[:500],
             "latency_ms": latency_ms,
             "cache_hit": is_cache_hit,
-            "agentic": is_agentic,
             "web_search_used": web_search_used,
-        }).execute()
-    except Exception as e:
-        logger.warning("Failed to log query analytics: %s", e)
+        })
 
-    # Audit trail (Phase 6)
-    action = "query.agentic" if is_agentic else "query.ask"
-    log_audit(sb, action, "conversation", conversation_id, {
-        "question": question[:500],
-        "latency_ms": latency_ms,
-        "cache_hit": is_cache_hit,
-        "web_search_used": web_search_used,
-    })
+    threading.Thread(target=_write_analytics, daemon=True).start()
 
 # ── Module-level caches ───────────────────────────────────────────────────────
 # SemanticCache: pool one instance per user — avoids opening a new Redis TCP
@@ -334,7 +346,8 @@ async def query_stream(
         cached = cache.get(body.question, query_embedding)
     except Exception:
         pass
-    cache_latency.observe(time.perf_counter() - t_cache)
+    cache_latency_s = time.perf_counter() - t_cache
+    cache_latency.observe(cache_latency_s)
 
     if cached:
         cache_hits.labels(tier=cached.get("tier", "unknown")).inc()
@@ -348,24 +361,49 @@ async def query_stream(
             yield f"data: {json.dumps({'type': 'meta', 'cache_hit': True, 'similarity': cached.get('similarity', 1.0)})}\n\n"
             yield "data: [DONE]\n\n"
         return StreamingResponse(
-            _saving_stream_wrapper(cached_stream(), sb, body.conversation_id, body.question),
+            _saving_stream_wrapper(
+                cached_stream(), sb, body.conversation_id, body.question,
+                is_cache_hit=True, history_len=len(chat_history),
+            ),
             media_type="text/event-stream"
         )
 
     cache_misses.inc()
 
-    # Contextualize ambiguous follow-up questions for the retriever
-    search_query = await asyncio.to_thread(
-        generator.rewrite_query, body.question, chat_history
+    # ── B2: run the rewrite and variant LLM calls concurrently ──
+    # rewrite_query no-ops (no LLM) when there's no chat history. We route on the
+    # RAW question (regex, no LLM) so we can decide up front whether variants are
+    # needed and fire them in parallel with the rewrite instead of after it.
+    # Routing is unchanged from the prior rewritten-query classification; the only
+    # trade-offs are: complexity is judged on the raw question, and variants are
+    # generated from the raw question (the rewritten query still goes in as primary).
+    t_prep = time.perf_counter()
+    complexity = generator.classify_query_complexity(body.question)
+    logger.info("Query stream complexity: %s for: %.60s", complexity, body.question)
+
+    rewrite_task = asyncio.create_task(
+        asyncio.to_thread(generator.rewrite_query, body.question, chat_history)
     )
+    want_variants = user_config.USE_MULTI_QUERY and not (
+        complexity == "simple" and query_embedding
+    )
+    variants_task = (
+        asyncio.create_task(
+            asyncio.to_thread(
+                generator.generate_query_variants, body.question, user_config.MULTI_QUERY_COUNT
+            )
+        )
+        if want_variants
+        else None
+    )
+
+    search_query = await rewrite_task
+    t_llm_prep = time.perf_counter() - t_prep
 
     # Phase 1: Collection-scoped retrieval
     filename_filters = _resolve_collection_filters(sb, getattr(body, 'collection_id', None))
 
-    # ── Smart query routing based on complexity ──
-    complexity = generator.classify_query_complexity(search_query)
-    logger.info("Query stream complexity: %s for: %.60s", complexity, search_query)
-
+    t_retrieve = time.perf_counter()
     if complexity == "simple" and query_embedding:
         # Fast path: reuse the pre-computed cache embedding — skip the second API call
         docs = await asyncio.to_thread(
@@ -376,11 +414,9 @@ async def query_stream(
             body.page_filter,
             filename_filters=filename_filters,
         )
-    elif user_config.USE_MULTI_QUERY:
-        variants = await asyncio.to_thread(
-            generator.generate_query_variants, search_query, user_config.MULTI_QUERY_COUNT
-        )
-        variants = [search_query] + variants
+    elif variants_task is not None:
+        raw_variants = await variants_task
+        variants = [search_query] + raw_variants
         docs = await asyncio.to_thread(
             retrieval_mgr.retrieve_multi_query,
             variants,
@@ -396,6 +432,14 @@ async def query_stream(
             body.page_filter,
             filename_filters=filename_filters,
         )
+    t_retrieve = time.perf_counter() - t_retrieve
+
+    # ── Per-stage timing (instrumentation) ──
+    logger.info(
+        "query_stream stages: embed+cache=%dms llm_prep=%dms retrieve=%dms docs=%d complexity=%s",
+        int(cache_latency_s * 1000), int(t_llm_prep * 1000), int(t_retrieve * 1000),
+        len(docs), complexity,
+    )
 
     # ── Prometheus metrics ──
     queries_total.labels(endpoint="query_stream", has_results=str(len(docs) > 0)).inc()
@@ -421,7 +465,10 @@ async def query_stream(
             yield f"data: {json.dumps({'type': 'sources', 'sources': []})}\n\n"
             yield "data: [DONE]\n\n"
         return StreamingResponse(
-            _saving_stream_wrapper(no_results(), sb, body.conversation_id, body.question),
+            _saving_stream_wrapper(
+                no_results(), sb, body.conversation_id, body.question,
+                history_len=len(chat_history),
+            ),
             media_type="text/event-stream"
         )
 
@@ -441,6 +488,7 @@ async def query_stream(
             sb, body.conversation_id, body.question,
             retrieval_docs_count=len(docs),
             web_search_used=web_search_used,
+            history_len=len(chat_history),
         ),
         media_type="text/event-stream"
     )
@@ -620,7 +668,10 @@ async def agent_query_stream(
             yield f"data: {json.dumps({'type': 'sources', 'sources': []})}\n\n"
             yield "data: [DONE]\n\n"
         return StreamingResponse(
-            _saving_stream_wrapper(no_results(), sb, body.conversation_id, body.question),
+            _saving_stream_wrapper(
+                no_results(), sb, body.conversation_id, body.question,
+                history_len=len(chat_history),
+            ),
             media_type="text/event-stream"
         )
 
@@ -657,6 +708,7 @@ async def agent_query_stream(
         _saving_stream_wrapper(
             agentic_stream(), sb, body.conversation_id, body.question,
             is_agentic=True, retrieval_docs_count=len(docs), web_search_used=web_search_used,
+            history_len=len(chat_history),
         ),
         media_type="text/event-stream"
     )
@@ -804,19 +856,28 @@ async def send_message(
         if page_match:
             page_filter = int(page_match.group(1))
 
-    # Rewrite query for standalone context
-    search_query = await asyncio.to_thread(
-        generator.rewrite_query, body.question, chat_history
+    # B2: rewrite (standalone context) and variant generation are independent —
+    # run them concurrently. Variants come from the raw question; the rewritten
+    # query still goes in as the primary variant.
+    rewrite_task = asyncio.create_task(
+        asyncio.to_thread(generator.rewrite_query, body.question, chat_history)
     )
+    variants_task = (
+        asyncio.create_task(
+            asyncio.to_thread(
+                generator.generate_query_variants, body.question, user_config.MULTI_QUERY_COUNT
+            )
+        )
+        if user_config.USE_MULTI_QUERY
+        else None
+    )
+    search_query = await rewrite_task
 
     # Phase 1: Collection-scoped retrieval
     filename_filters = _resolve_collection_filters(sb, getattr(body, 'collection_id', None))
 
-    if user_config.USE_MULTI_QUERY:
-        variants = await asyncio.to_thread(
-            generator.generate_query_variants, search_query, user_config.MULTI_QUERY_COUNT
-        )
-        variants = [search_query] + variants
+    if variants_task is not None:
+        variants = [search_query] + await variants_task
         docs = await asyncio.to_thread(
             retrieval_mgr.retrieve_multi_query,
             variants,

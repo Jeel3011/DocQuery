@@ -6,7 +6,8 @@ Place this file at: src/components/db.py
 """
 
 import os
-from datetime import datetime, timezone
+import threading
+from datetime import datetime, timezone, timedelta
 import tempfile
 from pathlib import Path
 from typing import Optional
@@ -14,6 +15,13 @@ from supabase import create_client, Client
 from dotenv import load_dotenv
 
 load_dotenv()
+
+# B1/B7: the service-role client carries no per-user session state (identity is
+# validated separately and scoped via SupabaseManager._user), so a single shared
+# instance is safe and lets the underlying httpx connection pool be reused across
+# requests instead of standing up a new client + TCP/TLS handshake every time.
+_service_client: Optional[Client] = None
+_service_client_lock = threading.Lock()
 
 
 def get_supabase_client(use_service_role: bool = False) -> Client:
@@ -24,7 +32,8 @@ def get_supabase_client(use_service_role: bool = False) -> Client:
     SUPABASE_SERVICE_KEY which grants full access — validation of the user's
     identity is still done separately via auth.get_user(token).
 
-    For client-side (Streamlit) sessions: use default (anon key).
+    For client-side (Streamlit) sessions: use default (anon key). The anon client
+    is NOT cached because Streamlit's sign_in mutates per-session auth state on it.
     """
     url = os.getenv("SUPABASE_URL")
     anon_key = os.getenv("SUPABASE_ANON_KEY")
@@ -34,7 +43,12 @@ def get_supabase_client(use_service_role: bool = False) -> Client:
     if use_service_role:
         if not service_key:
             raise ValueError("SUPABASE_SERVICE_KEY must be set in your .env file for server-side operations")
-        return create_client(url, service_key)
+        global _service_client
+        if _service_client is None:
+            with _service_client_lock:
+                if _service_client is None:
+                    _service_client = create_client(url, service_key)
+        return _service_client
     return create_client(url, anon_key)
 
 
@@ -304,6 +318,32 @@ class SupabaseManager:
             {"updated_at": datetime.now(timezone.utc).isoformat()}
         ).eq("id", conversation_id).execute()
         return res.data[0] if res.data else {}
+
+    def save_messages(self, conversation_id: str, items: list) -> list:
+        """B4: bulk-insert several messages in one round-trip, bumping the
+        conversation's updated_at once (vs. one INSERT + one UPDATE per message).
+
+        Each item is a dict with keys: role, content, and optional sources.
+        Explicit incrementing created_at preserves insertion order even though
+        all rows share a single INSERT (get_messages orders by created_at).
+        """
+        base = datetime.now(timezone.utc)
+        rows = [
+            {
+                "conversation_id": conversation_id,
+                "user_id": self.user_id,
+                "role": m["role"],
+                "content": m["content"],
+                "sources": m.get("sources") or [],
+                "created_at": (base + timedelta(milliseconds=i)).isoformat(),
+            }
+            for i, m in enumerate(items)
+        ]
+        res = self.client.table("messages").insert(rows).execute()
+        self.client.table("conversations").update(
+            {"updated_at": (base + timedelta(milliseconds=len(items))).isoformat()}
+        ).eq("id", conversation_id).execute()
+        return res.data or []
 
     def get_messages(self, conversation_id: str) -> list:
         """Load all messages for a conversation, oldest first."""

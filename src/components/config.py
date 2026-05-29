@@ -32,7 +32,10 @@ class Config:
     PDF_STRATEGY: str = "auto"          # fallback for non-PDFs and force-override
     EXTRACT_IMAGES: bool = True          # False = skip image extraction (faster)
     PARALLEL_PDF_PAGES: bool = True      # Process PDF page-ranges in parallel (3-5x faster)
-    PDF_PARALLEL_WORKERS: int = 4        # Max parallel workers for page processing
+    # A1: match parallelism to the box's vCPUs to avoid oversubscription thrashing.
+    # 4 unstructured/YOLOX processes on a 2-vCPU worker fight over cores. Default to
+    # the container's CPU count; override per-deploy via PDF_PARALLEL_WORKERS env var.
+    PDF_PARALLEL_WORKERS: int = int(os.getenv("PDF_PARALLEL_WORKERS", os.cpu_count() or 2))
 
     # ── Phase 3: Tiered PDF strategy thresholds ──
     # ≤ PDF_FAST_THRESHOLD_PAGES   → strategy="fast" (no OCR, ~0.5s/doc)
@@ -58,6 +61,12 @@ class Config:
     # Supabase
     SUPABASE_URL: str = os.getenv("SUPABASE_URL")
     SUPABASE_ANON_KEY: str = os.getenv("SUPABASE_ANON_KEY")
+    # B1: local JWT verification avoids an auth.get_user() round-trip per request.
+    # Modern Supabase tokens (ES256/RS256) are verified via the project's JWKS
+    # endpoint using SUPABASE_URL alone — no secret needed. This is ONLY the legacy
+    # HS256 shared secret (Dashboard → Settings → API → JWT Keys → Legacy JWT Secret),
+    # used to verify any still-valid legacy tokens. Optional.
+    SUPABASE_JWT_SECRET: str = os.getenv("SUPABASE_JWT_SECRET", "")
 
     # Pinecone
     PINECONE_API_KEY: str = os.getenv("PINECONE_API_KEY")

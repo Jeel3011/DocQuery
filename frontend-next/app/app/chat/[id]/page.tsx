@@ -180,12 +180,18 @@ function ChatPageInner() {
     [token, convId] // Stable deps only — no isStreaming, agenticMode, activeCollectionId
   );
 
-  // ── Load documents for comparison picker ─────────────────────────────────
-  useEffect(() => {
-    if (!token) return;
+  // ── Load documents for the comparison picker (C2: lazy, not on every mount) ──
+  // Fetched once, on demand — when the user hovers/opens Compare — instead of
+  // eagerly on chat load where most users never open the modal.
+  const documentsLoadedRef = useRef(false);
+  const loadDocuments = useCallback(() => {
+    if (!token || documentsLoadedRef.current) return;
+    documentsLoadedRef.current = true;
     listDocuments(token)
       .then((docs) => setDocuments(docs.filter((d) => d.status === "ready")))
-      .catch(() => {});
+      .catch(() => {
+        documentsLoadedRef.current = false; // allow retry on next interaction
+      });
   }, [token]);
 
   async function handleCompare() {
@@ -291,16 +297,16 @@ function ChatPageInner() {
 
         {/* Right-side actions */}
         <div className="flex items-center gap-1">
-          {/* Compare Documents */}
-          {documents.length >= 2 && (
-            <button
-              onClick={() => { setShowCompare(true); setCompareResult(null); }}
-              className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-[10px] text-[var(--text-muted)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-hover)] transition-all"
-            >
-              <GitCompare size={11} />
-              Compare
-            </button>
-          )}
+          {/* Compare Documents — docs are loaded lazily (C2): prefetch on hover,
+              ensure loaded on click. */}
+          <button
+            onMouseEnter={loadDocuments}
+            onClick={() => { loadDocuments(); setShowCompare(true); setCompareResult(null); }}
+            className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-[10px] text-[var(--text-muted)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-hover)] transition-all"
+          >
+            <GitCompare size={11} />
+            Compare
+          </button>
 
           {/* Export */}
           {messages.length > 0 && !loading && (
@@ -434,6 +440,11 @@ function ChatPageInner() {
 
             {!compareResult ? (
               <>
+                {documents.length < 2 && (
+                  <p className="text-[11px] text-[var(--text-muted)]">
+                    You need at least two processed documents to compare.
+                  </p>
+                )}
                 <div className="space-y-3">
                   <div>
                     <label className="text-[10px] text-[var(--text-muted)] uppercase tracking-wide mb-1 block">Document A</label>
