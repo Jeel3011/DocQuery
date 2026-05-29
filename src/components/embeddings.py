@@ -1,3 +1,5 @@
+import time
+from concurrent.futures import ThreadPoolExecutor
 from typing import List
 from src.components.config import Config
 from src.components.data_ingestion import DocumentProcessor
@@ -9,6 +11,12 @@ import traceback
 import os
 from src.logger import get_logger
 logger = get_logger(__name__)
+
+# A3: batch sizes for the embed/upsert stages.
+#   EMBED_BATCH  — texts per OpenAI embed_documents() call; batches run in parallel.
+#   UPSERT_BATCH — vectors per Pinecone upsert; upserts are issued asynchronously.
+EMBED_BATCH = 256
+UPSERT_BATCH = 64
 
 class EmbeddingManager:
     def __init__(self, config: Config):
@@ -87,10 +95,13 @@ class EmbeddingManager:
                 embedding=embedding_model,
                 namespace=self.config.PINECONE_NAMESPACE
             )
-            
-            # Upsert into Pinecone. This automatically handles duplicates if reusing chunk_id.
-            vector_store.add_documents(documents=documents, ids=[d.metadata["chunk_id"] for d in documents])
-            
+
+            # A3: embed (parallel batches) then upsert (async batches), with an
+            # explicit embed-vs-upsert timing breakdown. Behaviourally identical to
+            # add_documents() — same chunk_id de-dupe, same "text"-key metadata —
+            # but embedding batches run concurrently instead of one after another.
+            self._embed_and_upsert(vector_store, documents)
+
             print("Vector store created successfully.")
             return vector_store
         
@@ -102,6 +113,55 @@ class EmbeddingManager:
                 },
             )
             raise
+
+    def _embed_and_upsert(self, vector_store: PineconeVectorStore, documents: List[Document]) -> None:
+        """A3: embed chunks in parallel batches, then async-upsert to Pinecone.
+
+        Mirrors PineconeVectorStore.add_texts (full content stored under the
+        "text" metadata key the retriever reads) but parallelizes the embedding
+        batches and logs embed vs. upsert time separately.
+        """
+        if not documents:
+            return
+
+        # Match the retriever's text key so retrieved docs carry their content.
+        text_key = getattr(vector_store, "_text_key", "text")
+        texts = [d.page_content for d in documents]
+        ids = [d.metadata["chunk_id"] for d in documents]
+        metadatas = []
+        for d in documents:
+            md = dict(d.metadata)
+            md[text_key] = d.page_content
+            metadatas.append(md)
+
+        # ── Embed: split into batches and run them concurrently ──
+        t0 = time.perf_counter()
+        batches = [texts[i:i + EMBED_BATCH] for i in range(0, len(texts), EMBED_BATCH)]
+        if len(batches) <= 1:
+            embeddings = self.embedding_model.embed_documents(texts)
+        else:
+            with ThreadPoolExecutor(max_workers=min(4, len(batches))) as ex:
+                results = list(ex.map(self.embedding_model.embed_documents, batches))
+            embeddings = [vec for batch in results for vec in batch]
+        t_embed = time.perf_counter() - t0
+
+        # ── Upsert: issue batched upserts asynchronously, then await them ──
+        t1 = time.perf_counter()
+        index = vector_store.index
+        namespace = self.config.PINECONE_NAMESPACE
+        vectors = list(zip(ids, embeddings, metadatas))
+        async_results = [
+            index.upsert(vectors=vectors[i:i + UPSERT_BATCH], namespace=namespace, async_req=True)
+            for i in range(0, len(vectors), UPSERT_BATCH)
+        ]
+        for res in async_results:
+            res.get()
+        t_upsert = time.perf_counter() - t1
+
+        self.logger.info(
+            "A3 embed=%.2fs upsert=%.2fs (chunks=%d, embed_batches=%d)",
+            t_embed, t_upsert, len(documents), len(batches),
+        )
 
 
 

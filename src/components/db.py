@@ -124,6 +124,21 @@ class SupabaseManager:
         )
         return storage_path
 
+    def upload_file_from_path(self, local_path: str, filename: str) -> str:
+        """A2: Upload directly from a local file path so the client streams it,
+        instead of reading the whole file into memory first. Returns the storage
+        path (user_id/filename).
+        """
+        if not self.user_id:
+            raise ValueError("User must be logged in to upload files.")
+        storage_path = f"{self.user_id}/{filename}"
+        self.client.storage.from_(self.BUCKET).upload(
+            path=storage_path,
+            file=local_path,
+            file_options={"upsert": "true"},
+        )
+        return storage_path
+
     def download_file_to_temp(self, storage_path: str, suffix: str = "") -> str:
         """
         Download file from Supabase Storage to a local temp file.

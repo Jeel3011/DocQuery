@@ -21,8 +21,10 @@ image:
   # Port exposed through your container to route traffic to it.
   port: 8000
 
-cpu: 1024       # Number of CPU units for the task.
-memory: 2048    # Amount of memory in MiB used by the task.
+# B3: 2 vCPU so the CPU-bound cross-encoder rerank doesn't starve the async event
+# loop / other in-flight requests under load. Fargate requires ≥4096 MiB at 2 vCPU.
+cpu: 2048       # Number of CPU units for the task (2 vCPU).
+memory: 4096    # Amount of memory in MiB used by the task.
 platform: linux/x86_64  # See https://aws.github.io/copilot-cli/docs/manifest/lb-web-service/#platform
 # Auto-scale API containers based on CPU utilization.
 # 1 always-on container + up to 2 more on Fargate Spot when load increases.

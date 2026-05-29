@@ -106,14 +106,11 @@ async def upload_document(
                 first_chunk = False
             await out.write(chunk)
 
-    # L7 FIX: Read file from disk for Supabase upload instead of keeping
-    # a second copy in memory via chunks_buf.
-    async with aiofiles.open(tmp_path, "rb") as f:
-        file_bytes = await f.read()
-
-    # 1. Upload raw file to Supabase Storage immediately
+    # 1. Upload raw file to Supabase Storage immediately.
+    # A2: upload straight from the temp file path so the client streams it —
+    # avoids reading the entire file back into memory just to hand it off.
     try:
-        storage_path = sb.upload_file(file_bytes, safe_filename)
+        storage_path = sb.upload_file_from_path(tmp_path, safe_filename)
     except Exception as e:
         logger.exception("Storage upload failed for %s", safe_filename)  # S8: log detail server-side
         raise HTTPException(status_code=500, detail="Failed to upload file to storage.")  # S8: generic message to client
