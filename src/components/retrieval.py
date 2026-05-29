@@ -214,10 +214,15 @@ class RetrievalManager:
         filename_filter: str = None,
         page_filter: str = None,
         filename_filters: list[str] = None,
+        primary_embedding: list = None,
     ) -> list[Document]:
         """Retrieve docs for multiple query variants, deduplicate, optional rerank.
 
         Uses a thread pool to run Pinecone calls in parallel (fixes L3).
+
+        B5: if primary_embedding is supplied it is reused for queries[0] (skipping
+        a redundant OpenAI embed of the primary query); callers must only pass it
+        when it actually corresponds to queries[0].
         """
         from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -226,10 +231,18 @@ class RetrievalManager:
         def _fetch(q: str) -> list[Document]:
             return self._raw_retrieve(q, filename_filter, page_filter, filename_filters=filename_filters)
 
+        def _fetch_primary() -> list[Document]:
+            return self._raw_retrieve_by_vector(primary_embedding, filename_filter, page_filter, filename_filters=filename_filters)
+
         # Run all Pinecone queries in parallel (I/O-bound)
         max_workers = min(len(queries), 4)
         with ThreadPoolExecutor(max_workers=max_workers) as pool:
-            futures = {pool.submit(_fetch, q): q for q in queries}
+            futures = {}
+            for i, q in enumerate(queries):
+                if i == 0 and primary_embedding:
+                    futures[pool.submit(_fetch_primary)] = q
+                else:
+                    futures[pool.submit(_fetch, q)] = q
             for future in as_completed(futures):
                 for doc in future.result():
                     key = doc.metadata.get("content_hash", doc.page_content[:100])

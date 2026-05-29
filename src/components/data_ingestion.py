@@ -144,6 +144,34 @@ def _get_pdf_page_count(file_path: str) -> int:
         return 0
 
 
+def _pdf_text_density(file_path: str, sample_pages: int = 5) -> float:
+    """A5: average extractable characters per page over an evenly-spaced sample.
+
+    A born-digital PDF has a real text layer (hundreds–thousands of chars/page);
+    a scanned PDF returns ~0 and genuinely needs OCR. Returns -1.0 on error so
+    callers can keep their default (OCR) behaviour rather than guess wrong.
+    """
+    try:
+        from pypdf import PdfReader
+        reader = PdfReader(file_path)
+        n = len(reader.pages)
+        if n == 0:
+            return -1.0
+        if n == 1 or sample_pages <= 1:
+            idxs = [0]
+        else:
+            idxs = sorted({int(i * (n - 1) / (sample_pages - 1)) for i in range(sample_pages)})
+        total = 0
+        for i in idxs:
+            try:
+                total += len((reader.pages[i].extract_text() or "").strip())
+            except Exception:
+                pass
+        return total / len(idxs)
+    except Exception:
+        return -1.0
+
+
 def _process_pdf_page_range_from_bytes(
     pdf_bytes: bytes,
     start_page: int,
@@ -300,12 +328,23 @@ class DocumentProcessor:
                 return "fast"
             if page_count <= self.config.PDF_MEDIUM_THRESHOLD_PAGES:
                 return "auto"
+            # A5: a long PDF only needs expensive OCR (hi_res) if it's genuinely
+            # scanned. If it carries a real text layer, "auto" is far cheaper and
+            # just as accurate. Probe a sample; fall back to hi_res on uncertainty.
+            density = _pdf_text_density(file_path)
+            if density >= self.config.PDF_TEXT_LAYER_MIN_CHARS_PER_PAGE:
+                _logger.info(
+                    "A5: %d-page PDF has text layer (%.0f chars/page) — using 'auto', skipping OCR",
+                    page_count, density,
+                )
+                return "auto"
             return "hi_res"
 
         return "auto"
 
     def _process_pdf_parallel(
-        self, file_path: str, strategy: str = None, page_count: Optional[int] = None
+        self, file_path: str, strategy: str = None, page_count: Optional[int] = None,
+        progress_cb=None,
     ) -> List:
         """Split a PDF into page-range chunks and process in parallel.
 
@@ -367,6 +406,7 @@ class DocumentProcessor:
             for start, end in ranges
         }
 
+        pages_done = 0
         for future in as_completed(futures):
             start, end = futures[future]
             try:
@@ -377,6 +417,13 @@ class DocumentProcessor:
                 _logger.error("Pages %d-%d failed: %s", start + 1, end, exc)
                 print(f"    Pages {start+1}-{end}: FAILED ({exc})")
                 results_by_start[start] = []
+            # C6: report page-level parse progress as each range finishes.
+            pages_done += (end - start)
+            if progress_cb:
+                try:
+                    progress_cb(pages_done, total_pages)
+                except Exception:
+                    pass  # progress reporting must never break ingestion
 
         all_elements: list = []
         for start in sorted(results_by_start):
@@ -399,7 +446,7 @@ class DocumentProcessor:
             pdf_kwargs["extract_image_block_to_payload"] = True
         return partition_pdf(**pdf_kwargs)
 
-    def process_documents(self, file_paths: str, force_strategy: str = None) -> List:
+    def process_documents(self, file_paths: str, force_strategy: str = None, progress_cb=None) -> List:
         """Process documents and return a list of processed elements.
 
         Args:
@@ -407,6 +454,8 @@ class DocumentProcessor:
             force_strategy:  Optional override for PDF strategy (e.g. 'hi_res' for
                              user-requested high-quality scan). If None, auto-detects
                              via _detect_strategy() based on file type + page count.
+            progress_cb:     Optional callable(pages_done, total_pages) invoked as
+                             PDF page ranges finish parsing (C6: page-level progress).
         """
         file_extension = Path(file_paths).suffix.lower()
         file_name = Path(file_paths).name
@@ -427,7 +476,7 @@ class DocumentProcessor:
         try:
             if file_extension == ".pdf":
                 if self.config.PARALLEL_PDF_PAGES:
-                    elements = self._process_pdf_parallel(file_paths, strategy=strategy, page_count=page_count)
+                    elements = self._process_pdf_parallel(file_paths, strategy=strategy, page_count=page_count, progress_cb=progress_cb)
                 else:
                     elements = self._process_pdf_single(file_paths, strategy=strategy)
 

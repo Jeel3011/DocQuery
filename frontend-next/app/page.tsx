@@ -1,8 +1,6 @@
 import Link from "next/link";
 import { HeroSection } from "@/components/landing/HeroSection";
-import { FeaturesBento } from "@/components/landing/FeaturesBento";
-import { HowItWorks } from "@/components/landing/HowItWorks";
-import { RagasMetrics } from "@/components/landing/RagasMetrics";
+import { BelowFold } from "@/components/landing/BelowFold";
 
 export default function RootPage() {
   return (
@@ -25,9 +23,7 @@ export default function RootPage() {
         </header>
 
         <HeroSection />
-        <FeaturesBento />
-        <HowItWorks />
-        <RagasMetrics />
+        <BelowFold />
         
         <footer className="py-12 text-center text-[var(--text-muted)] text-sm border-t border-[var(--border-dotted)] border-dashed mt-24 bg-[var(--bg-surface)]">
           <p>© 2026 DocQuery. Built for scale.</p>

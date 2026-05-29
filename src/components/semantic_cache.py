@@ -16,6 +16,7 @@ those calls entirely, delivering sub-50ms responses vs 1-3s LLM calls.
 
 import json
 import hashlib
+import itertools
 import time
 from typing import Optional
 
@@ -24,6 +25,11 @@ import numpy as np
 from src.logger import get_logger
 
 logger = get_logger(__name__)
+
+# B6: hard cap on how many Tier-2 vector entries we scan/score per lookup. The
+# TTL already bounds growth, but this guarantees the cosine scan stays cheap and
+# bounded even for a heavy user. Beyond this scale, move to Redis Stack HNSW.
+MAX_TIER2_SCAN = 2000
 
 
 class SemanticCache:
@@ -129,7 +135,8 @@ class SemanticCache:
             # New approach: scan to collect all keys, then single MGET = O(1) round-trips.
             # At 1000 cached queries: ~500ms → ~5ms.
             pattern = f"cache:{self.namespace}:vec:*"
-            keys = list(self._redis.scan_iter(pattern, count=500))
+            # B6: bound the scan — never score more than MAX_TIER2_SCAN entries.
+            keys = list(itertools.islice(self._redis.scan_iter(pattern, count=500), MAX_TIER2_SCAN))
 
             if not keys:
                 logger.debug("Cache miss (empty namespace) for: %.40s", query)

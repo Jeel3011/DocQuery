@@ -74,8 +74,19 @@ def process_document_task(
         logger.info("[%s] Stage 1/4: Parsing document %s", doc_id, filename)
         t_start = time.perf_counter()
 
+        # C6: map page-level parse completion into the 10→30% band so the UI shows
+        # continuous progress during the slow parse. Throttle to whole-percent jumps.
+        _last_pct = [10]
+        def _parse_progress(pages_done: int, total_pages: int):
+            if not total_pages:
+                return
+            pct = 10 + int(20 * min(pages_done, total_pages) / total_pages)
+            if pct > _last_pct[0]:
+                _last_pct[0] = pct
+                sb.update_document_status(doc_id, "processing", progress_pct=pct)
+
         processor = DocumentProcessor(config=config)
-        elements = processor.process_documents(file_paths=tmp_path)
+        elements = processor.process_documents(file_paths=tmp_path, progress_cb=_parse_progress)
 
         t_parse = time.perf_counter() - t_start
         logger.info("[%s] Parsing complete: %d elements in %.1fs", doc_id, len(elements), t_parse)

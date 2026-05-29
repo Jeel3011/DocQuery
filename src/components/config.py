@@ -43,6 +43,9 @@ class Config:
     # > PDF_MEDIUM_THRESHOLD_PAGES → strategy="hi_res" (full OCR, ~15-30s/doc)
     PDF_FAST_THRESHOLD_PAGES: int = 10   # Raised from 5 — more PDFs avoid model loading entirely
     PDF_MEDIUM_THRESHOLD_PAGES: int = 30
+    # A5: above MEDIUM, only OCR (hi_res) when the avg extractable text/page is below
+    # this — i.e. the PDF is genuinely scanned. Born-digital long PDFs use "auto".
+    PDF_TEXT_LAYER_MIN_CHARS_PER_PAGE: int = 100
 
     # Retrieval params
     TOP_K: int = 5

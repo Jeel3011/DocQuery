@@ -201,7 +201,7 @@ async def query(
             body.question, user_config.EMBEDDING_MODEL_NAME, user_config.OPENAI_API_KEY
         )
         cache = _get_cache(sb.user_id)
-        cached = cache.get(body.question, query_embedding)
+        cached = await asyncio.to_thread(cache.get, body.question, query_embedding)
     except Exception:
         cached = None
         query_embedding = []
@@ -257,6 +257,8 @@ async def query(
             body.filename_filter,
             body.page_filter,
             filename_filters=filename_filters,
+            # B5: variants[0] == body.question, so the cache embedding fits — reuse it.
+            primary_embedding=query_embedding or None,
         )
     else:
         docs = await asyncio.to_thread(
@@ -343,7 +345,7 @@ async def query_stream(
             body.question, user_config.EMBEDDING_MODEL_NAME, user_config.OPENAI_API_KEY
         )
         cache = _get_cache(sb.user_id)
-        cached = cache.get(body.question, query_embedding)
+        cached = await asyncio.to_thread(cache.get, body.question, query_embedding)
     except Exception:
         pass
     cache_latency_s = time.perf_counter() - t_cache
@@ -417,12 +419,16 @@ async def query_stream(
     elif variants_task is not None:
         raw_variants = await variants_task
         variants = [search_query] + raw_variants
+        # B5: query_embedding is for body.question; it only matches variants[0]
+        # (search_query) when the rewrite was a no-op. Reuse it only then.
+        primary_emb = query_embedding if (query_embedding and search_query == body.question) else None
         docs = await asyncio.to_thread(
             retrieval_mgr.retrieve_multi_query,
             variants,
             body.filename_filter,
             body.page_filter,
             filename_filters=filename_filters,
+            primary_embedding=primary_emb,
         )
     else:
         docs = await asyncio.to_thread(
@@ -531,7 +537,7 @@ async def query_agent(
             body.question, user_config.EMBEDDING_MODEL_NAME, user_config.OPENAI_API_KEY
         )
         cache = _get_cache(sb.user_id)
-        cached = cache.get(body.question, query_embedding)
+        cached = await asyncio.to_thread(cache.get, body.question, query_embedding)
     except Exception:
         pass
     cache_latency.observe(time.perf_counter() - t_cache)

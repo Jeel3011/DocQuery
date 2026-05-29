@@ -193,6 +193,7 @@ async def list_documents(sb=Depends(get_current_user)):
                 chunk_count=d.get("chunk_count", 0),
                 file_size_bytes=d.get("file_size_bytes"),
                 created_at=d.get("created_at"),
+                processing_progress=d.get("processing_progress", 0),
             )
             for d in docs
         ],

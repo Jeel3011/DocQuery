@@ -44,6 +44,7 @@ class DocumentResponse(BaseModel):
     chunk_count: Optional[int] = 0
     file_size_bytes: Optional[int] = None
     created_at: Optional[str] = None
+    processing_progress: Optional[int] = 0   # C6: 0–100 ingest progress
 
 
 class DocumentListResponse(BaseModel):

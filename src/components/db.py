@@ -251,9 +251,23 @@ class SupabaseManager:
             "status": status,
             "chunk_count": chunk_count,
         }
-        self.client.table("documents").update(
-            update_data
-        ).eq("id", doc_id).eq("user_id", self.user_id).execute()
+        # C6: persist the progress percentage so the UI can show real progress.
+        if progress_pct is not None:
+            update_data["processing_progress"] = max(0, min(100, int(progress_pct)))
+        try:
+            self.client.table("documents").update(
+                update_data
+            ).eq("id", doc_id).eq("user_id", self.user_id).execute()
+        except Exception:
+            # Forward-compat: if the processing_progress column isn't present yet
+            # (migration 005 not applied), retry without it so status still updates.
+            if "processing_progress" in update_data:
+                update_data.pop("processing_progress")
+                self.client.table("documents").update(
+                    update_data
+                ).eq("id", doc_id).eq("user_id", self.user_id).execute()
+            else:
+                raise
 
     def get_user_documents(self) -> list:
         """Get all documents for current user."""
