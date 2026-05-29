@@ -12,6 +12,7 @@ from fastapi import APIRouter, HTTPException, Depends
 from fastapi.responses import StreamingResponse
 
 from src.api.dependencies import get_current_user
+from src.api.routes.audit import log_audit
 from src.logger import get_logger
 
 router = APIRouter()
@@ -159,6 +160,7 @@ async def export_conversation(
         md_content = _format_conversation_md(title, messages)
         safe_title = "".join(c for c in title if c.isalnum() or c in " -_").strip()[:50]
         filename = f"{safe_title or 'conversation'}.md"
+        log_audit(sb, "export.conversation", "conversation", conversation_id, {"format": "md", "title": title})
         return StreamingResponse(
             io.BytesIO(md_content.encode("utf-8")),
             media_type="text/markdown",
@@ -169,6 +171,7 @@ async def export_conversation(
         pdf_bytes = _format_conversation_pdf(title, messages)
         safe_title = "".join(c for c in title if c.isalnum() or c in " -_").strip()[:50]
         filename = f"{safe_title or 'conversation'}.pdf"
+        log_audit(sb, "export.conversation", "conversation", conversation_id, {"format": "pdf", "title": title})
         return StreamingResponse(
             io.BytesIO(pdf_bytes),
             media_type="application/pdf",

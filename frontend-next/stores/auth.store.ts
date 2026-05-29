@@ -9,6 +9,8 @@ import { create } from "zustand";
 import { persist, createJSONStorage } from "zustand/middleware";
 import { supabase } from "@/lib/supabase";
 
+let _authUnsub: (() => void) | null = null;
+
 interface User {
   id: string;
   email: string;
@@ -62,7 +64,8 @@ export const useAuthStore = create<AuthStore>()(
         set({ isLoading: false });
 
         // Listen for token refresh + sign-out from any tab
-        supabase.auth.onAuthStateChange((event: any, session: any) => {
+        // Unsubscribe any previous listener before registering a new one
+        const { data: { subscription } } = supabase.auth.onAuthStateChange((event: any, session: any) => {
           if (session) {
             set({
               user: {
@@ -75,6 +78,9 @@ export const useAuthStore = create<AuthStore>()(
             set({ user: null, token: null });
           }
         });
+        // Unsubscribe previous listener so repeated initialize() calls don't leak
+        _authUnsub?.();
+        _authUnsub = () => subscription.unsubscribe();
       },
     }),
     {

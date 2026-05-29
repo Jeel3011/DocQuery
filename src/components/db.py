@@ -391,10 +391,13 @@ class SupabaseManager:
         ).eq("document_id", document_id).execute()
 
     def get_collection_document_ids(self, collection_id: str) -> list[str]:
-        """Get all document IDs in a collection."""
+        """Get all document IDs in a collection, verifying ownership via collections table."""
+        # Join through collections to ensure this user owns the collection
         res = self.client.table("collection_documents").select(
-            "document_id"
-        ).eq("collection_id", collection_id).execute()
+            "document_id, collections!inner(user_id)"
+        ).eq("collection_id", collection_id).eq(
+            "collections.user_id", self.user_id
+        ).execute()
         return [row["document_id"] for row in (res.data or [])]
 
     def get_collection_documents(self, collection_id: str) -> list:

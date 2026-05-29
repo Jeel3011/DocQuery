@@ -4,9 +4,8 @@
 // Mirrors src/api/schemas.py exactly.
 
 import axios, { AxiosError } from "axios";
+import { API_BASE } from "./config";
 
-const API_BASE =
-  process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 const API_V1 = `${API_BASE}/api/v1`;
 
 // ─── Types (mirror schemas.py) ────────────────────────────────────────────────
@@ -50,6 +49,7 @@ export interface QueryRequest {
   filename_filter?: string | null;
   page_filter?: number | null;
   conversation_id?: string | null;
+  collection_id?: string | null;
 }
 
 // ─── Error class ──────────────────────────────────────────────────────────────
@@ -346,7 +346,7 @@ export interface AnalyticsSummary {
   web_search_rate: number | null;
   queries_today: number;
   queries_this_week: number;
-  top_documents: { query: string; count: number }[];
+  top_queries: { query: string; count: number }[];
   daily_queries: DailyQueryCount[];
 }
 
@@ -378,6 +378,69 @@ export async function getUsageSummary(
 ): Promise<UsageSummary> {
   try {
     const res = await makeClient(token).get<UsageSummary>("/analytics/usage");
+    return res.data;
+  } catch (err) {
+    handleAxiosError(err);
+  }
+}
+
+// ─── Audit Log ───────────────────────────────────────────────────────────────
+
+export interface AuditEntry {
+  id: string;
+  action: string;
+  resource_type: string | null;
+  resource_id: string | null;
+  metadata: Record<string, unknown> | null;
+  ip_address: string | null;
+  created_at: string | null;
+}
+
+export interface AuditLogResponse {
+  entries: AuditEntry[];
+  total: number;
+  page: number;
+  per_page: number;
+}
+
+export async function getAuditLog(
+  token: string,
+  page = 1,
+  perPage = 50,
+  days = 30
+): Promise<AuditLogResponse> {
+  try {
+    const res = await makeClient(token).get<AuditLogResponse>("/audit/log", {
+      params: { page, per_page: perPage, days },
+    });
+    return res.data;
+  } catch (err) {
+    handleAxiosError(err);
+  }
+}
+
+// ─── Document Comparison ─────────────────────────────────────────────────────
+
+export interface ComparisonResult {
+  document_a: string;
+  document_b: string;
+  similarities: string[];
+  differences: string[];
+  summary: string;
+  focus_area: string | null;
+}
+
+export async function compareDocuments(
+  token: string,
+  documentIdA: string,
+  documentIdB: string,
+  focus?: string
+): Promise<ComparisonResult> {
+  try {
+    const res = await makeClient(token).post<ComparisonResult>(
+      "/documents/compare",
+      { document_id_a: documentIdA, document_id_b: documentIdB, focus: focus || null }
+    );
     return res.data;
   } catch (err) {
     handleAxiosError(err);

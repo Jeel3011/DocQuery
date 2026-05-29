@@ -61,7 +61,7 @@ function timeAgo(d: string | null): string {
 }
 
 function fmtBytes(b: number | null): string {
-  if (!b) return "0 KB";
+  if (b == null || b === 0) return "—";
   return b < 1048576 ? `${(b / 1024).toFixed(0)} KB` : `${(b / 1048576).toFixed(1)} MB`;
 }
 
@@ -85,6 +85,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
   const [newCollectionName, setNewCollectionName] = useState("");
   const [delCollId, setDelCollId] = useState<string | null>(null);
   const [collectionDocIds, setCollectionDocIds] = useState<Set<string>>(new Set());
+  const [isMobile, setIsMobile] = useState(false);
   const pollRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
   const renameRef = useRef<HTMLInputElement>(null);
@@ -96,20 +97,38 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
     try {
       const d = await listConversations(token);
       setConvs(d.sort((a, b) => new Date(b.updated_at ?? 0).getTime() - new Date(a.updated_at ?? 0).getTime()));
-    } catch {}
+    } catch (e) {
+      console.error("Failed to load conversations", e);
+      toast.error("Failed to load conversations");
+    }
   }, [token]);
 
   const loadDocs = useCallback(async () => {
     if (!token) return;
-    try { setDocs(await listDocuments(token)); } catch {}
+    try { setDocs(await listDocuments(token)); }
+    catch (e) {
+      console.error("Failed to load documents", e);
+      toast.error("Failed to load documents");
+    }
   }, [token]);
 
   const loadCollections = useCallback(async () => {
     if (!token) return;
-    try { setCollections(await listCollections(token)); } catch {}
+    try { setCollections(await listCollections(token)); }
+    catch (e) {
+      console.error("Failed to load collections", e);
+      toast.error("Failed to load collections");
+    }
   }, [token]);
 
   useEffect(() => { loadConvs(); loadDocs(); loadCollections(); }, [loadConvs, loadDocs, loadCollections]);
+
+  useEffect(() => {
+    const check = () => setIsMobile(window.innerWidth < 768);
+    check();
+    window.addEventListener("resize", check);
+    return () => window.removeEventListener("resize", check);
+  }, []);
 
   // Load docs in active collection to show checkmarks
   useEffect(() => {
@@ -253,6 +272,20 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
       const doc = await uploadDocument(token, file);
       setDocs((p) => [doc, ...p]);
       toast.success(`Uploaded ${file.name}`);
+      // Auto-add to active collection if one is selected
+      if (activeCollectionId) {
+        try {
+          await addDocToCollection(token, activeCollectionId, doc.id);
+          setCollectionDocIds((prev) => { const next = new Set(prev); next.add(doc.id); return next; });
+          setCollections((prev) =>
+            prev.map((c) =>
+              c.id === activeCollectionId
+                ? { ...c, document_count: (c.document_count ?? 0) + 1 }
+                : c
+            )
+          );
+        } catch { /* non-fatal — doc uploaded, just not added to collection */ }
+      }
       loadDocs();
     } catch (e: unknown) {
       toast.error(`Upload failed: ${e instanceof Error ? e.message : "Error"}`);
@@ -287,10 +320,10 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
             </span>
           )}
           <button
-            onClick={() => typeof window !== "undefined" && window.innerWidth < 768 ? setMobileOpen(false) : setCollapsed(!collapsed)}
+            onClick={() => isMobile ? setMobileOpen(false) : setCollapsed(!collapsed)}
             className="w-8 h-8 flex items-center justify-center rounded-lg bg-[var(--bg-hover)] text-[var(--text-secondary)] hover:text-[var(--text-primary)] transition-colors"
           >
-            {typeof window !== "undefined" && window.innerWidth < 768 ? <X size={16} /> : collapsed ? <ChevronRight size={16} /> : <ChevronLeft size={16} />}
+            {isMobile ? <X size={16} /> : collapsed ? <ChevronRight size={16} /> : <ChevronLeft size={16} />}
           </button>
         </div>
 
@@ -497,13 +530,18 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
                 : <Upload size={14} className="text-[var(--text-muted)]" />
               }
               <span className="text-[10px] text-[var(--text-muted)]">{uploading ? "Uploading…" : "Drop file or click"}</span>
-              <span className="text-[9px] text-[var(--text-muted)]/60">PDF · DOCX · PPTX · TXT · Max 10MB</span>
+              <span className="text-[9px] text-[var(--text-muted)]/60">PDF · DOCX · PPTX · TXT · XLSX · Max 10MB</span>
               <input ref={fileRef} type="file" accept={ACCEPTED} className="hidden"
                 onChange={(e) => { const f = e.target.files?.[0]; if (f) upload(f); e.target.value = ""; }} />
             </div>
 
             {/* Doc list */}
             <div className="overflow-y-auto scrollbar-thin px-3 pb-2 flex-1 min-h-0 space-y-1">
+              {docs.length === 0 && !uploading && (
+                <p className="text-[10px] text-[var(--text-muted)] text-center py-4">
+                  No documents yet — upload one above
+                </p>
+              )}
               {docs.map((doc) => (
                 <div key={doc.id} className="card px-3 py-2 group">
                   <div className="flex items-center gap-2">

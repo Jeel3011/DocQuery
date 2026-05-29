@@ -3,7 +3,7 @@
 // app/login/page.tsx — Monochrome login
 // White card, black buttons, dotted border accents, dot-grid background
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
@@ -24,10 +24,26 @@ export default function LoginPage() {
   const [tab, setTab] = useState<"signin" | "signup">("signin");
   const [showPw, setShowPw] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [signedUp, setSignedUp] = useState(false);
+  const [countdown, setCountdown] = useState(3);
 
-  const { register, handleSubmit, formState: { errors } } = useForm<Form>({
+  const { register, handleSubmit, formState: { errors }, reset } = useForm<Form>({
     resolver: zodResolver(schema),
   });
+
+  // Reset form errors when switching tabs (#19)
+  function switchTab(t: "signin" | "signup") {
+    setTab(t);
+    reset();
+  }
+
+  // Auto-redirect 3s after signup (#18)
+  useEffect(() => {
+    if (!signedUp) return;
+    if (countdown <= 0) { router.push("/app/chat"); return; }
+    const t = setTimeout(() => setCountdown((c) => c - 1), 1000);
+    return () => clearTimeout(t);
+  }, [signedUp, countdown, router]);
 
   async function onSubmit(data: Form) {
     setLoading(true);
@@ -40,7 +56,8 @@ export default function LoginPage() {
       } else {
         const { error } = await supabase.auth.signUp(data);
         if (error) throw error;
-        toast.success("Account created! Check your email.");
+        toast.success("Account created! Check your email to confirm.");
+        setSignedUp(true);
       }
     } catch (e: unknown) {
       toast.error(e instanceof Error ? e.message : "Auth failed");
@@ -69,13 +86,21 @@ export default function LoginPage() {
         {/* Tabs */}
         <div className="flex gap-1 p-1 bg-[var(--bg-base)] rounded-xl mb-6 border border-[var(--border)]">
           {(["signin", "signup"] as const).map((t) => (
-            <button key={t} onClick={() => setTab(t)}
+            <button key={t} onClick={() => switchTab(t)}
               className={`flex-1 py-2 rounded-lg text-sm font-medium transition-all duration-150
                 ${tab === t ? "bg-[var(--accent)] text-white shadow-sm" : "text-[var(--text-muted)] hover:text-[var(--text-primary)]"}`}>
               {t === "signin" ? "Sign In" : "Sign Up"}
             </button>
           ))}
         </div>
+
+        {/* Post-signup confirmation banner */}
+        {signedUp && (
+          <div className="mb-4 px-4 py-3 rounded-xl bg-[var(--bg-hover)] border border-[var(--border)] text-center">
+            <p className="text-xs text-[var(--text-primary)] font-medium">Check your email to confirm your account.</p>
+            <p className="text-[10px] text-[var(--text-muted)] mt-1">Redirecting in {countdown}s…</p>
+          </div>
+        )}
 
         {/* Form */}
         <form onSubmit={handleSubmit(onSubmit)} className="space-y-4">
@@ -115,9 +140,9 @@ export default function LoginPage() {
 
         <p className="text-center text-[11px] text-[var(--text-muted)] mt-6">
           {tab === "signin" ? (
-            <>No account?{" "}<button onClick={() => setTab("signup")} className="text-[var(--accent)] underline">Sign up</button></>
+            <>No account?{" "}<button onClick={() => switchTab("signup")} className="text-[var(--accent)] underline">Sign up</button></>
           ) : (
-            <>Have an account?{" "}<button onClick={() => setTab("signin")} className="text-[var(--accent)] underline">Sign in</button></>
+            <>Have an account?{" "}<button onClick={() => switchTab("signin")} className="text-[var(--accent)] underline">Sign in</button></>
           )}
         </p>
       </motion.div>

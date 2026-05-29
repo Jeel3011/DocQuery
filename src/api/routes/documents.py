@@ -19,6 +19,7 @@ from src.api.schemas import DocumentResponse, DocumentListResponse
 from src.api.dependencies import get_current_user, get_user_config, limiter
 from src.components.config import Config
 from src.components.metrics import uploads_total
+from src.api.routes.audit import log_audit
 
 logger = logging.getLogger(__name__)
 
@@ -165,6 +166,8 @@ async def upload_document(
     except Exception:
         pass  # cache invalidation failure is non-fatal
 
+    log_audit(sb, "document.upload", "document", doc_id, {"filename": safe_filename, "file_size_bytes": file_size})
+
     # 4. Return 202 Accepted immediately — client should poll GET /documents
     return JSONResponse(
         status_code=202,
@@ -235,6 +238,8 @@ async def delete_document(
             _cache.invalidate_namespace()
         except Exception:
             pass  # cache invalidation failure is non-fatal
+
+        log_audit(sb, "document.delete", "document", doc_id, {"filename": filename})
 
         return {"message": f"Document '{filename}' deleted successfully"}
 

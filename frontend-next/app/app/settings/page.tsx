@@ -18,13 +18,18 @@ import {
   Zap,
   Globe,
   ArrowLeft,
+  Shield,
+  ChevronLeft,
+  ChevronRight,
 } from "lucide-react";
 import { useAuthStore } from "@/stores/auth.store";
 import {
   getAnalyticsSummary,
   getUsageSummary,
+  getAuditLog,
   AnalyticsSummary,
   UsageSummary,
+  AuditEntry,
 } from "@/lib/api";
 import { toast } from "sonner";
 
@@ -95,6 +100,11 @@ export default function SettingsPage() {
   const [analytics, setAnalytics] = useState<AnalyticsSummary | null>(null);
   const [usage, setUsage] = useState<UsageSummary | null>(null);
   const [loading, setLoading] = useState(true);
+  const [auditEntries, setAuditEntries] = useState<AuditEntry[]>([]);
+  const [auditTotal, setAuditTotal] = useState(0);
+  const [auditPage, setAuditPage] = useState(1);
+  const [auditLoading, setAuditLoading] = useState(false);
+  const AUDIT_PER_PAGE = 20;
 
   const load = useCallback(async () => {
     if (!token) return;
@@ -113,7 +123,22 @@ export default function SettingsPage() {
     }
   }, [token]);
 
-  useEffect(() => { load(); }, [load]);
+  const loadAudit = useCallback(async (page: number) => {
+    if (!token) return;
+    setAuditLoading(true);
+    try {
+      const res = await getAuditLog(token, page, AUDIT_PER_PAGE, 30);
+      setAuditEntries(res.entries);
+      setAuditTotal(res.total);
+      setAuditPage(page);
+    } catch {
+      toast.error("Failed to load audit log");
+    } finally {
+      setAuditLoading(false);
+    }
+  }, [token]);
+
+  useEffect(() => { load(); loadAudit(1); }, [load, loadAudit]);
 
   if (loading) {
     return (
@@ -205,13 +230,13 @@ export default function SettingsPage() {
         </section>
 
         {/* Top Queries */}
-        {analytics?.top_documents && analytics.top_documents.length > 0 && (
+        {analytics?.top_queries && analytics.top_queries.length > 0 && (
           <section className="mb-8">
             <h2 className="text-xs font-medium text-[var(--text-muted)] uppercase tracking-[0.12em] mb-3">
               Most Common Queries
             </h2>
             <div className="card divide-y divide-[var(--border)]">
-              {analytics.top_documents.map((item, i) => (
+              {analytics.top_queries.map((item, i) => (
                 <div key={i} className="flex items-center justify-between px-4 py-2.5">
                   <span className="text-xs text-[var(--text-primary)] truncate flex-1 mr-4">{item.query}</span>
                   <span className="text-[10px] text-[var(--text-muted)] flex-shrink-0">{item.count}×</span>
@@ -220,6 +245,79 @@ export default function SettingsPage() {
             </div>
           </section>
         )}
+
+        {/* Audit Log */}
+        <section className="mb-8">
+          <div className="flex items-center justify-between mb-3">
+            <h2 className="text-xs font-medium text-[var(--text-muted)] uppercase tracking-[0.12em] flex items-center gap-2">
+              <Shield size={12} /> Audit Log
+            </h2>
+            <span className="text-[10px] text-[var(--text-muted)]">{auditTotal} events (last 30 days)</span>
+          </div>
+
+          {auditLoading ? (
+            <div className="card p-6 flex justify-center">
+              <div className="w-5 h-5 border-2 border-[var(--accent)] border-t-transparent rounded-full animate-spin" />
+            </div>
+          ) : auditEntries.length === 0 ? (
+            <div className="card p-6 text-center text-xs text-[var(--text-muted)]">No audit events yet</div>
+          ) : (
+            <>
+              <div className="card divide-y divide-[var(--border)] overflow-hidden">
+                {auditEntries.map((entry) => (
+                  <div key={entry.id} className="flex items-start gap-3 px-4 py-2.5">
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-[var(--bg-hover)] text-[var(--accent)]">
+                          {entry.action}
+                        </span>
+                        {entry.resource_type && (
+                          <span className="text-[10px] text-[var(--text-muted)]">{entry.resource_type}</span>
+                        )}
+                        {entry.metadata?.filename != null && (
+                          <span className="text-[10px] text-[var(--text-secondary)] truncate max-w-[200px]">
+                            {String(entry.metadata.filename)}
+                          </span>
+                        )}
+                        {entry.metadata?.question != null && (
+                          <span className="text-[10px] text-[var(--text-secondary)] truncate max-w-[200px]">
+                            {(() => { const q = String(entry.metadata.question); return `“${q.slice(0, 60)}${q.length > 60 ? "…" : ""}”`; })()}
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                    <span className="text-[10px] text-[var(--text-muted)] flex-shrink-0 tabular-nums">
+                      {entry.created_at ? new Date(entry.created_at).toLocaleString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }) : "—"}
+                    </span>
+                  </div>
+                ))}
+              </div>
+
+              {/* Pagination */}
+              {auditTotal > AUDIT_PER_PAGE && (
+                <div className="flex items-center justify-between mt-2 text-[10px] text-[var(--text-muted)]">
+                  <span>Page {auditPage} of {Math.ceil(auditTotal / AUDIT_PER_PAGE)}</span>
+                  <div className="flex gap-1">
+                    <button
+                      onClick={() => loadAudit(auditPage - 1)}
+                      disabled={auditPage <= 1}
+                      className="p-1 rounded hover:bg-[var(--bg-hover)] disabled:opacity-30 transition-colors"
+                    >
+                      <ChevronLeft size={12} />
+                    </button>
+                    <button
+                      onClick={() => loadAudit(auditPage + 1)}
+                      disabled={auditPage >= Math.ceil(auditTotal / AUDIT_PER_PAGE)}
+                      className="p-1 rounded hover:bg-[var(--bg-hover)] disabled:opacity-30 transition-colors"
+                    >
+                      <ChevronRight size={12} />
+                    </button>
+                  </div>
+                </div>
+              )}
+            </>
+          )}
+        </section>
       </div>
     </div>
   );

@@ -31,7 +31,7 @@ class AnalyticsSummary(BaseModel):
     web_search_rate: Optional[float]
     queries_today: int
     queries_this_week: int
-    top_documents: List[dict]
+    top_queries: List[dict]
     daily_queries: List[DailyQueryCount]
 
 class UsageSummary(BaseModel):
@@ -77,7 +77,7 @@ async def get_analytics_summary(
             web_search_rate=None,
             queries_today=0,
             queries_this_week=0,
-            top_documents=[],
+            top_queries=[],
             daily_queries=[],
         )
 
@@ -142,7 +142,7 @@ async def get_analytics_summary(
         web_search_rate=round(web_rate, 1) if web_rate is not None else None,
         queries_today=today_count,
         queries_this_week=week_count,
-        top_documents=top_docs,
+        top_queries=top_docs,
         daily_queries=daily,
     )
 

@@ -4,18 +4,17 @@
 // Parses the exact SSE format emitted by generate_stream() in generation.py.
 
 import { SourceInfo } from "./api";
-
-const API_BASE =
-  process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
+import { API_BASE } from "./config";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 export interface StreamEvent {
-  type: "sources" | "token" | "error" | "done" | "status" | "meta" | "sub_queries";
-  content?: string;       // for type='token'
-  sources?: SourceInfo[]; // for type='sources'
-  message?: string;       // for type='error'
-  fallback?: boolean;     // for type='meta' — circuit breaker degraded mode
+  type: "sources" | "token" | "error" | "done" | "status" | "meta" | "sub_queries" | "web_search";
+  content?: string;        // for type='token'
+  sources?: SourceInfo[];  // for type='sources'
+  message?: string;        // for type='error'
+  fallback?: boolean;      // for type='meta' — circuit breaker degraded mode
+  results_count?: number;  // for type='web_search'
 }
 
 export interface StreamCallbacks {
@@ -150,6 +149,7 @@ export async function streamQuery(
 
 export interface AgenticStreamCallbacks extends StreamCallbacks {
   onSubQueries?: (queries: string[]) => void;
+  onWebSearch?: (resultsCount: number) => void;
 }
 
 export async function streamAgenticQuery(
@@ -222,6 +222,11 @@ export async function streamAgenticQuery(
             case "sub_queries":
               if (callbacks.onSubQueries && event.queries) {
                 callbacks.onSubQueries(event.queries);
+              }
+              break;
+            case "web_search":
+              if (callbacks.onWebSearch) {
+                callbacks.onWebSearch(event.results_count ?? 0);
               }
               break;
             case "sources":

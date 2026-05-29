@@ -14,6 +14,7 @@ from src.api.schemas import (
     DocumentListResponse,
 )
 from src.api.dependencies import get_current_user
+from src.api.routes.audit import log_audit
 from src.logger import get_logger
 
 logger = get_logger(__name__)
@@ -31,6 +32,7 @@ async def create_collection(
         coll = sb.create_collection(body.name, body.description)
         if not coll:
             raise HTTPException(status_code=500, detail="Failed to create collection")
+        log_audit(sb, "collection.create", "collection", coll["id"], {"name": coll["name"]})
         return CollectionResponse(
             id=coll["id"],
             name=coll["name"],
@@ -120,6 +122,7 @@ async def delete_collection(
         raise HTTPException(status_code=404, detail="Collection not found.")
     try:
         sb.delete_collection(collection_id)
+        log_audit(sb, "collection.delete", "collection", collection_id, {"name": existing.get("name")})
         return {"message": "Collection deleted successfully"}
     except Exception as e:
         logger.exception("Failed to delete collection %s", collection_id)
@@ -143,6 +146,7 @@ async def add_document_to_collection(
         raise HTTPException(status_code=404, detail="Document not found.")
     try:
         result = sb.add_document_to_collection(collection_id, body.document_id)
+        log_audit(sb, "collection.add_document", "collection", collection_id, {"document_id": body.document_id})
         return {"message": "Document added to collection", "collection_id": collection_id, "document_id": body.document_id}
     except Exception as e:
         logger.exception("Failed to add document to collection")

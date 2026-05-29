@@ -32,6 +32,7 @@ from src.api.dependencies import (
 )
 from src.components.config import Config
 from src.components.metrics import queries_total, retrieval_docs, cache_hits, cache_misses, cache_latency
+from src.api.routes.audit import log_audit
 from src.logger import get_logger
 
 router = APIRouter()
@@ -60,6 +61,7 @@ def _resolve_collection_filters(sb, collection_id: str = None) -> list[str] | No
 def _saving_stream_wrapper(
     inner_gen, sb, conversation_id: str, question: str,
     is_agentic: bool = False, is_cache_hit: bool = False,
+    retrieval_docs_count: int = 0, web_search_used: bool = False,
 ):
     """Wrap an SSE generator to capture tokens and save messages to DB after streaming.
 
@@ -87,6 +89,8 @@ def _saving_stream_wrapper(
                 collected_sources = data.get("sources", [])
             elif data.get("type") == "meta" and data.get("cache_hit"):
                 is_cache_hit = True
+            elif data.get("type") == "web_search":
+                web_search_used = True
         except (json.JSONDecodeError, KeyError):
             pass
 
@@ -113,14 +117,23 @@ def _saving_stream_wrapper(
             "question": question[:2000],
             "answer_length": len(full_answer),
             "sources_count": len(collected_sources),
-            "retrieval_docs_count": len(collected_sources),
+            "retrieval_docs_count": retrieval_docs_count,
             "latency_ms": latency_ms,
             "cache_hit": is_cache_hit,
             "agentic": is_agentic,
-            "web_search_used": False,
+            "web_search_used": web_search_used,
         }).execute()
     except Exception as e:
         logger.warning("Failed to log query analytics: %s", e)
+
+    # Audit trail (Phase 6)
+    action = "query.agentic" if is_agentic else "query.ask"
+    log_audit(sb, action, "conversation", conversation_id, {
+        "question": question[:500],
+        "latency_ms": latency_ms,
+        "cache_hit": is_cache_hit,
+        "web_search_used": web_search_used,
+    })
 
 # ── Module-level caches ───────────────────────────────────────────────────────
 # SemanticCache: pool one instance per user — avoids opening a new Redis TCP
@@ -388,6 +401,20 @@ async def query_stream(
     queries_total.labels(endpoint="query_stream", has_results=str(len(docs) > 0)).inc()
     retrieval_docs.observe(len(docs))
 
+    # ── Web search fallback (standard path) ──
+    web_search_used = False
+    if not docs and user_config.USE_WEB_FALLBACK:
+        try:
+            from src.components.web_search import WebSearcher
+            searcher = WebSearcher(user_config)
+            if searcher.is_available():
+                web_docs = searcher.search(search_query, max_results=user_config.WEB_SEARCH_MAX_RESULTS)
+                if web_docs:
+                    docs = web_docs
+                    web_search_used = True
+        except Exception as _e:
+            logger.warning("Web search fallback failed (non-fatal): %s", _e)
+
     if not docs:
         def no_results():
             yield f"data: {json.dumps({'type': 'token', 'content': 'I could not find relevant information in your documents for this question.'})}\n\n"
@@ -398,15 +425,22 @@ async def query_stream(
             media_type="text/event-stream"
         )
 
-    # B3 FIX: Pass search_query (rewritten standalone query) to the generator
+    def standard_stream():
+        if web_search_used:
+            web_count = sum(1 for d in docs if d.metadata.get("source") == "web")
+            yield f"data: {json.dumps({'type': 'web_search', 'results_count': web_count})}\n\n"
+        yield from generator.generate_stream(
+            query=search_query,
+            retrieved_docs=docs,
+            chat_history=chat_history,
+        )
+
     return StreamingResponse(
         _saving_stream_wrapper(
-            generator.generate_stream(
-                query=search_query,
-                retrieved_docs=docs,
-                chat_history=chat_history
-            ),
-            sb, body.conversation_id, body.question
+            standard_stream(),
+            sb, body.conversation_id, body.question,
+            retrieval_docs_count=len(docs),
+            web_search_used=web_search_used,
         ),
         media_type="text/event-stream"
     )
@@ -574,6 +608,7 @@ async def agent_query_stream(
     )
     docs = retrieval_result["docs"]
     sub_queries = retrieval_result.get("sub_queries", [])
+    web_search_used = retrieval_result.get("web_search_used", False)
 
     queries_total.labels(endpoint="query_agent_stream", has_results=str(len(docs) > 0)).inc()
     retrieval_docs.observe(len(docs))
@@ -593,7 +628,12 @@ async def agent_query_stream(
         # 1. Emit sub-queries so the UI can show decomposition
         yield f"data: {json.dumps({'type': 'sub_queries', 'queries': sub_queries})}\n\n"
 
-        # 2. Emit sources
+        # 2. Emit web_search event if fallback was used
+        if web_search_used:
+            web_count = sum(1 for d in docs if d.metadata.get("source") == "web")
+            yield f"data: {json.dumps({'type': 'web_search', 'results_count': web_count})}\n\n"
+
+        # 3. Emit sources
         source_infos = []
         for i, doc in enumerate(docs):
             source_infos.append({
@@ -605,7 +645,7 @@ async def agent_query_stream(
             })
         yield f"data: {json.dumps({'type': 'sources', 'sources': source_infos})}\n\n"
 
-        # 3. Stream answer via generate_stream (same as /query/stream)
+        # 4. Stream answer via generate_stream (same as /query/stream)
         for chunk in generator.generate_stream(
             query=body.question,
             retrieved_docs=docs,
@@ -614,7 +654,10 @@ async def agent_query_stream(
             yield chunk
 
     return StreamingResponse(
-        _saving_stream_wrapper(agentic_stream(), sb, body.conversation_id, body.question, is_agentic=True),
+        _saving_stream_wrapper(
+            agentic_stream(), sb, body.conversation_id, body.question,
+            is_agentic=True, retrieval_docs_count=len(docs), web_search_used=web_search_used,
+        ),
         media_type="text/event-stream"
     )
 
@@ -632,6 +675,7 @@ async def create_conversation(
     conv = sb.create_conversation(body.title)
     if not conv:
         raise HTTPException(status_code=500, detail="Failed to create conversation")
+    log_audit(sb, "conversation.create", "conversation", conv["id"], {"title": conv["title"]})
     return ConversationResponse(
         id=conv["id"],
         title=conv["title"],
@@ -666,6 +710,7 @@ async def delete_conversation(
     """Delete a conversation and all its messages."""
     try:
         sb.delete_conversation(conversation_id)
+        log_audit(sb, "conversation.delete", "conversation", conversation_id, {})
         return {"message": "Conversation deleted successfully"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to delete conversation: {str(e)}")

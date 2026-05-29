@@ -13,6 +13,7 @@ from src.api.schemas import (
 )
 from src.api.dependencies import get_current_user, limiter
 from src.components.db import SupabaseManager
+from src.api.routes.audit import log_audit
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/auth")
@@ -31,6 +32,8 @@ async def signup(request: Request, body: SignUpRequest):
                 status_code=400,
                 detail="Sign-up succeeded but no session returned. Check email for confirmation.",
             )
+        sb._user = res.user
+        log_audit(sb, "auth.signup", "user", str(res.user.id), {"email": res.user.email})
         return AuthResponse(
             access_token=session.access_token,
             user_id=str(res.user.id),
@@ -50,6 +53,8 @@ async def login(request: Request, body: SignInRequest):
     sb = SupabaseManager()
     try:
         res = sb.sign_in(body.email, body.password)
+        sb._user = res.user
+        log_audit(sb, "auth.login", "user", str(res.user.id), {"email": res.user.email})
         return AuthResponse(
             access_token=res.session.access_token,
             user_id=str(res.user.id),

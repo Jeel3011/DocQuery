@@ -36,7 +36,7 @@ export function ChatInput({
   }, []);
 
   function onKey(e: KeyboardEvent<HTMLTextAreaElement>) {
-    if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); submit(); }
+    if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); submit(); }
   }
 
   function submit() {
@@ -106,7 +106,7 @@ export function ChatInput({
         </div>
 
         <p className="text-[10px] text-[var(--text-muted)] mt-2 text-center">
-          ⌘↵ to send{agenticMode ? " · ⚡ Agentic mode" : ""} · DocQuery can make mistakes — verify sources
+          ↵ to send · ⇧↵ for newline{agenticMode ? " · ⚡ Agentic mode" : ""} · DocQuery can make mistakes — verify sources
         </p>
       </div>
     </div>
