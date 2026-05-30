@@ -157,12 +157,18 @@ _cache_pool: dict[str, object] = {}
 _embedder_cache: dict[str, object] = {}
 
 
-def _get_cache(user_id: str):
-    """Return a cached SemanticCache scoped to this user. Non-fatal if Redis is down."""
-    if user_id not in _cache_pool:
+def _get_cache(user_id: str, collection_id: str = None):
+    """Return a SemanticCache scoped to user + collection scope.
+
+    A cache hit from scope A must NEVER be served for scope B — the same question
+    asked across "All Documents" vs "big collection" legitimately has different
+    answers. Including collection_id in the namespace key makes them separate caches.
+    """
+    scope_key = f"{user_id}:{collection_id or 'all'}"
+    if scope_key not in _cache_pool:
         from src.components.semantic_cache import SemanticCache
-        _cache_pool[user_id] = SemanticCache(redis_url=_REDIS_URL, namespace=user_id)
-    return _cache_pool[user_id]
+        _cache_pool[scope_key] = SemanticCache(redis_url=_REDIS_URL, namespace=scope_key)
+    return _cache_pool[scope_key]
 
 
 async def _embed_query(query: str, model: str, api_key: str) -> list:
@@ -200,7 +206,7 @@ async def query(
         query_embedding = await _embed_query(
             body.question, user_config.EMBEDDING_MODEL_NAME, user_config.OPENAI_API_KEY
         )
-        cache = _get_cache(sb.user_id)
+        cache = _get_cache(sb.user_id, getattr(body, 'collection_id', None))
         cached = await asyncio.to_thread(cache.get, body.question, query_embedding)
     except Exception:
         cached = None
@@ -233,10 +239,24 @@ async def query(
     # Phase 1: Collection-scoped retrieval
     filename_filters = _resolve_collection_filters(sb, getattr(body, 'collection_id', None))
 
+    use_collection = (
+        user_config.COLLECTION_COVERAGE_ENABLED
+        and filename_filters is not None
+        and len(filename_filters) >= 2
+    )
+
     complexity = generator.classify_query_complexity(body.question)
     logger.info("Query complexity: %s for: %.60s", complexity, body.question)
 
-    if complexity == "simple" and query_embedding:
+    if use_collection:
+        docs = await asyncio.to_thread(
+            retrieval_mgr.retrieve_collection,
+            body.question,
+            filename_filters,
+            body.page_filter,
+            query_embedding or None,
+        )
+    elif complexity == "simple" and query_embedding:
         # Fast path: reuse the pre-computed cache embedding — skip the second API call
         docs = await asyncio.to_thread(
             retrieval_mgr.retrieve_by_vector,
@@ -344,7 +364,7 @@ async def query_stream(
         query_embedding = await _embed_query(
             body.question, user_config.EMBEDDING_MODEL_NAME, user_config.OPENAI_API_KEY
         )
-        cache = _get_cache(sb.user_id)
+        cache = _get_cache(sb.user_id, getattr(body, 'collection_id', None))
         cached = await asyncio.to_thread(cache.get, body.question, query_embedding)
     except Exception:
         pass
@@ -383,11 +403,21 @@ async def query_stream(
     complexity = generator.classify_query_complexity(body.question)
     logger.info("Query stream complexity: %s for: %.60s", complexity, body.question)
 
+    # Resolve collection first so we can gate variant-task creation on use_collection.
+    filename_filters = _resolve_collection_filters(sb, getattr(body, 'collection_id', None))
+    use_collection = (
+        user_config.COLLECTION_COVERAGE_ENABLED
+        and filename_filters is not None
+        and len(filename_filters) >= 2
+    )
+
     rewrite_task = asyncio.create_task(
         asyncio.to_thread(generator.rewrite_query, body.question, chat_history)
     )
-    want_variants = user_config.USE_MULTI_QUERY and not (
-        complexity == "simple" and query_embedding
+    want_variants = (
+        user_config.USE_MULTI_QUERY
+        and not use_collection
+        and not (complexity == "simple" and query_embedding)
     )
     variants_task = (
         asyncio.create_task(
@@ -402,11 +432,17 @@ async def query_stream(
     search_query = await rewrite_task
     t_llm_prep = time.perf_counter() - t_prep
 
-    # Phase 1: Collection-scoped retrieval
-    filename_filters = _resolve_collection_filters(sb, getattr(body, 'collection_id', None))
-
     t_retrieve = time.perf_counter()
-    if complexity == "simple" and query_embedding:
+    if use_collection:
+        primary_emb = query_embedding if (query_embedding and search_query == body.question) else None
+        docs = await asyncio.to_thread(
+            retrieval_mgr.retrieve_collection,
+            search_query,
+            filename_filters,
+            body.page_filter,
+            primary_emb,
+        )
+    elif complexity == "simple" and query_embedding:
         # Fast path: reuse the pre-computed cache embedding — skip the second API call
         docs = await asyncio.to_thread(
             retrieval_mgr.retrieve_by_vector,
@@ -536,7 +572,7 @@ async def query_agent(
         query_embedding = await _embed_query(
             body.question, user_config.EMBEDDING_MODEL_NAME, user_config.OPENAI_API_KEY
         )
-        cache = _get_cache(sb.user_id)
+        cache = _get_cache(sb.user_id, getattr(body, 'collection_id', None))
         cached = await asyncio.to_thread(cache.get, body.question, query_embedding)
     except Exception:
         pass
@@ -563,16 +599,31 @@ async def query_agent(
     # Phase 1: Collection-scoped retrieval
     filename_filters = _resolve_collection_filters(sb, getattr(body, 'collection_id', None))
 
-    # ── Step 1+2+3: Agentic retrieval (parallel sub-queries) ──
-    agentic = AgenticRetriever(config=user_config, retrieval_mgr=retrieval_mgr)
-    retrieval_result = await asyncio.to_thread(
-        agentic.retrieve_and_synthesize,
-        body.question,
-        body.filename_filter,
-        body.page_filter,
-        filename_filters=filename_filters,
+    use_collection = (
+        user_config.COLLECTION_COVERAGE_ENABLED
+        and filename_filters is not None
+        and len(filename_filters) >= 2
     )
-    docs = retrieval_result["docs"]
+
+    # ── Step 1+2+3: Agentic retrieval (parallel sub-queries) ──
+    if use_collection:
+        docs = await asyncio.to_thread(
+            retrieval_mgr.retrieve_collection,
+            body.question,
+            filename_filters,
+            body.page_filter,
+            None,
+        )
+    else:
+        agentic = AgenticRetriever(config=user_config, retrieval_mgr=retrieval_mgr)
+        retrieval_result = await asyncio.to_thread(
+            agentic.retrieve_and_synthesize,
+            body.question,
+            body.filename_filter,
+            body.page_filter,
+            filename_filters=filename_filters,
+        )
+        docs = retrieval_result["docs"]
 
     queries_total.labels(endpoint="query_agent", has_results=str(len(docs) > 0)).inc()
     retrieval_docs.observe(len(docs))
@@ -651,18 +702,35 @@ async def agent_query_stream(
     # Phase 1: Collection-scoped retrieval
     filename_filters = _resolve_collection_filters(sb, getattr(body, 'collection_id', None))
 
-    # Agentic retrieval: decompose → parallel retrieve → deduplicate
-    agentic = AgenticRetriever(config=user_config, retrieval_mgr=retrieval_mgr)
-    retrieval_result = await asyncio.to_thread(
-        agentic.retrieve_and_synthesize,
-        body.question,
-        body.filename_filter,
-        body.page_filter,
-        filename_filters=filename_filters,
+    use_collection = (
+        user_config.COLLECTION_COVERAGE_ENABLED
+        and filename_filters is not None
+        and len(filename_filters) >= 2
     )
-    docs = retrieval_result["docs"]
-    sub_queries = retrieval_result.get("sub_queries", [])
-    web_search_used = retrieval_result.get("web_search_used", False)
+
+    # Agentic retrieval: decompose → parallel retrieve → deduplicate
+    if use_collection:
+        docs = await asyncio.to_thread(
+            retrieval_mgr.retrieve_collection,
+            body.question,
+            filename_filters,
+            body.page_filter,
+            None,
+        )
+        sub_queries = []
+        web_search_used = False
+    else:
+        agentic = AgenticRetriever(config=user_config, retrieval_mgr=retrieval_mgr)
+        retrieval_result = await asyncio.to_thread(
+            agentic.retrieve_and_synthesize,
+            body.question,
+            body.filename_filter,
+            body.page_filter,
+            filename_filters=filename_filters,
+        )
+        docs = retrieval_result["docs"]
+        sub_queries = retrieval_result.get("sub_queries", [])
+        web_search_used = retrieval_result.get("web_search_used", False)
 
     queries_total.labels(endpoint="query_agent_stream", has_results=str(len(docs) > 0)).inc()
     retrieval_docs.observe(len(docs))
@@ -862,6 +930,14 @@ async def send_message(
         if page_match:
             page_filter = int(page_match.group(1))
 
+    # Resolve collection first so we can gate variant-task creation on use_collection.
+    filename_filters = _resolve_collection_filters(sb, getattr(body, 'collection_id', None))
+    use_collection = (
+        user_config.COLLECTION_COVERAGE_ENABLED
+        and filename_filters is not None
+        and len(filename_filters) >= 2
+    )
+
     # B2: rewrite (standalone context) and variant generation are independent —
     # run them concurrently. Variants come from the raw question; the rewritten
     # query still goes in as the primary variant.
@@ -874,15 +950,20 @@ async def send_message(
                 generator.generate_query_variants, body.question, user_config.MULTI_QUERY_COUNT
             )
         )
-        if user_config.USE_MULTI_QUERY
+        if user_config.USE_MULTI_QUERY and not use_collection
         else None
     )
     search_query = await rewrite_task
 
-    # Phase 1: Collection-scoped retrieval
-    filename_filters = _resolve_collection_filters(sb, getattr(body, 'collection_id', None))
-
-    if variants_task is not None:
+    if use_collection:
+        docs = await asyncio.to_thread(
+            retrieval_mgr.retrieve_collection,
+            search_query,
+            filename_filters,
+            page_filter,
+            None,
+        )
+    elif variants_task is not None:
         variants = [search_query] + await variants_task
         docs = await asyncio.to_thread(
             retrieval_mgr.retrieve_multi_query,

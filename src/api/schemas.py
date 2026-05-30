@@ -160,3 +160,35 @@ class CollectionListResponse(BaseModel):
 
 class AddDocumentToCollectionRequest(BaseModel):
     document_id: str
+
+
+# ─────────────────────────────────────────
+# MULTI-DOCUMENT COMPARISON
+# ─────────────────────────────────────────
+
+class CompareMultiRequest(BaseModel):
+    document_ids: Optional[List[str]] = None
+    collection_id: Optional[str] = None
+    focus: Optional[str] = None
+
+
+class DocSummary(BaseModel):
+    document_id: str
+    filename: str
+    summary: str
+    key_points: List[str]
+
+
+class ComparisonMatrixRow(BaseModel):
+    dimension: str
+    values: dict
+
+
+class MultiComparisonResult(BaseModel):
+    documents: List[str]
+    focus_area: Optional[str] = None
+    similarities: List[str]
+    differences: List[str]
+    per_document: List[DocSummary]
+    matrix: List[ComparisonMatrixRow]
+    summary: str

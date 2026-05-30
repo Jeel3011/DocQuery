@@ -3,12 +3,32 @@ from langchain_openai import OpenAIEmbeddings
 from langchain_core.documents import Document
 from src.components.config import Config
 from src.logger import get_logger
+from typing import Optional
 import os
 
 logger = get_logger(__name__)
 
 # Lazy import — only needed when USE_HYBRID_SEARCH is True
 _HybridRetriever = None
+
+
+def _doc_key(doc: Document) -> str:
+    """Stable dedup key for a retrieved chunk. Prefer chunk_id, then content_hash, then content prefix."""
+    md = doc.metadata or {}
+    return md.get("chunk_id") or md.get("content_hash") or (doc.page_content or "")[:120]
+
+
+def _doc_file(doc: Document) -> str:
+    """Filename a chunk belongs to (the field we group by for coverage)."""
+    return (doc.metadata or {}).get("filename") or "unknown"
+
+
+def _jaccard(a_tokens: set, b_tokens: set) -> float:
+    if not a_tokens or not b_tokens:
+        return 0.0
+    inter = len(a_tokens & b_tokens)
+    union = len(a_tokens | b_tokens)
+    return inter / union if union else 0.0
 
 
 def _get_hybrid_retriever_class():
@@ -47,8 +67,11 @@ class RetrievalManager:
         self._hybrid = None
         if self.config.USE_HYBRID_SEARCH:
             hybrid_retriever_cls = _get_hybrid_retriever_class()
+            # BUG-2 fix: when a reranker follows, hybrid must keep ENOUGH candidates for it to
+            # rerank (RERANK_INITIAL_K), not truncate to RERANK_TOP_K (which made rerank a no-op
+            # via its len<=top_k short-circuit). The reranker does the final cut.
             self._hybrid = hybrid_retriever_cls(
-                top_k=self.config.RERANK_TOP_K if self._reranker else self.config.TOP_K,
+                top_k=self.config.RERANK_INITIAL_K if self._reranker else self.config.TOP_K,
             )
             logger.info("HybridRetriever enabled (fetch_k=%d)", self.config.HYBRID_FETCH_K)
 
@@ -61,6 +84,7 @@ class RetrievalManager:
         page_filter: str = None,
         filename_filters: list[str] = None,
         apply_threshold: bool = True,
+        fetch_k: int = None,
     ) -> list[Document]:
         """Run similarity search against Pinecone and return docs above threshold.
 
@@ -71,13 +95,19 @@ class RetrievalManager:
         per-file collection retrieval, where we want each file's best chunks even if
         modestly scored (the reranker provides precision).
         """
+        # BUG-1 fix: distinguish "no scope" (None -> search all) from "empty collection"
+        # ([] -> zero results). An empty $in must NOT fall through to an all-docs search.
+        if filename_filters is not None and len(filename_filters) == 0:
+            return []
+
         similarity_threshold = self.config.SIMILARITY_THRESHOLD
-        if self._hybrid:
-            fetch_k = self.config.HYBRID_FETCH_K
-        elif self._reranker:
-            fetch_k = self.config.RERANK_INITIAL_K
-        else:
-            fetch_k = self.config.TOP_K
+        if fetch_k is None:
+            if self._hybrid:
+                fetch_k = self.config.HYBRID_FETCH_K
+            elif self._reranker:
+                fetch_k = self.config.RERANK_INITIAL_K
+            else:
+                fetch_k = self.config.TOP_K
 
         try:
             filter_dict = {}
@@ -114,6 +144,7 @@ class RetrievalManager:
         page_filter: str = None,
         filename_filters: list[str] = None,
         apply_threshold: bool = True,
+        fetch_k: int = None,
     ) -> list[Document]:
         """Run similarity search using a pre-computed embedding vector.
 
@@ -124,13 +155,19 @@ class RetrievalManager:
         apply_threshold=False keeps the top-k regardless of absolute score — used by
         per-file collection retrieval (see retrieve_across_files).
         """
+        # BUG-1 fix: distinguish "no scope" (None -> search all) from "empty collection"
+        # ([] -> zero results). An empty $in must NOT fall through to an all-docs search.
+        if filename_filters is not None and len(filename_filters) == 0:
+            return []
+
         similarity_threshold = self.config.SIMILARITY_THRESHOLD
-        if self._hybrid:
-            fetch_k = self.config.HYBRID_FETCH_K
-        elif self._reranker:
-            fetch_k = self.config.RERANK_INITIAL_K
-        else:
-            fetch_k = self.config.TOP_K
+        if fetch_k is None:
+            if self._hybrid:
+                fetch_k = self.config.HYBRID_FETCH_K
+            elif self._reranker:
+                fetch_k = self.config.RERANK_INITIAL_K
+            else:
+                fetch_k = self.config.TOP_K
 
         try:
             filter_dict = {}
@@ -274,7 +311,7 @@ class RetrievalManager:
                     futures[pool.submit(_fetch, q)] = q
             for future in as_completed(futures):
                 for doc in future.result():
-                    key = doc.metadata.get("content_hash", doc.page_content[:100])
+                    key = _doc_key(doc)
                     if key not in all_docs:
                         all_docs[key] = doc
 
@@ -351,6 +388,158 @@ class RetrievalManager:
             "Cross-file retrieve: %d files x ~%d/file -> %d chunks", n, per_file_k, len(merged)
         )
         return merged
+
+    # ── Coverage-aware collection retrieval ──
+
+    def _select_with_coverage(
+        self,
+        ranked_docs: list[Document],
+        k_final: int,
+        min_per_file: int,
+        jaccard_thresh: float,
+    ) -> list[Document]:
+        """Pick up to k_final docs guaranteeing per-file coverage, then fill by relevance,
+        dropping near-duplicate chunks (lexical MMR). Deterministic, no embeddings/network."""
+        from src.components.hybrid_retrieval import _tokenize
+
+        if not ranked_docs:
+            return []
+
+        by_file: dict[str, list[Document]] = {}
+        for d in ranked_docs:
+            by_file.setdefault(_doc_file(d), []).append(d)
+
+        selected: list[Document] = []
+        selected_tok: list[set] = []
+        used_keys: set[str] = set()
+
+        def _try_add(doc: Document) -> bool:
+            key = _doc_key(doc)
+            if key in used_keys:
+                return False
+            toks = set(_tokenize(doc.page_content or ""))
+            for st in selected_tok:
+                if _jaccard(toks, st) > jaccard_thresh:
+                    return False
+            selected.append(doc)
+            selected_tok.append(toks)
+            used_keys.add(key)
+            return True
+
+        # Pass 1 — coverage: round-robin each file's best unused chunk.
+        for _round in range(max(1, min_per_file)):
+            if len(selected) >= k_final:
+                break
+            for fname, docs in by_file.items():
+                if len(selected) >= k_final:
+                    break
+                for cand in docs:
+                    if _doc_key(cand) in used_keys:
+                        continue
+                    _try_add(cand)
+                    break
+
+        # Pass 2 — fill remaining budget by global relevance order.
+        if len(selected) < k_final:
+            for cand in ranked_docs:
+                if len(selected) >= k_final:
+                    break
+                _try_add(cand)
+
+        return selected[:k_final]
+
+    def _fanout_per_file(
+        self,
+        query: str,
+        files: list[str],
+        per_file_k: int,
+        page_filter: str = None,
+    ) -> list[Document]:
+        """Retrieve top per_file_k chunks from EACH file in parallel."""
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+
+        out: dict[str, Document] = {}
+        max_workers = min(len(files), self.config.COLLECTION_FANOUT_WORKERS)
+
+        def _one(fname: str) -> list[Document]:
+            return self._raw_retrieve(
+                query, filename_filter=fname, page_filter=page_filter, fetch_k=per_file_k
+            )
+
+        with ThreadPoolExecutor(max_workers=max_workers) as pool:
+            futures = {pool.submit(_one, f): f for f in files}
+            for fut in as_completed(futures):
+                try:
+                    for d in fut.result():
+                        out.setdefault(_doc_key(d), d)
+                except Exception as exc:
+                    self.logger.warning("fan-out retrieve failed for %s: %s", futures[fut], exc)
+        return list(out.values())
+
+    def retrieve_collection(
+        self,
+        query: str,
+        filename_filters: list[str],
+        page_filter: str = None,
+        query_embedding: list = None,
+    ) -> list[Document]:
+        """Coverage-aware retrieval across many files (accuracy-tuned, decision 2a).
+
+        - 0 files  -> [] (empty collection)
+        - 1 file   -> normal single-file retrieve (no behavior change)
+        - >=2 files-> per-file coverage path: pool -> (hybrid) -> rerank whole pool ->
+                      coverage-aware final selection (round-robin per file + lexical MMR).
+        """
+        cfg = self.config
+        files = filename_filters or []
+        n = len(files)
+
+        if n == 0:
+            return []
+        if n == 1:
+            if query_embedding:
+                return self.retrieve_by_vector(query_embedding, query, filename_filter=files[0], page_filter=page_filter)
+            return self.retrieve(query, filename_filter=files[0], page_filter=page_filter)
+
+        # 1) Candidate pool with per-file representation
+        if n <= cfg.COLLECTION_FANOUT_MAX_FILES:
+            pool = self._fanout_per_file(query, files, cfg.COLLECTION_PER_FILE_K, page_filter)
+        else:
+            pool_k = min(n * cfg.COLLECTION_POOL_PER_FILE, cfg.COLLECTION_POOL_CAP)
+            pool = self._raw_retrieve(query, filename_filters=files, page_filter=page_filter, fetch_k=pool_k)
+
+        if not pool:
+            return []
+
+        # 2) Optional hybrid BM25+RRF over the pool (keyword precision across files).
+        if cfg.COLLECTION_USE_HYBRID and len(pool) > 1:
+            try:
+                hybrid_cls = _get_hybrid_retriever_class()
+                hybrid = hybrid_cls(top_k=len(pool))
+                pool = hybrid.retrieve(query, pool)
+            except Exception as exc:
+                self.logger.warning("collection hybrid fusion failed (non-fatal): %s", exc)
+
+        # 3) Rerank the WHOLE pool so every candidate gets a relevance score.
+        if self._reranker and len(pool) > 1:
+            pool = self._reranker.rerank_scores(query, pool)
+
+        # 4) Coverage-aware final selection. k_final scales with #files.
+        k_final = min(
+            cfg.COLLECTION_RERANK_TOP_K_BASE + cfg.COLLECTION_RERANK_TOP_K_PER_FILE * n,
+            cfg.COLLECTION_RERANK_TOP_K_CAP,
+        )
+        result = self._select_with_coverage(
+            pool, k_final=k_final,
+            min_per_file=cfg.COLLECTION_MIN_PER_FILE,
+            jaccard_thresh=cfg.COLLECTION_MMR_JACCARD,
+        )
+        files_covered = len({_doc_file(d) for d in result})
+        self.logger.info(
+            "retrieve_collection: %d files -> pool=%d -> %d docs covering %d/%d files (k_final=%d)",
+            n, len(pool), len(result), files_covered, n, k_final,
+        )
+        return result
 
     # ── Delete helper ──
 

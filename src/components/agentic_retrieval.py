@@ -11,6 +11,7 @@ from langchain_core.output_parsers import StrOutputParser
 from langchain_core.documents import Document
 
 from src.components.config import Config
+from src.components.retrieval import _doc_key
 from src.logger import get_logger
 
 logger = get_logger(__name__)
@@ -105,7 +106,7 @@ Examples:
             futures = {pool.submit(_fetch, sq): sq for sq in sub_queries}
             for future in as_completed(futures):
                 for doc in future.result():
-                    key = doc.metadata.get("chunk_id") or doc.page_content[:100]
+                    key = _doc_key(doc)
                     if key not in seen:
                         seen[key] = doc
 

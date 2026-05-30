@@ -103,3 +103,13 @@ class Reranker:
 
         logger.info("Reranked %d→%d docs in %.3fs", len(docs), len(result), elapsed)
         return result
+
+    def rerank_scores(self, query: str, docs: list[Document]) -> list[Document]:
+        """Return ALL docs reordered by cross-encoder relevance (no truncation, no short-circuit).
+        Used by coverage-aware collection retrieval, which does its own final selection."""
+        if not docs or len(docs) == 1:
+            return docs
+        start = time.perf_counter()
+        scores = self.model.predict([(query, d.page_content) for d in docs])
+        rerank_latency.observe(time.perf_counter() - start)
+        return [d for d, _ in sorted(zip(docs, scores), key=lambda x: x[1], reverse=True)]
