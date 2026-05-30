@@ -11,7 +11,7 @@ import { AnimatePresence, motion } from "framer-motion";
 import { ChatMessage } from "@/components/chat/ChatMessage";
 import { ChatInput } from "@/components/chat/ChatInput";
 import { useAuthStore } from "@/stores/auth.store";
-import { getMessages, MessageResponse, SourceInfo, exportConversation, compareMultiDocuments, MultiComparisonResult, DocumentResponse, listDocuments } from "@/lib/api";
+import { getMessages, MessageResponse, SourceInfo, exportConversation, compareDocuments, ComparisonResult, DocumentResponse, listDocuments } from "@/lib/api";
 import { streamQuery, streamAgenticQuery } from "@/lib/streaming";
 import { useCollectionStore } from "@/stores/collection.store";
 import { toast } from "sonner";
@@ -49,10 +49,11 @@ function ChatPageInner() {
   const [showExport, setShowExport] = useState(false);
   const [showCompare, setShowCompare] = useState(false);
   const [documents, setDocuments] = useState<DocumentResponse[]>([]);
-  const [compareDocIds, setCompareDocIds] = useState<string[]>([]);
+  const [compareDocA, setCompareDocA] = useState("");
+  const [compareDocB, setCompareDocB] = useState("");
   const [compareFocus, setCompareFocus] = useState("");
   const [compareLoading, setCompareLoading] = useState(false);
-  const [compareResult, setCompareResult] = useState<MultiComparisonResult | null>(null);
+  const [compareResult, setCompareResult] = useState<ComparisonResult | null>(null);
 
   const scrollRef = useRef<HTMLDivElement>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
@@ -193,24 +194,22 @@ function ChatPageInner() {
       });
   }, [token]);
 
-  async function handleCompareMulti() {
-    if (!token || compareDocIds.length < 2) return;
+  async function handleCompare() {
+    if (!token || !compareDocA || !compareDocB) return;
+    if (compareDocA === compareDocB) {
+      toast.error("Select two different documents");
+      return;
+    }
     setCompareLoading(true);
     setCompareResult(null);
     try {
-      const result = await compareMultiDocuments(token, compareDocIds, compareFocus || undefined);
+      const result = await compareDocuments(token, compareDocA, compareDocB, compareFocus || undefined);
       setCompareResult(result);
     } catch {
       toast.error("Comparison failed");
     } finally {
       setCompareLoading(false);
     }
-  }
-
-  function toggleCompareDoc(id: string) {
-    setCompareDocIds((prev) =>
-      prev.includes(id) ? prev.filter((d) => d !== id) : [...prev, id]
-    );
   }
 
   // ── Load message history ──────────────────────────────────────────────────
@@ -425,14 +424,14 @@ function ChatPageInner() {
       {/* Compare Documents Modal */}
       {showCompare && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
-          <div className="card w-full max-w-xl mx-4 p-5 space-y-4">
+          <div className="card w-full max-w-lg mx-4 p-5 space-y-4">
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-2 text-sm font-medium text-[var(--text-primary)]">
                 <GitCompare size={14} />
                 Compare Documents
               </div>
               <button
-                onClick={() => { setShowCompare(false); setCompareResult(null); setCompareDocIds([]); }}
+                onClick={() => { setShowCompare(false); setCompareResult(null); }}
                 className="text-[var(--text-muted)] hover:text-[var(--text-primary)] transition-colors"
               >
                 <X size={14} />
@@ -448,22 +447,30 @@ function ChatPageInner() {
                 )}
                 <div className="space-y-3">
                   <div>
-                    <label className="text-[10px] text-[var(--text-muted)] uppercase tracking-wide mb-1 block">
-                      Select documents <span className="normal-case">({compareDocIds.length} selected — need ≥ 2)</span>
-                    </label>
-                    <div className="max-h-48 overflow-y-auto space-y-1 rounded-lg border border-[var(--border)] bg-[var(--bg-hover)] p-2">
+                    <label className="text-[10px] text-[var(--text-muted)] uppercase tracking-wide mb-1 block">Document A</label>
+                    <select
+                      value={compareDocA}
+                      onChange={(e) => setCompareDocA(e.target.value)}
+                      className="w-full px-3 py-2 rounded-lg bg-[var(--bg-hover)] border border-[var(--border)] text-xs text-[var(--text-primary)] focus:outline-none"
+                    >
+                      <option value="">Select a document…</option>
                       {documents.map((d) => (
-                        <label key={d.id} className="flex items-center gap-2 px-2 py-1.5 rounded hover:bg-[var(--bg-card)] cursor-pointer">
-                          <input
-                            type="checkbox"
-                            checked={compareDocIds.includes(d.id)}
-                            onChange={() => toggleCompareDoc(d.id)}
-                            className="accent-[var(--accent)]"
-                          />
-                          <span className="text-xs text-[var(--text-primary)] truncate">{d.filename}</span>
-                        </label>
+                        <option key={d.id} value={d.id}>{d.filename}</option>
                       ))}
-                    </div>
+                    </select>
+                  </div>
+                  <div>
+                    <label className="text-[10px] text-[var(--text-muted)] uppercase tracking-wide mb-1 block">Document B</label>
+                    <select
+                      value={compareDocB}
+                      onChange={(e) => setCompareDocB(e.target.value)}
+                      className="w-full px-3 py-2 rounded-lg bg-[var(--bg-hover)] border border-[var(--border)] text-xs text-[var(--text-primary)] focus:outline-none"
+                    >
+                      <option value="">Select a document…</option>
+                      {documents.map((d) => (
+                        <option key={d.id} value={d.id}>{d.filename}</option>
+                      ))}
+                    </select>
                   </div>
                   <div>
                     <label className="text-[10px] text-[var(--text-muted)] uppercase tracking-wide mb-1 block">Focus area <span className="normal-case">(optional)</span></label>
@@ -477,23 +484,23 @@ function ChatPageInner() {
                   </div>
                 </div>
                 <button
-                  onClick={handleCompareMulti}
-                  disabled={compareDocIds.length < 2 || compareLoading}
+                  onClick={handleCompare}
+                  disabled={!compareDocA || !compareDocB || compareLoading}
                   className="w-full py-2 rounded-lg bg-[var(--accent)] text-white text-xs font-medium disabled:opacity-40 hover:opacity-90 transition-opacity flex items-center justify-center gap-2"
                 >
                   {compareLoading ? (
                     <span className="animate-pulse">Comparing…</span>
                   ) : (
-                    <>Compare {compareDocIds.length >= 2 ? `${compareDocIds.length} docs` : ""} <ChevronRight size={12} /></>
+                    <>Compare <ChevronRight size={12} /></>
                   )}
                 </button>
               </>
             ) : (
-              <div className="space-y-4 max-h-[65vh] overflow-y-auto scrollbar-thin">
-                <div className="flex flex-wrap items-center gap-1.5 text-[10px] text-[var(--text-muted)]">
-                  {compareResult.documents.map((fname, i) => (
-                    <span key={i} className="font-medium text-[var(--text-primary)] bg-[var(--bg-hover)] px-1.5 py-0.5 rounded">{fname}</span>
-                  ))}
+              <div className="space-y-4 max-h-[60vh] overflow-y-auto scrollbar-thin">
+                <div className="flex items-center gap-2 text-[10px] text-[var(--text-muted)]">
+                  <span className="font-medium text-[var(--text-primary)]">{compareResult.document_a}</span>
+                  <span>vs</span>
+                  <span className="font-medium text-[var(--text-primary)]">{compareResult.document_b}</span>
                   {compareResult.focus_area && <span>· {compareResult.focus_area}</span>}
                 </div>
 
@@ -520,57 +527,6 @@ function ChatPageInner() {
                     ))}
                   </ul>
                 </div>
-
-                {compareResult.per_document.length > 0 && (
-                  <div>
-                    <div className="text-[10px] uppercase tracking-wide text-[var(--text-muted)] mb-2">Per-document summaries</div>
-                    <div className="space-y-3">
-                      {compareResult.per_document.map((doc, i) => (
-                        <div key={i} className="bg-[var(--bg-hover)] rounded-lg p-3 space-y-1.5">
-                          <div className="text-xs font-medium text-[var(--text-primary)]">{doc.filename}</div>
-                          <p className="text-[11px] text-[var(--text-secondary)]">{doc.summary}</p>
-                          {doc.key_points.length > 0 && (
-                            <ul className="space-y-0.5">
-                              {doc.key_points.map((kp, j) => (
-                                <li key={j} className="text-[11px] text-[var(--text-muted)] flex items-start gap-1.5">
-                                  <span className="flex-shrink-0 mt-0.5">·</span>{kp}
-                                </li>
-                              ))}
-                            </ul>
-                          )}
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                )}
-
-                {compareResult.matrix.length > 0 && (
-                  <div>
-                    <div className="text-[10px] uppercase tracking-wide text-[var(--text-muted)] mb-2">Comparison matrix</div>
-                    <div className="overflow-x-auto">
-                      <table className="w-full text-[11px] border-collapse">
-                        <thead>
-                          <tr>
-                            <th className="text-left py-1 pr-3 text-[var(--text-muted)] font-medium border-b border-[var(--border)]">Dimension</th>
-                            {compareResult.documents.map((fname, i) => (
-                              <th key={i} className="text-left py-1 px-2 text-[var(--text-muted)] font-medium border-b border-[var(--border)] truncate max-w-[120px]">{fname}</th>
-                            ))}
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {compareResult.matrix.map((row, i) => (
-                            <tr key={i} className="border-b border-[var(--border)] last:border-0">
-                              <td className="py-1.5 pr-3 text-[var(--text-primary)] font-medium">{row.dimension}</td>
-                              {compareResult.documents.map((fname, j) => (
-                                <td key={j} className="py-1.5 px-2 text-[var(--text-secondary)]">{row.values[fname] ?? "—"}</td>
-                              ))}
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
-                    </div>
-                  </div>
-                )}
 
                 <div className="pt-2 border-t border-[var(--border)]">
                   <div className="text-[10px] uppercase tracking-wide text-[var(--text-muted)] mb-1">Summary</div>

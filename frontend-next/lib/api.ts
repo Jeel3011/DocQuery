@@ -447,48 +447,6 @@ export async function compareDocuments(
   }
 }
 
-// ─── Multi-Document Comparison ────────────────────────────────────────────────
-
-export interface DocSummary {
-  document_id: string;
-  filename: string;
-  summary: string;
-  key_points: string[];
-}
-
-export interface ComparisonMatrixRow {
-  dimension: string;
-  values: Record<string, string>;
-}
-
-export interface MultiComparisonResult {
-  documents: string[];
-  focus_area: string | null;
-  similarities: string[];
-  differences: string[];
-  per_document: DocSummary[];
-  matrix: ComparisonMatrixRow[];
-  summary: string;
-}
-
-export async function compareMultiDocuments(
-  token: string,
-  documentIds: string[],
-  focus?: string,
-  collectionId?: string
-): Promise<MultiComparisonResult> {
-  try {
-    const res = await makeClient(token).post<MultiComparisonResult>("/documents/compare-multi", {
-      document_ids: documentIds.length ? documentIds : null,
-      collection_id: collectionId || null,
-      focus: focus || null,
-    });
-    return res.data;
-  } catch (err) {
-    handleAxiosError(err);
-  }
-}
-
 // ─── Health ───────────────────────────────────────────────────────────────────
 
 export async function getHealth(): Promise<{

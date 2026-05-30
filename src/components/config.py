@@ -58,26 +58,6 @@ class Config:
     # Larger = better recall for BM25 at the cost of slightly more Pinecone latency.
     HYBRID_FETCH_K: int = 25
 
-    # ── Collection-scoped (multi-file) retrieval — accuracy-tuned (decision 2a) ──
-    COLLECTION_COVERAGE_ENABLED: bool = True
-    COLLECTION_PER_FILE_K: int = 4
-    COLLECTION_FANOUT_MAX_FILES: int = 25
-    COLLECTION_FANOUT_WORKERS: int = 8
-    COLLECTION_POOL_PER_FILE: int = 6
-    COLLECTION_POOL_CAP: int = 300
-    COLLECTION_RERANK_TOP_K_BASE: int = 8
-    COLLECTION_RERANK_TOP_K_PER_FILE: int = 1
-    COLLECTION_RERANK_TOP_K_CAP: int = 20
-    COLLECTION_MIN_PER_FILE: int = 1
-    COLLECTION_MMR_JACCARD: float = 0.9
-    COLLECTION_USE_HYBRID: bool = True
-
-    # ── Multi-document comparison (POST /documents/compare-multi) ──
-    COMPARE_MAX_DOCS: int = 30
-    COMPARE_SINGLE_CALL_MAX_DOCS: int = 6
-    COMPARE_CHUNKS_PER_DOC: int = 5
-    COMPARE_MAP_WORKERS: int = 6
-
     # OpenAI
     OPENAI_API_KEY: str = os.getenv("OPENAI_API_KEY")
 
