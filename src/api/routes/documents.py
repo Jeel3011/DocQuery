@@ -6,6 +6,7 @@ directory because Railway has an ephemeral filesystem — the directory is lost
 on redeploy. mkstemp() writes to /tmp which always exists in the container.
 """
 
+import asyncio
 import os
 import logging
 import tempfile
@@ -60,6 +61,7 @@ async def upload_document(
     # Validate file type
     safe_filename = Path(file.filename).name  # Strip directory components (S5)
     file_ext = Path(safe_filename).suffix.lower().strip(".")
+    logger.info("Upload request received: %s (ext=%s, user=%s)", safe_filename, file_ext, getattr(sb, 'user_id', 'unknown'))
     if file_ext not in user_config.SUPPORTED_FILE_TYPES:
         raise HTTPException(
             status_code=400,
@@ -76,6 +78,7 @@ async def upload_document(
     first_chunk = True
 
     os.close(tmp_fd)  # close the OS-level fd; aiofiles will reopen
+    logger.info("Streaming file to disk: %s", tmp_path)
     async with aiofiles.open(tmp_path, "wb") as out:
         while True:
             chunk = await file.read(8192)
@@ -109,13 +112,24 @@ async def upload_document(
     # 1. Upload raw file to Supabase Storage immediately.
     # A2: upload straight from the temp file path so the client streams it —
     # avoids reading the entire file back into memory just to hand it off.
+    # Run in a thread with a 30s timeout so a slow Supabase connection doesn't
+    # block the request indefinitely and leave the UI stuck on "Uploading…".
+    logger.info("File written to disk (%d bytes), uploading to storage", file_size)
     try:
-        storage_path = sb.upload_file_from_path(tmp_path, safe_filename)
+        loop = asyncio.get_event_loop()
+        storage_path = await asyncio.wait_for(
+            loop.run_in_executor(None, sb.upload_file_from_path, tmp_path, safe_filename),
+            timeout=30.0,
+        )
+    except asyncio.TimeoutError:
+        logger.error("Storage upload timed out for %s", safe_filename)
+        raise HTTPException(status_code=504, detail="Upload timed out. Please try again.")
     except Exception as e:
         logger.exception("Storage upload failed for %s", safe_filename)  # S8: log detail server-side
         raise HTTPException(status_code=500, detail="Failed to upload file to storage.")  # S8: generic message to client
 
     # 2. Create document record with status=processing
+    logger.info("Storage upload done for %s, creating DB record", safe_filename)
     doc_record = sb.create_document_record(
         filename=safe_filename,
         storage_path=storage_path,
@@ -123,6 +137,7 @@ async def upload_document(
         file_size_bytes=file_size,
     )
     doc_id = doc_record.get("id")
+    logger.info("DB record created for %s: doc_id=%s", safe_filename, doc_id)
 
     # 3. Dispatch to Celery worker — route to priority queue based on file size
     from src.worker.tasks import process_document_task

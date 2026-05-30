@@ -143,8 +143,20 @@ class SupabaseManager:
         """
         Download file from Supabase Storage to a local temp file.
         Returns the local temp file path so the pipeline can process it.
+        Uses httpx directly with a generous timeout so large PDFs don't hit
+        the Supabase client's default short read timeout.
         """
-        file_bytes = self.client.storage.from_(self.BUCKET).download(storage_path)
+        import httpx
+        url = os.getenv("SUPABASE_URL")
+        service_key = os.getenv("SUPABASE_SERVICE_KEY")
+        download_url = f"{url}/storage/v1/object/{self.BUCKET}/{storage_path}"
+        with httpx.Client(timeout=httpx.Timeout(10.0, read=120.0)) as client:
+            resp = client.get(
+                download_url,
+                headers={"Authorization": f"Bearer {service_key}"},
+            )
+            resp.raise_for_status()
+            file_bytes = resp.content
         tmp = tempfile.NamedTemporaryFile(delete=False, suffix=suffix)
         tmp.write(file_bytes)
         tmp.close()
