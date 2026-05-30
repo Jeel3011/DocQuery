@@ -91,6 +91,20 @@ def on_worker_init(sender, **kwargs):
         )
         warm_pdf_pool(n_workers=cfg.PDF_PARALLEL_WORKERS, timeout=90)
         logger.info("Worker startup: PDF pool ready.")
+
+        # Fix #1: pre-import the heavy task dependencies in the worker PARENT so the
+        # prefork children inherit them via copy-on-write. Without this, the FIRST
+        # upload handled by each child paid ~6s importing langchain/supabase inside
+        # the task (data_ingestion is already imported above via warm_pdf_pool, which
+        # is why parsing was fast but the pre-parse gap was not). The API never runs
+        # worker_init, so its process stays lean.
+        import importlib
+        for _mod in ("src.components.embeddings", "src.components.db"):
+            try:
+                importlib.import_module(_mod)
+            except Exception as _imp_exc:
+                logger.warning("Pre-import of %s failed (non-fatal): %s", _mod, _imp_exc)
+        logger.info("Worker startup: task deps pre-imported.")
     except Exception as exc:
         # Non-fatal \u2014 first PDF upload will still work, just slower
         logging.getLogger(__name__).warning(

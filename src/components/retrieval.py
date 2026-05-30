@@ -60,11 +60,16 @@ class RetrievalManager:
         filename_filter: str = None,
         page_filter: str = None,
         filename_filters: list[str] = None,
+        apply_threshold: bool = True,
     ) -> list[Document]:
         """Run similarity search against Pinecone and return docs above threshold.
 
         When USE_HYBRID_SEARCH is True the caller should pass a larger fetch_k
         so the BM25 step has enough candidates to re-rank from.
+
+        apply_threshold=False keeps the top-k regardless of absolute score — used by
+        per-file collection retrieval, where we want each file's best chunks even if
+        modestly scored (the reranker provides precision).
         """
         similarity_threshold = self.config.SIMILARITY_THRESHOLD
         if self._hybrid:
@@ -90,7 +95,8 @@ class RetrievalManager:
             )
 
             docs = [
-                doc for doc, score in docs_and_scores if score >= similarity_threshold
+                doc for doc, score in docs_and_scores
+                if not apply_threshold or score >= similarity_threshold
             ]
             self.logger.info(
                 "Retrieved %d/%d docs above threshold", len(docs), len(docs_and_scores)
@@ -107,12 +113,16 @@ class RetrievalManager:
         filename_filter: str = None,
         page_filter: str = None,
         filename_filters: list[str] = None,
+        apply_threshold: bool = True,
     ) -> list[Document]:
         """Run similarity search using a pre-computed embedding vector.
 
         Avoids a redundant OpenAI embedding API call when the caller already has
         the embedding (e.g., computed for the semantic cache lookup).
         Saves ~150ms per cache-miss query.
+
+        apply_threshold=False keeps the top-k regardless of absolute score — used by
+        per-file collection retrieval (see retrieve_across_files).
         """
         similarity_threshold = self.config.SIMILARITY_THRESHOLD
         if self._hybrid:
@@ -138,7 +148,8 @@ class RetrievalManager:
             )
 
             docs = [
-                doc for doc, score in docs_and_scores if score >= similarity_threshold
+                doc for doc, score in docs_and_scores
+                if not apply_threshold or score >= similarity_threshold
             ]
             self.logger.info(
                 "Retrieved %d/%d docs above threshold (by vector)", len(docs), len(docs_and_scores)
@@ -160,6 +171,10 @@ class RetrievalManager:
         filename_filters: list[str] = None,
     ) -> list[Document]:
         """Retrieve relevant docs with optional hybrid BM25+RRF fusion and/or reranking."""
+        # Collection scope spanning multiple files → guarantee each file is represented.
+        if filename_filters and len(filename_filters) > 1:
+            return self.retrieve_across_files(query, filename_filters, page_filter=page_filter)
+
         docs = self._raw_retrieve(query, filename_filter, page_filter, filename_filters=filename_filters)
 
         # Step 1: Hybrid BM25 + RRF fusion
@@ -193,6 +208,12 @@ class RetrievalManager:
             page_filter: Optional page number filter.
             filename_filters: Optional list of filenames for collection-scoped search.
         """
+        # Collection scope spanning multiple files → guarantee each file is represented.
+        if filename_filters and len(filename_filters) > 1:
+            return self.retrieve_across_files(
+                query, filename_filters, page_filter=page_filter, query_embedding=query_embedding
+            )
+
         docs = self._raw_retrieve_by_vector(query_embedding, filename_filter, page_filter, filename_filters=filename_filters)
 
         # Step 1: Hybrid BM25 + RRF fusion (needs string query for BM25)
@@ -225,6 +246,14 @@ class RetrievalManager:
         when it actually corresponds to queries[0].
         """
         from concurrent.futures import ThreadPoolExecutor, as_completed
+
+        # Collection scope spanning multiple files → guarantee each file is represented
+        # (the primary query carries the intent; per-file balancing matters more here
+        # than variant recall within a single global pool).
+        if filename_filters and len(filename_filters) > 1:
+            return self.retrieve_across_files(
+                queries[0], filename_filters, page_filter=page_filter, query_embedding=primary_embedding
+            )
 
         all_docs: dict[str, Document] = {}
 
@@ -265,6 +294,62 @@ class RetrievalManager:
         elif len(merged) > self.config.TOP_K:
             merged = merged[: self.config.TOP_K]  # simple truncation fallback
 
+        return merged
+
+    # ── Collection-scoped balanced retrieval ──
+
+    def retrieve_across_files(
+        self,
+        query: str,
+        filenames: list[str],
+        page_filter: str = None,
+        per_file_k: int = None,
+        query_embedding: list = None,
+    ) -> list[Document]:
+        """Collection retrieval that GUARANTEES every file is represented.
+
+        The normal path reranks one merged pool and keeps the global top-k, which for
+        a cross-file question ("compare A and B", "difference between both") can
+        collapse entirely onto one file. Here we fetch each file's best chunks
+        INDEPENDENTLY (parallel I/O), rerank within each file, then merge — so the LLM
+        always sees content from every document in the collection. The global
+        similarity threshold is skipped on purpose: a file's best chunks are kept even
+        if their absolute score is modest (the cross-encoder reranker gives precision).
+        """
+        from concurrent.futures import ThreadPoolExecutor
+
+        n = len(filenames)
+        if per_file_k is None:
+            # Keep total context bounded (~8-12 chunks) regardless of collection size.
+            per_file_k = 4 if n <= 2 else (3 if n <= 4 else 2)
+
+        def _fetch_raw(fname: str) -> list[Document]:
+            if query_embedding is not None:
+                return self._raw_retrieve_by_vector(
+                    query_embedding, filename_filter=fname,
+                    page_filter=page_filter, apply_threshold=False,
+                )
+            return self._raw_retrieve(
+                query, filename_filter=fname,
+                page_filter=page_filter, apply_threshold=False,
+            )
+
+        # Parallel Pinecone fetch (I/O-bound). Rerank sequentially afterwards — the
+        # cross-encoder model isn't safe to call from multiple threads at once.
+        with ThreadPoolExecutor(max_workers=min(n, 4)) as pool:
+            raw_per_file = list(pool.map(_fetch_raw, filenames))
+
+        merged: list[Document] = []
+        for docs in raw_per_file:
+            if self._reranker and docs:
+                docs = self._reranker.rerank(query, docs, top_k=per_file_k)
+            else:
+                docs = docs[:per_file_k]
+            merged.extend(docs)
+
+        self.logger.info(
+            "Cross-file retrieve: %d files x ~%d/file -> %d chunks", n, per_file_k, len(merged)
+        )
         return merged
 
     # ── Delete helper ──

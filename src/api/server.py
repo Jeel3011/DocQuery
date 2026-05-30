@@ -47,6 +47,23 @@ _IS_PROD = os.getenv("IS_PROD", "false").lower() == "true"
 async def lifespan(app: FastAPI):
     """Initialize shared resources on startup."""
     init_config()
+
+    # Pre-warm the cross-encoder reranker so the FIRST query doesn't pay the
+    # 1-3s model-load (and the Hub network checks) inline. Best-effort: a failure
+    # here must never block API startup — the model lazy-loads on first use anyway.
+    try:
+        from src.api.dependencies import get_config
+        cfg = get_config()
+        if getattr(cfg, "USE_RERANKER", False):
+            import asyncio
+            from src.components.reranker import _get_model
+            await asyncio.to_thread(_get_model, cfg.RERANKER_MODEL)
+    except Exception as exc:
+        import logging
+        logging.getLogger(__name__).warning(
+            "Reranker pre-warm failed (non-fatal, will lazy-load on first query): %s", exc
+        )
+
     yield
 
 
@@ -71,8 +88,10 @@ _frontend_url = os.getenv("FRONTEND_URL", "")
 _cors_origins = [
     "http://localhost:3000",    # React dev server
     "http://127.0.0.1:3000",
-    "http://localhost:3001",    # React dev server fallback
+    "http://localhost:3001",    # Next.js fallback
     "http://127.0.0.1:3001",
+    "http://localhost:3002",    # Next.js fallback when 3000/3001 taken
+    "http://127.0.0.1:3002",
     "http://localhost:8501",    # Streamlit (local dev only)
     "http://127.0.0.1:8501",
 ]

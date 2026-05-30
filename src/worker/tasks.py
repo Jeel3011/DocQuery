@@ -22,6 +22,23 @@ from src.worker.celery_app import celery
 
 logger = logging.getLogger(__name__)
 
+# Fix #2: reuse one EmbeddingManager per worker process. Constructing it builds the
+# OpenAIEmbeddings client; recreating that on every task is wasted setup. Each forked
+# child runs one task at a time, so a process-global is safe — only the Pinecone
+# namespace varies per task, so we point the cached manager's config at the current
+# task before use (the embedding model itself is namespace-independent).
+_embed_mgr = None
+
+
+def _get_embed_manager(config):
+    global _embed_mgr
+    from src.components.embeddings import EmbeddingManager
+    if _embed_mgr is None:
+        _embed_mgr = EmbeddingManager(config=config)
+    else:
+        _embed_mgr.config = config
+    return _embed_mgr
+
 
 @celery.task(bind=True, max_retries=2, default_retry_delay=30,
              acks_late=True, reject_on_worker_lost=True)
@@ -114,24 +131,31 @@ def process_document_task(
         logger.info("[%s] Stage 3/4: Embedding %d chunks", doc_id, len(chunks))
         t_embed_start = time.perf_counter()
 
-        embed_mgr = EmbeddingManager(config=config)
+        embed_mgr = _get_embed_manager(config)
         embed_mgr.create_vector_store(chunks)
 
         t_embed = time.perf_counter() - t_embed_start
         logger.info("[%s] Embedding complete in %.1fs", doc_id, t_embed)
-        sb.update_document_status(doc_id, "processing", progress_pct=80)
 
-        # -- Stage 4: Save chunks to Supabase --
-        logger.info("[%s] Stage 4/4: Saving %d chunks to Supabase", doc_id, len(chunks))
-        sb.save_document_chunks(doc_id, chunks)
-
-        # -- Done --
+        # -- Done: the vectors are now in Pinecone, so the document is queryable.
+        # Mark it ready immediately (Fix #3) — the user shouldn't wait on the Supabase
+        # chunk bookkeeping below, which adds ~2s and nothing reads for retrieval.
         sb.update_document_status(doc_id, "ready", len(chunks), progress_pct=100)
         uploads_total.labels(status="success").inc()
 
         total_time = time.perf_counter() - t_start
         logger.info("[%s] Document ready: %d chunks in %.1fs (parse=%.1fs, embed=%.1fs)",
                     doc_id, len(chunks), total_time, t_parse, t_embed)
+
+        # -- Post-ready bookkeeping: persist chunk text to Supabase. Nothing reads this
+        # content for retrieval (that's Pinecone); only an analytics row-count touches
+        # the table. So a failure here must NOT fail the document — log and move on.
+        try:
+            logger.info("[%s] Saving %d chunks to Supabase (analytics bookkeeping)", doc_id, len(chunks))
+            sb.save_document_chunks(doc_id, chunks)
+        except Exception as save_exc:
+            logger.warning("[%s] Chunk save failed (non-fatal): %s", doc_id, save_exc)
+
         return {"status": "ready", "chunks": len(chunks), "time_s": round(total_time, 1)}
 
     except Exception as exc:

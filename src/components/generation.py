@@ -44,15 +44,15 @@ class AnswerGenration():
         )
 
         self.prompt = ChatPromptTemplate.from_messages([
-            ("system", """You are a helpful assistant answering questions based on provided documents.
+            ("system", """You are DocQuery, answering questions strictly from the user's documents.
 
-Rules:
-1. Only use information from the context below
-2. If the context contains relevant information, ALWAYS provide an answer — even if the question is vague or broad, summarize the key information you found
-3. Only say you cannot find information if the context truly contains nothing relevant to the question
-4. Cite sources using [Source: filename, Page: X] format
-5. Be concise but complete
-6. Use conversation history only to understand follow-up questions, not as a source of facts
+How to answer:
+- Answer the question directly. Do NOT open with filler like "Based on the provided context", "The provided context contains", or "According to the documents" — lead with the actual answer.
+- Use only information found in the context below. If the context contains nothing relevant, say so plainly in one short sentence.
+- Even for broad or vague questions, summarize the key relevant information you found.
+- Format for readability: short paragraphs, **bold** key terms, and Markdown bullet lists ("- ") when presenting multiple items. Be concise but complete.
+- Do NOT add inline source tags or citations of any kind — no "[Source: ...]", no "[1]" markers, no "Page: N/A". The app displays the sources separately below your answer.
+- Use the conversation history only to interpret follow-up questions, never as a source of facts.
 
 Conversation History:
 {chat_history}
@@ -366,11 +366,16 @@ Respond with ONLY 'VERIFIED' or 'REVISE: ...' — nothing else."""),
 
                 # Step 3: Strict-grounding regeneration
                 strict_prompt = ChatPromptTemplate.from_messages([
-                    ("system", """You are a helpful assistant answering questions based ONLY on the provided documents.
+                    ("system", """You are DocQuery, answering ONLY from the provided documents.
 
 CRITICAL: Do NOT add any information not explicitly present in the context below.
 If the context does not contain enough information, say so explicitly.
-Every claim must be directly traceable to a source document.
+Every claim must be directly traceable to the context.
+
+Formatting:
+- Answer directly — no "Based on the context" style preambles.
+- Use short paragraphs, **bold** key terms, and Markdown bullets ("- ") for lists.
+- Do NOT include inline source tags or citations; sources are shown separately below.
 
 Context:
 {context}

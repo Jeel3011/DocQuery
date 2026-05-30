@@ -61,30 +61,39 @@ async def compare_documents(
     filename_a = doc_a["filename"]
     filename_b = doc_b["filename"]
 
-    # Retrieve representative chunks from each document
-    query = body.focus or f"key content and main topics of the document"
+    # Pull representative text straight from each document's stored chunks
+    # (ordered by chunk_index). Why not semantic search? A vague query like
+    # "key content and main topics" routinely scores below SIMILARITY_THRESHOLD,
+    # so retrieve() filtered everything out and the endpoint 422'd ("No content
+    # found") even though both documents were fully processed. The stored chunks
+    # always exist for a ready document, so reading them directly is reliable
+    # (and avoids an embed + Pinecone round-trip).
+    rows_a = await asyncio.to_thread(sb.get_document_chunks, body.document_id_a)
+    rows_b = await asyncio.to_thread(sb.get_document_chunks, body.document_id_b)
 
-    chunks_a = await asyncio.to_thread(
-        retrieval_mgr.retrieve, query, filename_a, None
-    )
-    chunks_b = await asyncio.to_thread(
-        retrieval_mgr.retrieve, query, filename_b, None
-    )
-
-    if not chunks_a and not chunks_b:
+    if not rows_a and not rows_b:
         raise HTTPException(
             status_code=422,
             detail="No content found in either document. Both may still be processing."
         )
 
-    text_a = "\n\n".join([c.page_content for c in chunks_a[:5]])
-    text_b = "\n\n".join([c.page_content for c in chunks_b[:5]])
+    def _doc_text(rows: list, max_chunks: int = 8, max_chars: int = 3000) -> str:
+        return "\n\n".join(r.get("content", "") for r in rows[:max_chunks])[:max_chars]
 
-    # LLM comparison
+    text_a = _doc_text(rows_a)
+    text_b = _doc_text(rows_b)
+
+    # LLM comparison.
+    # IMPORTANT: the document text is passed as TEMPLATE VARIABLES (via invoke),
+    # never baked into the template string. ChatPromptTemplate parses "{...}" in the
+    # template as input variables — and document text routinely contains "{" / "}"
+    # (code, JSON, math, citations), which made from_messages treat them as missing
+    # variables and raise, surfacing as a 500 "Comparison failed". Values handed to
+    # invoke() are NOT re-parsed, so braces inside the documents are now safe.
     focus_instruction = f"\nFocus specifically on: {body.focus}" if body.focus else ""
 
     prompt = ChatPromptTemplate.from_messages([
-        ("system", f"""You are a document comparison expert. Compare the two documents and identify:
+        ("system", """You are a document comparison expert. Compare the two documents and identify:
 1. Key SIMILARITIES (3-5 bullet points)
 2. Key DIFFERENCES (3-5 bullet points)
 3. A brief SUMMARY of the comparison (2-3 sentences){focus_instruction}
@@ -102,13 +111,7 @@ DIFFERENCES:
 
 SUMMARY:
 Your summary here."""),
-        ("user", f"""Document A: "{filename_a}"
-{text_a[:3000]}
-
----
-
-Document B: "{filename_b}"
-{text_b[:3000]}"""),
+        ("user", 'Document A: "{filename_a}"\n{text_a}\n\n---\n\nDocument B: "{filename_b}"\n{text_b}'),
     ])
 
     llm = ChatOpenAI(
@@ -119,8 +122,16 @@ Document B: "{filename_b}"
     )
 
     try:
+        chain = prompt | llm | StrOutputParser()
         raw = await asyncio.to_thread(
-            lambda: (prompt | llm | StrOutputParser()).invoke({})
+            chain.invoke,
+            {
+                "focus_instruction": focus_instruction,
+                "filename_a": filename_a,
+                "text_a": text_a[:3000],
+                "filename_b": filename_b,
+                "text_b": text_b[:3000],
+            },
         )
     except Exception as exc:
         logger.exception("LLM comparison failed")

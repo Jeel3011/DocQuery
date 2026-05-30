@@ -40,23 +40,37 @@ def _best_device() -> str:
 def _get_model(model_name: str) -> CrossEncoder:
     if model_name not in _model_cache:
         device = _best_device()
-        # Try loading from local HuggingFace cache first (skips ~15s of Hub checks).
-        # Falls back to online download if the model hasn't been cached yet.
+        # Load from the local HuggingFace cache with NO network checks. TWO vars are
+        # needed: TRANSFORMERS_OFFLINE gates the `transformers` library, and
+        # HF_HUB_OFFLINE gates `huggingface_hub`'s resolve/HEAD calls to huggingface.co
+        # — the latter was the ~2-3s of network we kept paying on the first query
+        # because only TRANSFORMERS_OFFLINE was set. Fall back to a one-time online
+        # download if the model isn't cached yet.
         import os
+        _offline_keys = ("TRANSFORMERS_OFFLINE", "HF_HUB_OFFLINE")
+        _prev = {k: os.environ.get(k) for k in _offline_keys}
+        for k in _offline_keys:
+            os.environ[k] = "1"
         try:
-            os.environ["TRANSFORMERS_OFFLINE"] = "1"
             _model_cache[model_name] = CrossEncoder(model_name, device=device)
             logger.info(
-                "Reranker model loaded (local cache): %s on device=%s", model_name, device
+                "Reranker model loaded (local cache, offline): %s on device=%s", model_name, device
             )
         except Exception:
-            os.environ.pop("TRANSFORMERS_OFFLINE", None)
+            # Not cached locally — allow a one-time online download.
+            for k in _offline_keys:
+                os.environ.pop(k, None)
             _model_cache[model_name] = CrossEncoder(model_name, device=device)
             logger.info(
                 "Reranker model downloaded: %s on device=%s", model_name, device
             )
         finally:
-            os.environ.pop("TRANSFORMERS_OFFLINE", None)
+            # Restore prior env so we don't force-offline unrelated HF usage.
+            for k in _offline_keys:
+                if _prev[k] is None:
+                    os.environ.pop(k, None)
+                else:
+                    os.environ[k] = _prev[k]
     return _model_cache[model_name]
 
 
