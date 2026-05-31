@@ -122,7 +122,7 @@ start_services() {
         --host 0.0.0.0 \
         --port 8000 \
         --reload \
-        --reload-dir src \
+        --reload-dir src/api \
         > "$LOG_DIR/api.log" 2>&1 &
     echo $! > "$PID_DIR/api.pid"
     log_ok "FastAPI started (PID $(cat "$PID_DIR/api.pid")) — logs: logs/api.log"

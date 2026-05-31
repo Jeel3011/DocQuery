@@ -145,17 +145,24 @@ class EmbeddingManager:
             embeddings = [vec for batch in results for vec in batch]
         t_embed = time.perf_counter() - t0
 
-        # ── Upsert: issue batched upserts asynchronously, then await them ──
+        # ── Upsert: async batches, drain ALL futures before returning ──
         t1 = time.perf_counter()
         index = vector_store.index
         namespace = self.config.PINECONE_NAMESPACE
         vectors = list(zip(ids, embeddings, metadatas))
-        async_results = [
-            index.upsert(vectors=vectors[i:i + UPSERT_BATCH], namespace=namespace, async_req=True)
-            for i in range(0, len(vectors), UPSERT_BATCH)
-        ]
+        async_results = []
+        for i in range(0, len(vectors), UPSERT_BATCH):
+            async_results.append(
+                index.upsert(vectors=vectors[i:i + UPSERT_BATCH], namespace=namespace, async_req=True)
+            )
+        errors = []
         for res in async_results:
-            res.get()
+            try:
+                res.get()
+            except Exception as e:
+                errors.append(e)
+        if errors:
+            raise RuntimeError(f"Pinecone upsert failed ({len(errors)} batches): {errors[0]}")
         t_upsert = time.perf_counter() - t1
 
         self.logger.info(

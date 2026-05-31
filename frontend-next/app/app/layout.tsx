@@ -74,7 +74,8 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
   const [mobileOpen, setMobileOpen] = useState(false);
   const [convs, setConvs] = useState<ConversationResponse[]>([]);
   const [docs, setDocs] = useState<DocumentResponse[]>([]);
-  const [uploading, setUploading] = useState(false);
+  const [uploadQueue, setUploadQueue] = useState<{ total: number; done: number } | null>(null);
+  const uploadDoneRef = useRef(0);
   const [delDocId, setDelDocId] = useState<string | null>(null);
   const [delConvId, setDelConvId] = useState<string | null>(null);
   const [renamingId, setRenamingId] = useState<string | null>(null);
@@ -262,34 +263,60 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
     }
   }
 
-  async function upload(file: File) {
-    if (!token) return;
-    const ext = "." + file.name.split(".").pop()?.toLowerCase();
-    if (!ACCEPTED.split(",").includes(ext)) { toast.error(`Unsupported: ${ext}`); return; }
-    if (file.size > MAX_MB * 1048576) { toast.error(`Max ${MAX_MB}MB`); return; }
-    setUploading(true);
-    try {
-      const doc = await uploadDocument(token, file);
-      setDocs((p) => [doc, ...p]);
-      toast.success(`Uploaded ${file.name}`);
-      // Auto-add to active collection if one is selected
-      if (activeCollectionId) {
-        try {
-          await addDocToCollection(token, activeCollectionId, doc.id);
-          setCollectionDocIds((prev) => { const next = new Set(prev); next.add(doc.id); return next; });
-          setCollections((prev) =>
-            prev.map((c) =>
-              c.id === activeCollectionId
-                ? { ...c, document_count: (c.document_count ?? 0) + 1 }
-                : c
-            )
-          );
-        } catch { /* non-fatal — doc uploaded, just not added to collection */ }
+  async function uploadFiles(files: File[]) {
+    if (!token || files.length === 0) return;
+
+    const valid: File[] = [];
+    for (const file of files) {
+      const ext = "." + file.name.split(".").pop()?.toLowerCase();
+      if (!ACCEPTED.split(",").includes(ext)) { toast.error(`Unsupported type: ${file.name}`); continue; }
+      if (file.size > MAX_MB * 1048576) { toast.error(`${file.name} exceeds ${MAX_MB}MB`); continue; }
+      valid.push(file);
+    }
+    if (valid.length === 0) return;
+
+    uploadDoneRef.current = 0;
+    setUploadQueue({ total: valid.length, done: 0 });
+
+    const CONCURRENCY = 5;
+    let idx = 0;
+
+    async function uploadOne(file: File) {
+      try {
+        const doc = await uploadDocument(token!, file);
+        setDocs((p) => [doc, ...p]);
+        if (activeCollectionId) {
+          try {
+            await addDocToCollection(token!, activeCollectionId, doc.id);
+            setCollectionDocIds((prev) => { const next = new Set(prev); next.add(doc.id); return next; });
+            setCollections((prev) =>
+              prev.map((c) =>
+                c.id === activeCollectionId
+                  ? { ...c, document_count: (c.document_count ?? 0) + 1 }
+                  : c
+              )
+            );
+          } catch { /* non-fatal */ }
+        }
+      } catch (e: unknown) {
+        toast.error(`Failed: ${file.name} — ${e instanceof Error ? e.message : "Error"}`);
+      } finally {
+        uploadDoneRef.current += 1;
+        setUploadQueue({ total: valid.length, done: uploadDoneRef.current });
       }
-      loadDocs();
-    } catch (e: unknown) {
-      toast.error(`Upload failed: ${e instanceof Error ? e.message : "Error"}`);
-    } finally { setUploading(false); }
+    }
+
+    async function worker() {
+      while (idx < valid.length) {
+        const file = valid[idx++];
+        await uploadOne(file);
+      }
+    }
+
+    await Promise.all(Array.from({ length: Math.min(CONCURRENCY, valid.length) }, worker));
+    toast.success(valid.length === 1 ? `Uploaded ${valid[0].name}` : `Uploaded ${valid.length} files`);
+    setUploadQueue(null);
+    loadDocs();
   }
 
   async function delDoc(id: string) {
@@ -519,25 +546,27 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
             {/* Upload */}
             <div
               className={`card-dotted mx-3 mb-2 flex flex-col items-center justify-center gap-1 py-4 cursor-pointer transition-all
-                ${uploading ? "opacity-50 pointer-events-none" : ""}`}
+                ${uploadQueue ? "opacity-50 pointer-events-none" : ""}`}
               onClick={() => fileRef.current?.click()}
               onDragOver={(e) => { e.preventDefault(); e.currentTarget.style.borderColor = "#0A0A0A"; e.currentTarget.style.background = "#F5F5F5"; }}
               onDragLeave={(e) => { e.currentTarget.style.borderColor = ""; e.currentTarget.style.background = ""; }}
-              onDrop={(e) => { e.preventDefault(); e.currentTarget.style.borderColor = ""; e.currentTarget.style.background = ""; const f = e.dataTransfer.files[0]; if (f) upload(f); }}
+              onDrop={(e) => { e.preventDefault(); e.currentTarget.style.borderColor = ""; e.currentTarget.style.background = ""; const files = Array.from(e.dataTransfer.files); if (files.length) uploadFiles(files); }}
             >
-              {uploading
+              {uploadQueue
                 ? <div className="w-4 h-4 border-2 border-[var(--accent)] border-t-transparent rounded-full animate-spin" />
                 : <Upload size={14} className="text-[var(--text-muted)]" />
               }
-              <span className="text-[10px] text-[var(--text-muted)]">{uploading ? "Uploading…" : "Drop file or click"}</span>
-              <span className="text-[9px] text-[var(--text-muted)]/60">PDF · DOCX · PPTX · TXT · XLSX · Max 10MB</span>
-              <input ref={fileRef} type="file" accept={ACCEPTED} className="hidden"
-                onChange={(e) => { const f = e.target.files?.[0]; if (f) upload(f); e.target.value = ""; }} />
+              <span className="text-[10px] text-[var(--text-muted)]">
+                {uploadQueue ? `Uploading… (${uploadQueue.done}/${uploadQueue.total} done)` : "Drop files or click"}
+              </span>
+              <span className="text-[9px] text-[var(--text-muted)]/60">PDF · DOCX · PPTX · TXT · XLSX · Max 10MB each</span>
+              <input ref={fileRef} type="file" accept={ACCEPTED} multiple className="hidden"
+                onChange={(e) => { const files = Array.from(e.target.files ?? []); if (files.length) uploadFiles(files); e.target.value = ""; }} />
             </div>
 
             {/* Doc list */}
             <div className="overflow-y-auto scrollbar-thin px-3 pb-2 flex-1 min-h-0 space-y-1">
-              {docs.length === 0 && !uploading && (
+              {docs.length === 0 && !uploadQueue && (
                 <p className="text-[10px] text-[var(--text-muted)] text-center py-4">
                   No documents yet — upload one above
                 </p>
