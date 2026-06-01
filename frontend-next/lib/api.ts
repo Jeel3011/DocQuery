@@ -33,7 +33,8 @@ export interface SourceInfo {
   filename: string | null;
   page: number | string | null;
   chunk_type: string | null;
-  content?: string;
+  content?: string | null;  // snippet emitted by generate_stream and agentic_stream
+  chunk_id?: string | null; // optional, emitted by generate_stream
 }
 
 export interface MessageResponse {

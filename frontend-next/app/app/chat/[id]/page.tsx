@@ -10,6 +10,9 @@ import { useParams, useSearchParams } from "next/navigation";
 import { AnimatePresence, motion } from "framer-motion";
 import { ChatMessage } from "@/components/chat/ChatMessage";
 import { ChatInput } from "@/components/chat/ChatInput";
+import { ThinkingStreamFixture } from "@/components/chat/ThinkingStream";
+import { SkeletonMessage } from "@/components/ui/Skeleton";
+import { MOCK_ANSWER_META } from "@/components/chat/TrustBar";
 import { useAuthStore } from "@/stores/auth.store";
 import { getMessages, MessageResponse, SourceInfo, exportConversation, compareDocuments, ComparisonResult, DocumentResponse, listDocuments } from "@/lib/api";
 import { streamQuery, streamAgenticQuery } from "@/lib/streaming";
@@ -226,7 +229,14 @@ function ChatPageInner() {
             id: m.id ?? crypto.randomUUID(),
             role: m.role,
             content: m.content,
-            sources: m.sources ?? undefined,
+            // Normalise sources: assign index-based source_id when DB record lacks one
+            // (messages saved via /conversations/{id}/messages store sources without source_id)
+            sources: m.sources
+              ? m.sources.map((s, i) => ({
+                  ...s,
+                  source_id: s.source_id ?? i + 1,
+                }))
+              : undefined,
           }))
         );
         return msgs;
@@ -342,27 +352,30 @@ function ChatPageInner() {
       {/* Messages — scrollable */}
       <div ref={scrollRef} className="flex-1 overflow-y-auto scrollbar-thin">
         {loading ? (
-          <div className="max-w-3xl mx-auto px-4 md:px-8 py-6 space-y-4">
-            {[1, 2, 3].map((i) => (
-              <div key={i} className="flex gap-3">
-                <div className="w-7 h-7 rounded-lg skeleton flex-shrink-0" />
-                <div className="flex-1 space-y-2">
-                  <div className="h-3 skeleton rounded w-24" />
-                  <div className="glass rounded-2xl p-4 space-y-2">
-                    <div className="h-3 skeleton rounded w-3/4" />
-                    <div className="h-3 skeleton rounded w-1/2" />
-                  </div>
-                </div>
-              </div>
-            ))}
+          <div className="py-4 space-y-1">
+            <SkeletonMessage />
+            <SkeletonMessage />
+            <SkeletonMessage />
           </div>
         ) : (
           <div className="py-4">
             <AnimatePresence initial={false}>
               {messages.map((msg) => (
                 <div key={msg.id}>
-                  {/* Sub-queries indicator for agentic mode */}
-                  {msg.subQueries && msg.subQueries.length > 0 && msg.role === "assistant" && (
+                  {/* Agentic thinking stream — mock fixture while streaming */}
+                  {msg.role === "assistant" && msg.isStreaming && agenticMode && (
+                    <motion.div
+                      initial={{ opacity: 0, height: 0 }}
+                      animate={{ opacity: 1, height: "auto" }}
+                      className="max-w-3xl mx-auto px-4 md:px-8 mb-3"
+                    >
+                      <div className="card-dotted p-4">
+                        <ThinkingStreamFixture />
+                      </div>
+                    </motion.div>
+                  )}
+                  {/* Sub-queries indicator for agentic mode (after streaming) */}
+                  {msg.subQueries && msg.subQueries.length > 0 && msg.role === "assistant" && !msg.isStreaming && (
                     <motion.div
                       initial={{ opacity: 0, height: 0 }}
                       animate={{ opacity: 1, height: "auto" }}
@@ -403,6 +416,8 @@ function ChatPageInner() {
                     isStreaming={msg.isStreaming}
                     isFallback={msg.isFallback}
                     userInitials={userInitials}
+                    showTrust={!msg.isStreaming && msg.role === "assistant" && !!msg.sources?.length}
+                    answerMeta={MOCK_ANSWER_META}
                   />
                 </div>
               ))}

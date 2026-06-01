@@ -46,6 +46,7 @@ import {
 } from "@/lib/api";
 import { useCollectionStore } from "@/stores/collection.store";
 import { toast } from "sonner";
+import { CommandPalette } from "@/components/ui/CommandPalette";
 
 const ACCEPTED = ".pdf,.docx,.pptx,.txt,.xlsx";
 const MAX_MB = 10;
@@ -342,13 +343,23 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
         {/* Header */}
         <div className="flex items-center gap-2 px-4 py-4 border-b border-[var(--border)] flex-shrink-0">
           {!collapsed && (
-            <span className="text-sm font-semibold text-[var(--text-primary)] tracking-tight">
+            <span className="text-sm font-semibold text-[var(--text-primary)] tracking-tight flex-1">
               DocQuery
             </span>
           )}
+          {!collapsed && !isMobile && (
+            <button
+              onClick={() => document.dispatchEvent(new KeyboardEvent("keydown", { key: "k", metaKey: true, bubbles: true }))}
+              title="Command palette (⌘K)"
+              className="px-1.5 py-0.5 rounded text-[10px] font-mono text-[var(--text-muted)] border border-[var(--border)] hover:border-[var(--accent)] hover:text-[var(--text-primary)] transition-colors"
+            >
+              ⌘K
+            </button>
+          )}
           <button
             onClick={() => isMobile ? setMobileOpen(false) : setCollapsed(!collapsed)}
-            className="w-8 h-8 flex items-center justify-center rounded-lg bg-[var(--bg-hover)] text-[var(--text-secondary)] hover:text-[var(--text-primary)] transition-colors"
+            className="w-8 h-8 flex items-center justify-center rounded-lg bg-[var(--bg-hover)] text-[var(--text-secondary)] hover:text-[var(--text-primary)] transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)]"
+            aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"}
           >
             {isMobile ? <X size={16} /> : collapsed ? <ChevronRight size={16} /> : <ChevronLeft size={16} />}
           </button>
@@ -650,6 +661,13 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
 
   return (
     <div className="relative flex h-dvh overflow-hidden bg-[var(--bg-base)]">
+      <CommandPalette
+        onNewChat={newChat}
+        onUpload={() => fileRef.current?.click()}
+        conversations={convs}
+        collections={collections}
+      />
+
       {/* Desktop Sidebar */}
       <aside
         className="sidebar-desktop flex-shrink-0 h-full border-r border-[var(--border)] transition-all duration-200"

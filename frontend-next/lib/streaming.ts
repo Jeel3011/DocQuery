@@ -14,6 +14,9 @@ export interface StreamEvent {
   sources?: SourceInfo[];  // for type='sources'
   message?: string;        // for type='error'
   fallback?: boolean;      // for type='meta' — circuit breaker degraded mode
+  cache_hit?: boolean;     // for type='meta' — semantic cache hit
+  similarity?: number;     // for type='meta' — cache similarity score
+  queries?: string[];      // for type='sub_queries' — decomposed sub-queries
   results_count?: number;  // for type='web_search'
 }
 
@@ -215,8 +218,7 @@ export async function streamAgenticQuery(
         }
 
         try {
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          const event = JSON.parse(dataStr) as StreamEvent & { queries?: string[] };
+          const event = JSON.parse(dataStr) as StreamEvent;
 
           switch (event.type) {
             case "sub_queries":

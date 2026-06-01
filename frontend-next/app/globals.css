@@ -6,8 +6,30 @@
 @import url("https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap");
 
 /* ── DocQuery Monochrome Design System ────────────────────────────────────── */
-/* Clean white, sharp black, dotted line accents, paper-like aesthetic        */
 :root {
+  /* Motion tokens */
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
+  --dur-fast: 120ms;
+  --dur-base: 220ms;
+  --dur-slow: 380ms;
+
+  /* Z-index scale */
+  --z-dropdown: 100;
+  --z-sticky: 200;
+  --z-drawer: 300;
+  --z-dialog: 400;
+  --z-toast: 500;
+
+  /* Warm-neutral ramp */
+  --warm-50: #FAF8F5;
+  --warm-100: #F0EBE3;
+  --warm-300: #D9CFC0;
+  --warm-500: #A1907A;
+  --warm-700: #6B5B4D;
+  --warm-900: #3A312A;
+
+  /* Surfaces */
   --bg-base: #FAFAFA;
   --bg-surface: #FFFFFF;
   --bg-elevated: #FFFFFF;
@@ -15,27 +37,33 @@
   --bg-active: #F0F0F0;
   --bg-sidebar: #FAFAFA;
 
+  /* Text */
   --text-primary: #0A0A0A;
   --text-secondary: #525252;
   --text-muted: #A3A3A3;
   --text-inverse: #FFFFFF;
 
+  /* Borders */
   --border: #E5E5E5;
   --border-strong: #D4D4D4;
   --border-dotted: #C4C4C4;
 
+  /* Accent */
   --accent: #0A0A0A;
   --accent-hover: #262626;
   --accent-subtle: #F5F5F5;
   --accent-ring: rgba(10, 10, 10, 0.08);
 
+  /* Status */
   --status-ready: #16A34A;
   --status-processing: #CA8A04;
   --status-failed: #DC2626;
 
+  /* Shadows */
   --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.04);
   --shadow-md: 0 2px 8px rgba(0, 0, 0, 0.06);
   --shadow-lg: 0 4px 16px rgba(0, 0, 0, 0.08);
+  --shadow-xl: 0 8px 32px rgba(0, 0, 0, 0.10);
 }
 
 /* ── Base ──────────────────────────────────────────────────────────────────── */
@@ -57,9 +85,10 @@ body {
   margin: 0;
 }
 
-/* ── Card / Surface styles ────────────────────────────────────────────────── */
+/* ── Component layer ──────────────────────────────────────────────────────── */
 @layer components {
-  /* Clean white card */
+
+  /* ── Cards ── */
   .card {
     background: var(--bg-surface);
     border: 1px solid var(--border);
@@ -67,19 +96,16 @@ body {
     box-shadow: var(--shadow-sm);
   }
 
-  /* Dotted border card — the signature DocQuery element */
   .card-dotted {
     background: var(--bg-surface);
     border: 1.5px dashed var(--border-dotted);
     border-radius: 12px;
   }
-
   .card-dotted:hover {
     border-color: var(--accent);
     background: var(--accent-subtle);
   }
 
-  /* Active/selected state */
   .card-active {
     background: var(--bg-surface);
     border: 1.5px solid var(--accent);
@@ -87,7 +113,21 @@ body {
     box-shadow: 0 0 0 3px var(--accent-ring);
   }
 
-  /* Black button — primary CTA */
+  /* Surface/Panel — flatter, paper-like, for the app shell (not landing) */
+  .surface {
+    background: var(--bg-surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    box-shadow: var(--shadow-sm);
+  }
+
+  .panel {
+    background: var(--bg-base);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+  }
+
+  /* ── Buttons ── */
   .btn-primary {
     background: var(--accent);
     color: var(--text-inverse);
@@ -97,20 +137,12 @@ body {
     font-size: 13px;
     font-weight: 500;
     cursor: pointer;
-    transition: background 0.15s, transform 0.1s;
+    transition: background var(--dur-fast) var(--ease-out), transform var(--dur-fast);
   }
-  .btn-primary:hover {
-    background: var(--accent-hover);
-  }
-  .btn-primary:active {
-    transform: scale(0.98);
-  }
-  .btn-primary:disabled {
-    opacity: 0.4;
-    cursor: not-allowed;
-  }
+  .btn-primary:hover { background: var(--accent-hover); }
+  .btn-primary:active { transform: scale(0.98); }
+  .btn-primary:disabled { opacity: 0.4; cursor: not-allowed; }
 
-  /* Ghost button — secondary */
   .btn-ghost {
     background: transparent;
     color: var(--text-secondary);
@@ -120,7 +152,7 @@ body {
     font-size: 13px;
     font-weight: 500;
     cursor: pointer;
-    transition: all 0.15s;
+    transition: all var(--dur-fast) var(--ease-out);
   }
   .btn-ghost:hover {
     background: var(--bg-hover);
@@ -128,29 +160,98 @@ body {
     border-color: var(--border-strong);
   }
 
-  /* Thin scrollbar */
+  .btn-outline {
+    background: transparent;
+    color: var(--text-primary);
+    border: 1px solid var(--border-strong);
+    border-radius: 10px;
+    padding: 7px 14px;
+    font-size: 13px;
+    font-weight: 500;
+    cursor: pointer;
+    transition: all var(--dur-fast) var(--ease-out);
+  }
+  .btn-outline:hover { background: var(--bg-hover); border-color: var(--accent); }
+  .btn-outline:disabled { opacity: 0.4; cursor: not-allowed; }
+
+  /* ── Claim labels — subtle, text-led ── */
+  .label-fact {
+    color: var(--text-secondary);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 1px 6px;
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+  }
+  .label-argument {
+    color: var(--accent);
+    border: 1px solid var(--accent);
+    border-radius: 4px;
+    padding: 1px 6px;
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+  }
+  .label-strategy {
+    color: var(--warm-700);
+    border: 1px solid var(--warm-300);
+    background: var(--warm-50);
+    border-radius: 4px;
+    padding: 1px 6px;
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+  }
+
+  /* ── Citation chip — inline superscript-style ── */
+  .citation-chip {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 18px;
+    height: 18px;
+    border-radius: 4px;
+    font-size: 10px;
+    font-weight: 700;
+    line-height: 1;
+    cursor: pointer;
+    background: var(--bg-hover);
+    color: var(--text-secondary);
+    border: 1px solid var(--border);
+    transition: all var(--dur-fast) var(--ease-out);
+    vertical-align: middle;
+    margin: 0 1px;
+    user-select: none;
+  }
+  .citation-chip:hover {
+    background: var(--accent);
+    color: white;
+    border-color: var(--accent);
+    transform: translateY(-1px);
+    box-shadow: var(--shadow-sm);
+  }
+  .citation-chip.active {
+    background: var(--accent);
+    color: white;
+    border-color: var(--accent);
+  }
+
+  /* ── Scrollbar ── */
   .scrollbar-thin {
     scrollbar-width: thin;
     scrollbar-color: transparent transparent;
   }
-  .scrollbar-thin:hover {
-    scrollbar-color: var(--border-strong) transparent;
-  }
-  .scrollbar-thin::-webkit-scrollbar {
-    width: 4px;
-  }
-  .scrollbar-thin::-webkit-scrollbar-track {
-    background: transparent;
-  }
-  .scrollbar-thin::-webkit-scrollbar-thumb {
-    background: transparent;
-    border-radius: 2px;
-  }
-  .scrollbar-thin:hover::-webkit-scrollbar-thumb {
-    background: var(--border-strong);
-  }
+  .scrollbar-thin:hover { scrollbar-color: var(--border-strong) transparent; }
+  .scrollbar-thin::-webkit-scrollbar { width: 4px; }
+  .scrollbar-thin::-webkit-scrollbar-track { background: transparent; }
+  .scrollbar-thin::-webkit-scrollbar-thumb { background: transparent; border-radius: 2px; }
+  .scrollbar-thin:hover::-webkit-scrollbar-thumb { background: var(--border-strong); }
 
-  /* Skeleton shimmer */
+  /* ── Skeleton shimmer ── */
   .skeleton {
     background: linear-gradient(
       90deg,
@@ -162,7 +263,7 @@ body {
     animation: shimmer 2s linear infinite;
   }
 
-  /* Dotted separator */
+  /* ── Dividers ── */
   .divider-dotted {
     border: none;
     border-top: 1.5px dashed var(--border-dotted);
@@ -179,6 +280,7 @@ body {
   margin-left: 1px;
 }
 
+/* ── Keyframes ───────────────────────────────────────────────────────────── */
 @keyframes cursor-blink {
   0%, 100% { opacity: 1; }
   50% { opacity: 0; }
@@ -189,7 +291,7 @@ body {
   100% { background-position: 200% 0; }
 }
 
-/* ── Dot grid background (subtle texture) ─────────────────────────────────── */
+/* ── Dot grid background ──────────────────────────────────────────────────── */
 .dot-grid {
   background-image: radial-gradient(circle, var(--border) 1px, transparent 1px);
   background-size: 24px 24px;
@@ -197,25 +299,17 @@ body {
 
 /* ── Reduced motion ──────────────────────────────────────────────────────── */
 @media (prefers-reduced-motion: reduce) {
-  *,
-  *::before,
-  *::after {
+  *, *::before, *::after {
     animation-duration: 0.01ms !important;
     transition-duration: 0.01ms !important;
   }
 }
 
-/* ── Responsive ──────────────────────────────────────────────────────────── */
+/* ── Responsive sidebar ───────────────────────────────────────────────────── */
 @media (max-width: 767px) {
-  .sidebar-desktop {
-    display: none;
-  }
-  .sidebar-mobile-toggle {
-    display: flex;
-  }
+  .sidebar-desktop { display: none; }
+  .sidebar-mobile-toggle { display: flex; }
 }
 @media (min-width: 768px) {
-  .sidebar-mobile-toggle {
-    display: none;
-  }
+  .sidebar-mobile-toggle { display: none; }
 }
