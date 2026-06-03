@@ -61,7 +61,7 @@ export function AudienceTabs() {
               <button
                 key={a.id}
                 onClick={() => setActive(a.id)}
-                className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-all ${
+                className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-[background-color,color,box-shadow] duration-[120ms] ease-[cubic-bezier(0.23,1,0.32,1)] ${
                   active === a.id
                     ? "bg-[var(--accent)] text-white shadow-sm"
                     : "text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-hover)]"
@@ -83,7 +83,7 @@ export function AudienceTabs() {
           animate={{ opacity: 1, y: 0 }}
           exit={{ opacity: 0, y: -8 }}
           transition={{ duration: 0.2, ease: [0.16, 1, 0.3, 1] }}
-          className="card shadow-md overflow-hidden"
+          className="card-glass shadow-md overflow-hidden"
         >
           <div className="px-6 py-4 border-b border-[var(--border)] bg-[var(--bg-base)]">
             <p className="text-[10px] font-medium text-[var(--text-muted)] uppercase tracking-widest mb-2">Sample query</p>

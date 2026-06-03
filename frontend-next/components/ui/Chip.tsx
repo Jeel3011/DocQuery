@@ -32,7 +32,7 @@ export function Chip({ variant = "default", num, className, children, ...props }
     <span
       className={twMerge(
         clsx(
-          "inline-flex items-center justify-center border rounded transition-all cursor-default select-none",
+          "inline-flex items-center justify-center border rounded transition-[background-color,color,border-color,transform] duration-[120ms] ease-[cubic-bezier(0.23,1,0.32,1)] cursor-default select-none",
           isCitation
             ? "w-[18px] h-[18px] text-[10px] font-bold rounded-[4px]"
             : "px-1.5 py-px text-[10px] font-semibold tracking-wide uppercase rounded-[4px]",

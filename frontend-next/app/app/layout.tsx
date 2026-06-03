@@ -300,7 +300,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
           } catch { /* non-fatal */ }
         }
       } catch (e: unknown) {
-        toast.error(`Failed: ${file.name} — ${e instanceof Error ? e.message : "Error"}`);
+        toast.error(`Upload failed: ${file.name}. ${e instanceof Error ? e.message : "Unknown error"}`);
       } finally {
         uploadDoneRef.current += 1;
         setUploadQueue({ total: valid.length, done: uploadDoneRef.current });
@@ -339,13 +339,23 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
 
   function sidebar() {
     return (
-      <div className="flex flex-col h-full bg-[var(--bg-sidebar)]">
+      <div
+        className="flex flex-col h-full"
+        style={{
+          background: "linear-gradient(180deg, rgba(255,255,255,0.55), rgba(255,255,255,0.38))",
+          backdropFilter: "blur(20px) saturate(1.5)",
+          WebkitBackdropFilter: "blur(20px) saturate(1.5)",
+        }}
+      >
         {/* Header */}
-        <div className="flex items-center gap-2 px-4 py-4 border-b border-[var(--border)] flex-shrink-0">
+        <div className="flex items-center gap-2 px-4 py-4 border-b border-[var(--glass-border)] flex-shrink-0">
           {!collapsed && (
-            <span className="text-sm font-semibold text-[var(--text-primary)] tracking-tight flex-1">
-              DocQuery
-            </span>
+            <div className="flex items-center gap-2 flex-1">
+              <div className="w-6 h-6 rounded-lg bg-[var(--accent)] flex items-center justify-center font-bold text-white text-xs shadow-sm flex-shrink-0">D</div>
+              <span className="text-sm font-semibold text-[var(--text-primary)] tracking-tight">
+                DocQuery
+              </span>
+            </div>
           )}
           {!collapsed && !isMobile && (
             <button
@@ -384,7 +394,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
               <span className="text-[10px] font-medium text-[var(--text-muted)] uppercase tracking-[0.12em]">Collections</span>
               <button
                 onClick={() => setShowNewCollection(!showNewCollection)}
-                className="ml-auto p-0.5 rounded text-[var(--text-muted)] hover:text-[var(--accent)] transition-all"
+                className="ml-auto p-0.5 rounded text-[var(--text-muted)] hover:text-[var(--accent)] transition-colors"
                 title="New Collection"
               >
                 <FolderPlus size={12} />
@@ -419,11 +429,15 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
             {/* "All Documents" button */}
             <button
               onClick={() => setActiveCollectionId(null)}
-              className={`w-full flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs transition-all ${
+              className={`w-full flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs transition-[background-color,color,box-shadow] ${
                 activeCollectionId === null
-                  ? "bg-[var(--bg-surface)] text-[var(--text-primary)] font-medium"
+                  ? "text-[var(--text-primary)] font-medium"
                   : "text-[var(--text-secondary)] hover:bg-[var(--bg-hover)]"
               }`}
+              style={activeCollectionId === null ? {
+                background: "rgba(255,255,255,0.9)",
+                boxShadow: "0 2px 8px -3px rgba(40,30,20,0.16), inset 0 1px 0 rgba(255,255,255,0.9)",
+              } : undefined}
             >
               <span className="truncate">All Documents</span>
               <span className="ml-auto text-[10px] text-[var(--text-muted)]">{docs.length}</span>
@@ -433,11 +447,15 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
             {collections.map((coll) => (
               <div
                 key={coll.id}
-                className={`group flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs cursor-pointer transition-all ${
+                className={`group flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs cursor-pointer border transition-[background-color,color,box-shadow] ${
                   activeCollectionId === coll.id
-                    ? "bg-[var(--bg-surface)] text-[var(--text-primary)] font-medium border border-[var(--accent)]"
-                    : "text-[var(--text-secondary)] hover:bg-[var(--bg-hover)] border border-transparent"
+                    ? "text-[var(--text-primary)] font-medium border-[rgba(10,10,10,0.18)]"
+                    : "text-[var(--text-secondary)] hover:bg-[var(--bg-hover)] border-transparent"
                 }`}
+                style={activeCollectionId === coll.id ? {
+                  background: "rgba(255,255,255,0.92)",
+                  boxShadow: "0 4px 12px -4px rgba(40,30,20,0.18), inset 0 1px 0 rgba(255,255,255,0.9)",
+                } : undefined}
                 onClick={() => setActiveCollectionId(activeCollectionId === coll.id ? null : coll.id)}
               >
                 <FolderOpen size={12} className={activeCollectionId === coll.id ? "text-[var(--accent)]" : "text-[var(--text-muted)]"} />
@@ -451,7 +469,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
                 ) : (
                   <button
                     onClick={(e) => { e.stopPropagation(); setDelCollId(coll.id); }}
-                    className="p-0.5 rounded text-[var(--text-muted)] hover:text-[var(--status-failed)] opacity-0 group-hover:opacity-100 transition-all"
+                    className="p-0.5 rounded text-[var(--text-muted)] hover:text-[var(--status-failed)] opacity-0 group-hover:opacity-100 transition-[color,opacity]"
                   >
                     <Trash2 size={10} />
                   </button>
@@ -479,7 +497,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
                   <li key={c.id}>
                     <div
                       onClick={() => { router.push(`/app/chat/${c.id}`); setMobileOpen(false); }}
-                      className={`flex items-center gap-2 px-3 py-2 rounded-xl cursor-pointer transition-all duration-100 group
+                      className={`flex items-center gap-2 px-3 py-2 rounded-xl cursor-pointer transition-[background-color,border-color] duration-[100ms] ease-[cubic-bezier(0.23,1,0.32,1)] group
                         ${activeId === c.id
                           ? "bg-[var(--bg-surface)] border border-[var(--accent)] shadow-[0_0_0_3px_rgba(10,10,10,0.06)]"
                           : "hover:bg-[var(--bg-hover)] border border-transparent"
@@ -517,17 +535,17 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
                           <button onClick={() => setDelConvId(null)} className="text-[9px] text-[var(--text-muted)] px-1.5 py-0.5 rounded border border-[var(--border)]">No</button>
                         </div>
                       ) : (
-                        <div className="flex gap-0.5 opacity-0 group-hover:opacity-100 transition-all">
+                        <div className="flex gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
                           <button
                             onClick={(e) => { e.stopPropagation(); startRename(c); }}
-                            className="p-1 rounded text-[var(--text-muted)] hover:text-[var(--accent)] transition-all"
+                            className="p-1 rounded text-[var(--text-muted)] hover:text-[var(--accent)] transition-colors"
                             title="Rename"
                           >
                             <Pencil size={11} />
                           </button>
                           <button
                             onClick={(e) => { e.stopPropagation(); setDelConvId(c.id); }}
-                            className="p-1 rounded text-[var(--text-muted)] hover:text-[var(--status-failed)] transition-all"
+                            className="p-1 rounded text-[var(--text-muted)] hover:text-[var(--status-failed)] transition-colors"
                             title="Delete"
                           >
                             <Trash2 size={11} />
@@ -556,7 +574,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
 
             {/* Upload */}
             <div
-              className={`card-dotted mx-3 mb-2 flex flex-col items-center justify-center gap-1 py-4 cursor-pointer transition-all
+              className={`card-dotted mx-3 mb-2 flex flex-col items-center justify-center gap-1 py-4 cursor-pointer transition-[border-color,background-color,opacity]
                 ${uploadQueue ? "opacity-50 pointer-events-none" : ""}`}
               onClick={() => fileRef.current?.click()}
               onDragOver={(e) => { e.preventDefault(); e.currentTarget.style.borderColor = "#0A0A0A"; e.currentTarget.style.background = "#F5F5F5"; }}
@@ -579,7 +597,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
             <div className="overflow-y-auto scrollbar-thin px-3 pb-2 flex-1 min-h-0 space-y-1">
               {docs.length === 0 && !uploadQueue && (
                 <p className="text-[10px] text-[var(--text-muted)] text-center py-4">
-                  No documents yet — upload one above
+                  No documents yet. Upload one above.
                 </p>
               )}
               {docs.map((doc) => (
@@ -596,7 +614,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
                       {doc.status === "processing"
                         ? `Processing${doc.processing_progress != null ? ` (${doc.processing_progress}%)` : "…"}`
                         : doc.status === "failed"
-                        ? "Failed to process — delete & re-upload"
+                        ? "Processing failed. Delete and re-upload."
                         : `${doc.chunk_count} chunks · ${fmtBytes(doc.file_size_bytes)}`}
                     </span>
                     <div className="flex items-center gap-1">
@@ -604,7 +622,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
                       {activeCollectionId && doc.status === "ready" && (
                         <button
                           onClick={() => handleToggleDocInCollection(doc.id)}
-                          className={`p-0.5 rounded transition-all ${
+                          className={`p-0.5 rounded transition-[color,opacity] ${
                             collectionDocIds.has(doc.id)
                               ? "text-[var(--accent)] opacity-100"
                               : "text-[var(--text-muted)] hover:text-[var(--accent)] opacity-0 group-hover:opacity-100"
@@ -624,7 +642,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
                             <button onClick={() => setDelDocId(null)} className="text-[8px] text-[var(--text-muted)] px-1 py-0.5 rounded border border-[var(--border)]">Cancel</button>
                           </div>
                         ) : (
-                          <button onClick={() => setDelDocId(doc.id)} className="opacity-0 group-hover:opacity-100 text-[var(--text-muted)] hover:text-[var(--status-failed)] transition-all">
+                          <button onClick={() => setDelDocId(doc.id)} className="opacity-0 group-hover:opacity-100 text-[var(--text-muted)] hover:text-[var(--status-failed)] transition-[color,opacity]">
                             <Trash2 size={10} />
                           </button>
                         )
@@ -633,7 +651,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
                   </div>
                   {doc.status === "processing" && (
                     <div className="mt-1.5 h-0.5 bg-[var(--bg-active)] rounded-full overflow-hidden">
-                      <div className="h-full bg-[var(--accent)] rounded-full transition-all duration-500" style={{ width: `${doc.processing_progress ?? 30}%` }} />
+                      <div className="h-full bg-[var(--accent)] rounded-full transition-[width] duration-[500ms] ease-[cubic-bezier(0.23,1,0.32,1)]" style={{ width: `${doc.processing_progress ?? 30}%` }} />
                     </div>
                   )}
                 </div>
@@ -665,6 +683,8 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
 
   return (
     <div className="relative flex h-dvh overflow-hidden bg-[var(--bg-base)]">
+      {/* Soft aurora wash so glass surfaces (input, top bar, panels) blur real colour */}
+      <div className="aurora aurora-soft" />
       <CommandPalette
         onNewChat={newChat}
         onUpload={() => fileRef.current?.click()}
@@ -674,7 +694,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
 
       {/* Desktop Sidebar */}
       <aside
-        className="sidebar-desktop flex-shrink-0 h-full border-r border-[var(--border)] transition-all duration-200"
+        className="sidebar-desktop flex-shrink-0 h-full border-r border-[var(--border)] transition-[width] duration-[200ms] ease-[cubic-bezier(0.23,1,0.32,1)]"
         style={{ width: collapsed ? 64 : 280, zIndex: 20 }}
       >
         {sidebar()}

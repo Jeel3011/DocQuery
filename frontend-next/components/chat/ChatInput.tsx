@@ -47,7 +47,7 @@ export function ChatInput({
     const el = ref.current;
     if (!el) return;
     el.style.height = "auto";
-    el.style.height = Math.min(el.scrollHeight, 140) + "px";
+    el.style.height = Math.min(el.scrollHeight, 180) + "px";
   }, []);
 
   function onChange(e: React.ChangeEvent<HTMLTextAreaElement>) {
@@ -86,34 +86,35 @@ export function ChatInput({
   const canSend = value.trim().length > 0 && !isStreaming && !disabled;
 
   return (
-    <div className="border-t border-[var(--border)] px-4 md:px-8 py-4 bg-[var(--bg-surface)] flex-shrink-0">
+    <div className="px-4 md:px-8 pb-5 pt-2 flex-shrink-0 bg-transparent">
       <div className="max-w-3xl mx-auto relative">
-        {/* Streaming status */}
-        {isStreaming && (
-          <div className="flex items-center gap-2 mb-2 text-xs text-[var(--text-muted)]">
-            <Loader2 size={12} className="animate-spin" />
-            <span>{brainMode ? "Brain synthesizing across documents…" : agenticMode ? "Agentic analysis in progress…" : "Generating response…"}</span>
-          </div>
-        )}
 
         {/* Slash-command popover */}
         <AnimatePresence>
           {showSlash && slashFiltered.length > 0 && (
             <motion.div
               key="slash"
-              initial={{ opacity: 0, y: 4 }}
-              animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0, y: 4 }}
-              transition={{ duration: 0.12 }}
-              className="absolute bottom-full left-0 right-0 mb-2 card overflow-hidden shadow-lg"
-              style={{ zIndex: "var(--z-dropdown)" as unknown as number }}
+              initial={{ opacity: 0, scale: 0.97, y: 4 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.97, y: 4 }}
+              transition={{ duration: 0.15, ease: [0.23, 1, 0.32, 1] }}
+              className="absolute bottom-full left-0 right-0 mb-2 rounded-xl overflow-hidden"
+              style={{
+                transformOrigin: "bottom left",
+                zIndex: "var(--z-dropdown)" as unknown as number,
+                background: "var(--glass-bg-strong)",
+                backdropFilter: "blur(16px)",
+                WebkitBackdropFilter: "blur(16px)",
+                border: "1px solid var(--glass-border)",
+                boxShadow: "var(--glass-shadow-lg)",
+              }}
             >
               {slashFiltered.map((c, i) => (
                 <button
                   key={c.cmd}
                   onMouseDown={(e) => { e.preventDefault(); applySlash(c.cmd); }}
-                  className={`w-full flex items-center gap-3 px-3 py-2 text-left transition-colors ${
-                    i === slashIdx ? "bg-[var(--bg-hover)]" : ""
+                  className={`w-full flex items-center gap-3 px-4 py-2.5 text-left transition-colors ${
+                    i === slashIdx ? "bg-[rgba(0,0,0,0.04)]" : ""
                   }`}
                 >
                   <span className="text-xs font-mono font-semibold text-[var(--text-primary)]">{c.cmd}</span>
@@ -124,83 +125,143 @@ export function ChatInput({
           )}
         </AnimatePresence>
 
-        {/* Input wrapper */}
+        {/* Main glass input bar — one tall premium surface */}
         <div
-          className={`flex items-end gap-3 card px-4 py-3 transition-all duration-150
-            ${value.length > 0 ? "border-[var(--accent)] shadow-[0_0_0_3px_rgba(10,10,10,0.08)]" : ""}`}
+          className={`flex flex-col gap-2 rounded-[20px] px-4 pt-3 pb-2.5 transition-[border-color,box-shadow] duration-[160ms] ease-[cubic-bezier(0.23,1,0.32,1)]`}
+          style={{
+            background: "linear-gradient(180deg, rgba(255,255,255,0.78), rgba(255,255,255,0.62))",
+            backdropFilter: "blur(24px) saturate(1.6)",
+            WebkitBackdropFilter: "blur(24px) saturate(1.6)",
+            border: value.length > 0
+              ? "1px solid rgba(10,10,10,0.3)"
+              : "1px solid var(--glass-border)",
+            boxShadow: value.length > 0
+              ? "0 16px 48px -12px rgba(40,30,20,0.22), 0 0 0 3px rgba(10,10,10,0.05), inset 0 1px 0 rgba(255,255,255,0.85)"
+              : "0 14px 40px -14px rgba(40,30,20,0.20), inset 0 1px 0 rgba(255,255,255,0.8)",
+          }}
         >
+          {/* Streaming status — integrated thin row inside the bar */}
+          {isStreaming && (
+            <div className="flex items-center gap-2 text-[11px] text-[var(--text-muted)] pb-1 border-b border-[var(--glass-border)]">
+              <Loader2 size={11} className="animate-spin" />
+              <span>
+                {brainMode
+                  ? "Brain synthesizing across documents…"
+                  : agenticMode
+                  ? "Agentic analysis in progress…"
+                  : "Generating response…"}
+              </span>
+            </div>
+          )}
+
+          {/* Input row */}
+          <div className="flex items-end gap-3">
           <textarea
             ref={ref}
             value={value}
             onChange={onChange}
             onKeyDown={onKey}
-            placeholder={brainMode ? "Ask a cross-document question (Brain synthesis over a collection)…" : agenticMode ? "Ask a complex question (agentic deep analysis)…" : placeholder}
+            placeholder={
+              brainMode
+                ? "Ask a cross-document question (Brain synthesis)…"
+                : agenticMode
+                ? "Ask a complex question (agentic deep analysis)…"
+                : placeholder
+            }
             disabled={disabled}
             rows={1}
             aria-label="Chat input"
-            className="flex-1 bg-transparent text-sm text-[var(--text-primary)] leading-6
-              placeholder:text-[var(--text-muted)] resize-none outline-none min-h-[24px]"
-            style={{ maxHeight: 140 }}
+            className="flex-1 bg-transparent text-[15px] text-[var(--text-primary)] leading-7
+              placeholder:text-[var(--text-muted)] resize-none outline-none min-h-[36px] py-1"
+            style={{ maxHeight: 180 }}
           />
 
-          {/* Brain (cross-document synthesis) toggle */}
-          {onToggleBrain && (
-            <button
-              onClick={onToggleBrain}
-              title={brainMode ? "Brain synthesis ON — cross-document map-reduce (needs a collection)" : "Click for cross-document Brain synthesis (needs a collection)"}
-              aria-pressed={brainMode}
-              className={`w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0 transition-all duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)]
-                ${brainMode
-                  ? "bg-[var(--accent)] text-white shadow-sm"
-                  : "bg-[var(--bg-hover)] text-[var(--text-muted)] hover:text-[var(--text-secondary)]"
-                }`}
-            >
-              <Brain size={14} className={brainMode ? "fill-current" : ""} />
-            </button>
-          )}
+          {/* Mode toggles */}
+          <div className="flex items-center gap-1.5 pb-0.5">
+            {onToggleBrain && (
+              <button
+                onClick={onToggleBrain}
+                title={brainMode ? "Brain synthesis ON" : "Enable Brain synthesis"}
+                aria-pressed={brainMode}
+                className="w-8 h-8 rounded-xl flex items-center justify-center flex-shrink-0 transition-[background-color,color,box-shadow,transform] duration-[120ms] ease-[cubic-bezier(0.23,1,0.32,1)] active:scale-[0.97] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)]"
+                style={brainMode ? {
+                  background: "var(--accent)",
+                  color: "white",
+                  boxShadow: "0 2px 8px rgba(0,0,0,0.2), var(--skeu-inset)",
+                } : {
+                  background: "var(--glass-bg)",
+                  color: "var(--text-muted)",
+                  border: "1px solid var(--glass-border)",
+                  boxShadow: "var(--skeu-raised)",
+                }}
+              >
+                <Brain size={14} className={brainMode ? "fill-current" : ""} />
+              </button>
+            )}
 
-          {/* Agentic mode toggle */}
-          {onToggleAgentic && (
-            <button
-              onClick={onToggleAgentic}
-              title={agenticMode ? "Agentic mode ON" : "Standard mode — click for deep analysis"}
-              aria-pressed={agenticMode}
-              className={`w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0 transition-all duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)]
-                ${agenticMode
-                  ? "bg-[var(--accent)] text-white shadow-sm"
-                  : "bg-[var(--bg-hover)] text-[var(--text-muted)] hover:text-[var(--text-secondary)]"
-                }`}
-            >
-              <Zap size={14} className={agenticMode ? "fill-current" : ""} />
-            </button>
-          )}
+            {onToggleAgentic && (
+              <button
+                onClick={onToggleAgentic}
+                title={agenticMode ? "Agentic mode ON" : "Enable agentic mode"}
+                aria-pressed={agenticMode}
+                className="w-8 h-8 rounded-xl flex items-center justify-center flex-shrink-0 transition-[background-color,color,box-shadow,transform] duration-[120ms] ease-[cubic-bezier(0.23,1,0.32,1)] active:scale-[0.97] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)]"
+                style={agenticMode ? {
+                  background: "var(--accent)",
+                  color: "white",
+                  boxShadow: "0 2px 8px rgba(0,0,0,0.2), var(--skeu-inset)",
+                } : {
+                  background: "var(--glass-bg)",
+                  color: "var(--text-muted)",
+                  border: "1px solid var(--glass-border)",
+                  boxShadow: "var(--skeu-raised)",
+                }}
+              >
+                <Zap size={14} className={agenticMode ? "fill-current" : ""} />
+              </button>
+            )}
 
-          {/* Send / Stop */}
-          {isStreaming ? (
-            <button
-              onClick={onCancel}
-              aria-label="Stop generating"
-              className="w-8 h-8 rounded-lg bg-red-50 border border-red-200 flex items-center justify-center flex-shrink-0 hover:bg-red-100 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-300"
-            >
-              <Square size={11} className="text-[var(--status-failed)] fill-current" />
-            </button>
-          ) : (
-            <button
-              onClick={submit}
-              disabled={!canSend}
-              aria-label="Send message"
-              className={`w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0 transition-all duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)]
-                ${canSend
-                  ? "bg-[var(--accent)] text-white hover:bg-[var(--accent-hover)] active:scale-95"
-                  : "bg-[var(--bg-hover)] text-[var(--text-muted)] cursor-not-allowed"}`}
-            >
-              <ArrowUp size={14} />
-            </button>
-          )}
+            {/* Send / Stop */}
+            {isStreaming ? (
+              <button
+                onClick={onCancel}
+                aria-label="Stop generating"
+                className="w-8 h-8 rounded-xl flex items-center justify-center flex-shrink-0 transition-[background-color,transform] duration-[120ms] ease-[cubic-bezier(0.23,1,0.32,1)] active:scale-[0.97]"
+                style={{
+                  background: "rgba(220,38,38,0.08)",
+                  border: "1px solid rgba(220,38,38,0.2)",
+                  boxShadow: "var(--skeu-raised)",
+                  color: "var(--status-failed)",
+                }}
+              >
+                <Square size={11} className="fill-current" />
+              </button>
+            ) : (
+              <button
+                onClick={submit}
+                disabled={!canSend}
+                aria-label="Send message"
+                className="w-8 h-8 rounded-xl flex items-center justify-center flex-shrink-0 transition-[background-color,color,transform,box-shadow] duration-[120ms] ease-[cubic-bezier(0.23,1,0.32,1)] enabled:active:scale-[0.97] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)]"
+                style={canSend ? {
+                  background: "var(--accent)",
+                  color: "white",
+                  boxShadow: "0 2px 10px rgba(0,0,0,0.2), var(--skeu-inset)",
+                } : {
+                  background: "var(--glass-bg)",
+                  color: "var(--text-muted)",
+                  border: "1px solid var(--glass-border)",
+                  boxShadow: "var(--skeu-raised)",
+                  cursor: "not-allowed",
+                }}
+              >
+                <ArrowUp size={14} />
+              </button>
+            )}
+          </div>
+          </div>{/* end input row */}
         </div>
 
         <p className="text-[10px] text-[var(--text-muted)] mt-2 text-center select-none">
-          ↵ send · ⇧↵ newline · / slash commands{brainMode ? " · 🧠 brain mode" : agenticMode ? " · ⚡ agentic mode" : ""} · always verify sources
+          ↵ send · ⇧↵ newline · / commands{brainMode ? " · 🧠 brain" : agenticMode ? " · ⚡ agentic" : ""} · always verify sources
         </p>
       </div>
     </div>

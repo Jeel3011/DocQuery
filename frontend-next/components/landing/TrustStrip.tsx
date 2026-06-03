@@ -27,7 +27,9 @@ const TRUST_ITEMS = [
 
 export function TrustStrip() {
   return (
-    <section className="py-16 px-6 lg:px-12 border-y border-dashed border-[var(--border-dotted)] bg-[var(--warm-50)] relative z-10">
+    <section className="py-16 px-6 lg:px-12 border-y border-dashed border-[var(--border-dotted)] relative z-10"
+      style={{ background: "rgba(255,255,255,0.35)", backdropFilter: "blur(12px) saturate(1.4)", WebkitBackdropFilter: "blur(12px) saturate(1.4)" }}
+    >
       <div className="max-w-5xl mx-auto">
         <div className="text-center mb-10">
           <p className="text-[11px] font-semibold text-[var(--text-muted)] uppercase tracking-[0.16em] mb-2">Security & Trust</p>
@@ -40,7 +42,7 @@ export function TrustStrip() {
             const Icon = item.icon;
             return (
               <div key={i} className="flex flex-col items-start gap-3">
-                <div className="w-9 h-9 rounded-xl bg-[var(--bg-surface)] border border-[var(--border)] flex items-center justify-center flex-shrink-0">
+                <div className="w-9 h-9 rounded-xl flex items-center justify-center flex-shrink-0" style={{ background: "linear-gradient(165deg,#FFFFFF,#F1EEE9)", border: "1px solid rgba(0,0,0,0.06)", boxShadow: "var(--skeu-raised)" }}>
                   <Icon size={16} className="text-[var(--text-secondary)]" />
                 </div>
                 <div>

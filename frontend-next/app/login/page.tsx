@@ -87,7 +87,7 @@ export default function LoginPage() {
         <div className="flex gap-1 p-1 bg-[var(--bg-base)] rounded-xl mb-6 border border-[var(--border)]">
           {(["signin", "signup"] as const).map((t) => (
             <button key={t} onClick={() => switchTab(t)}
-              className={`flex-1 py-2 rounded-lg text-sm font-medium transition-all duration-150
+              className={`flex-1 py-2 rounded-lg text-sm font-medium transition-[background-color,color] duration-[120ms]
                 ${tab === t ? "bg-[var(--accent)] text-white shadow-sm" : "text-[var(--text-muted)] hover:text-[var(--text-primary)]"}`}>
               {t === "signin" ? "Sign In" : "Sign Up"}
             </button>
@@ -108,7 +108,7 @@ export default function LoginPage() {
             <label className="block text-xs text-[var(--text-secondary)] mb-1.5 font-medium">Email</label>
             <input {...register("email")} type="email" autoComplete="email" placeholder="you@example.com"
               className={`w-full card rounded-xl px-4 py-3 text-sm text-[var(--text-primary)]
-                placeholder:text-[var(--text-muted)] outline-none transition-all
+                placeholder:text-[var(--text-muted)] outline-none transition-[border-color,box-shadow]
                 focus:border-[var(--accent)] focus:shadow-[0_0_0_3px_rgba(10,10,10,0.06)]
                 ${errors.email ? "border-[var(--status-failed)]" : ""}`} />
             {errors.email && <p className="text-[10px] text-[var(--status-failed)] mt-1">{errors.email.message}</p>}
@@ -120,7 +120,7 @@ export default function LoginPage() {
               <input {...register("password")} type={showPw ? "text" : "password"}
                 autoComplete={tab === "signin" ? "current-password" : "new-password"} placeholder="••••••••"
                 className={`w-full card rounded-xl px-4 py-3 pr-10 text-sm text-[var(--text-primary)]
-                  placeholder:text-[var(--text-muted)] outline-none transition-all
+                  placeholder:text-[var(--text-muted)] outline-none transition-[border-color,box-shadow]
                   focus:border-[var(--accent)] focus:shadow-[0_0_0_3px_rgba(10,10,10,0.06)]
                   ${errors.password ? "border-[var(--status-failed)]" : ""}`} />
               <button type="button" onClick={() => setShowPw(!showPw)}

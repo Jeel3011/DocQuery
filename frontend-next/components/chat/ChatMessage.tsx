@@ -146,151 +146,163 @@ export const ChatMessage = memo(function ChatMessage({
 
   return (
     <motion.div
-      initial={{ opacity: 0, y: 6 }}
+      initial={{ opacity: 0, y: 8 }}
       animate={{ opacity: 1, y: 0 }}
-      transition={{ duration: 0.2, ease: [0.16, 1, 0.3, 1] }}
-      className="px-4 md:px-8 py-3"
+      transition={{ duration: 0.22, ease: [0.23, 1, 0.32, 1] }}
+      className={`px-4 md:px-6 py-2 flex ${isUser ? "justify-end" : "justify-start"}`}
     >
-      <div className="max-w-3xl mx-auto flex gap-3">
-        {/* Avatar */}
-        <div
-          className={`w-7 h-7 rounded-lg flex items-center justify-center flex-shrink-0 mt-0.5 text-[11px] font-bold
-            ${isUser
-              ? "bg-[var(--accent)] text-white"
-              : "border-2 border-dashed border-[var(--border-dotted)] text-[var(--text-muted)]"
-            }`}
-          aria-hidden="true"
-        >
-          {isUser ? userInitials : "D"}
-        </div>
-
-        <div className="flex-1 min-w-0">
-          {/* Role label */}
-          <p className="text-[11px] font-medium mb-1.5 text-[var(--text-muted)]">
-            {isUser ? "You" : "DocQuery"}
-          </p>
-
-          {/* Bubble */}
+      {/* ── Assistant: avatar left ── */}
+      {!isUser && (
+        <div className="flex items-start gap-2.5 max-w-[82%] lg:max-w-[72%]">
           <div
-            className={`rounded-xl px-4 py-3 ${
-              isUser
-                ? "bg-[var(--bg-surface)] border border-[var(--border)]"
-                : "bg-[var(--bg-base)] border border-dashed border-[var(--border-dotted)]"
-            }`}
+            className="w-8 h-8 rounded-full flex-shrink-0 flex items-center justify-center text-[11px] font-bold text-[var(--text-secondary)] mt-0.5"
+            aria-hidden="true"
+            style={{
+              background: "var(--glass-bg-strong)",
+              backdropFilter: "blur(8px)",
+              WebkitBackdropFilter: "blur(8px)",
+              border: "1px solid var(--glass-border)",
+              boxShadow: "var(--skeu-raised)",
+            }}
           >
-            {/* Fallback banner */}
-            {isFallback && (
-              <div className="flex items-center gap-1.5 mb-2.5 text-[var(--status-processing)] text-xs bg-amber-50 border border-amber-100 rounded-lg px-2.5 py-1.5">
-                <AlertTriangle size={12} />
-                <span>AI temporarily unavailable — showing retrieved passages</span>
-              </div>
-            )}
-
-            {isUser ? (
-              <p className="text-sm text-[var(--text-primary)] leading-relaxed whitespace-pre-wrap">{content}</p>
-            ) : (
-              <div
-                className={`text-sm text-[var(--text-primary)] ${isStreaming ? "streaming-cursor" : ""}`}
-                onClick={(e) => {
-                  const target = e.target as HTMLElement;
-                  if (target.classList.contains("citation-chip")) {
-                    const id = parseInt(target.dataset.sourceId ?? "0", 10);
-                    if (id) { setSourcesOpen(true); handleSourceHover(id); }
-                  }
-                }}
-              >
-                <ReactMarkdown
-                  remarkPlugins={[remarkGfm]}
-                  components={mdComponents}
-                >
+            D
+          </div>
+          <div className="flex flex-col gap-1.5 min-w-0">
+            <p className="text-[10px] font-medium text-[var(--text-muted)] ml-1">DocQuery</p>
+            {/* Glass assistant bubble */}
+            <div
+              className={`rounded-2xl rounded-tl-sm px-4 py-3 ${isStreaming ? "streaming-cursor" : ""}`}
+              style={{
+                background: "var(--glass-bg-strong)",
+                backdropFilter: "blur(14px)",
+                WebkitBackdropFilter: "blur(14px)",
+                border: "1px solid var(--glass-border)",
+                boxShadow: "var(--glass-shadow), var(--skeu-inset-glass)",
+              }}
+              onClick={(e) => {
+                const target = e.target as HTMLElement;
+                if (target.classList.contains("citation-chip")) {
+                  const id = parseInt(target.dataset.sourceId ?? "0", 10);
+                  if (id) { setSourcesOpen(true); handleSourceHover(id); }
+                }
+              }}
+            >
+              {isFallback && (
+                <div className="flex items-center gap-1.5 mb-2.5 text-[var(--status-processing)] text-xs bg-amber-50 border border-amber-100 rounded-lg px-2.5 py-1.5">
+                  <AlertTriangle size={12} />
+                  <span>AI temporarily unavailable. Showing retrieved passages.</span>
+                </div>
+              )}
+              <div className="text-sm text-[var(--text-primary)]">
+                <ReactMarkdown remarkPlugins={[remarkGfm]} components={mdComponents}>
                   {cleaned}
                 </ReactMarkdown>
               </div>
+            </div>
+
+            {/* TrustBar */}
+            {!isStreaming && showTrust && answerMeta && (
+              <TrustBar meta={answerMeta} />
             )}
-          </div>
 
-          {/* TrustBar — mock-now, wires to real AnswerMeta later */}
-          {!isUser && !isStreaming && showTrust && answerMeta && (
-            <TrustBar meta={answerMeta} />
-          )}
-
-          {/* Sources rail */}
-          {hasSources && (
-            <div className="mt-2">
-              <button
-                onClick={() => setSourcesOpen(!sourcesOpen)}
-                className="flex items-center gap-1.5 text-[11px] text-[var(--text-muted)] hover:text-[var(--text-primary)] transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)] rounded"
-                aria-expanded={sourcesOpen}
-              >
-                <FileText size={11} />
-                <span>{sources!.length} source{sources!.length > 1 ? "s" : ""}</span>
-                {sourcesOpen ? <ChevronUp size={11} /> : <ChevronDown size={11} />}
-              </button>
-
-              <AnimatePresence initial={false}>
-                {sourcesOpen && (
-                  <motion.div
-                    key="sources"
-                    initial={{ opacity: 0, height: 0 }}
-                    animate={{ opacity: 1, height: "auto" }}
-                    exit={{ opacity: 0, height: 0 }}
-                    transition={{ duration: 0.2, ease: [0.16, 1, 0.3, 1] }}
-                    className="mt-2 space-y-1.5 overflow-hidden"
-                  >
-                    {sources!.map((src, i) => {
-                      const sourceId = src.source_id ?? i + 1;
-                      const isHighlighted = hoveredSource === sourceId;
-                      return (
-                        <motion.div
-                          key={i}
-                          initial={{ opacity: 0, x: -4 }}
-                          animate={{ opacity: 1, x: 0 }}
-                          transition={{ delay: i * 0.04 }}
-                          className={`card px-3 py-2 text-xs transition-all duration-150 cursor-pointer
-                            ${isHighlighted
-                              ? "border-[var(--accent)] shadow-[0_0_0_3px_rgba(10,10,10,0.06)] bg-[var(--bg-hover)]"
-                              : "hover:border-[var(--border-strong)]"
-                            }`}
-                          onMouseEnter={() => handleSourceHover(sourceId)}
-                          onMouseLeave={() => handleSourceHover(null)}
-                        >
-                          <div className="flex items-start gap-2">
-                            <span
-                              className={`w-4 h-4 rounded text-[9px] font-bold flex items-center justify-center flex-shrink-0 transition-all duration-150 mt-0.5
-                                ${isHighlighted
-                                  ? "bg-[var(--accent)] text-white"
-                                  : "border border-dashed border-[var(--border-dotted)] text-[var(--text-secondary)]"
-                                }`}
-                            >
-                              {sourceId}
-                            </span>
-                            <div className="flex-1 min-w-0">
-                              <div className="flex items-center gap-2 flex-wrap">
-                                <span className="text-[var(--text-primary)] font-medium truncate">{src.filename ?? "Unknown"}</span>
-                                {src.page && <span className="text-[var(--text-muted)] flex-shrink-0">p. {src.page}</span>}
-                                {src.chunk_type && (
-                                  <span className="text-[9px] text-[var(--text-muted)] capitalize border border-[var(--border)] rounded px-1 flex-shrink-0">
-                                    {src.chunk_type}
-                                  </span>
+            {/* Sources */}
+            {hasSources && (
+              <div className="ml-1">
+                <button
+                  onClick={() => setSourcesOpen(!sourcesOpen)}
+                  className="flex items-center gap-1.5 text-[11px] text-[var(--text-muted)] hover:text-[var(--text-primary)] transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)] rounded"
+                  aria-expanded={sourcesOpen}
+                >
+                  <FileText size={11} />
+                  <span>{sources!.length} source{sources!.length > 1 ? "s" : ""}</span>
+                  {sourcesOpen ? <ChevronUp size={11} /> : <ChevronDown size={11} />}
+                </button>
+                <AnimatePresence initial={false}>
+                  {sourcesOpen && (
+                    <motion.div
+                      key="sources"
+                      initial={{ opacity: 0, height: 0 }}
+                      animate={{ opacity: 1, height: "auto" }}
+                      exit={{ opacity: 0, height: 0 }}
+                      transition={{ duration: 0.2, ease: [0.23, 1, 0.32, 1] }}
+                      className="mt-2 space-y-1.5 overflow-hidden"
+                    >
+                      {sources!.map((src, i) => {
+                        const sourceId = src.source_id ?? i + 1;
+                        const isHighlighted = hoveredSource === sourceId;
+                        return (
+                          <motion.div
+                            key={i}
+                            initial={{ opacity: 0, x: -4 }}
+                            animate={{ opacity: 1, x: 0 }}
+                            transition={{ delay: i * 0.04, ease: [0.23, 1, 0.32, 1] }}
+                            className={`px-3 py-2 text-xs rounded-xl cursor-pointer transition-[border-color,box-shadow,background-color] duration-[120ms] ease-[cubic-bezier(0.23,1,0.32,1)]`}
+                            style={{
+                              background: isHighlighted ? "var(--bg-hover)" : "var(--glass-bg)",
+                              backdropFilter: "blur(8px)",
+                              border: isHighlighted ? "1px solid var(--accent)" : "1px solid var(--glass-border)",
+                              boxShadow: isHighlighted ? "0 0 0 3px rgba(10,10,10,0.06)" : "var(--glass-shadow)",
+                            }}
+                            onMouseEnter={() => handleSourceHover(sourceId)}
+                            onMouseLeave={() => handleSourceHover(null)}
+                          >
+                            <div className="flex items-start gap-2">
+                              <span
+                                className={`w-4 h-4 rounded text-[9px] font-bold flex items-center justify-center flex-shrink-0 mt-0.5 ${isHighlighted ? "bg-[var(--accent)] text-white" : "border border-dashed border-[var(--border-dotted)] text-[var(--text-secondary)]"}`}
+                              >
+                                {sourceId}
+                              </span>
+                              <div className="flex-1 min-w-0">
+                                <div className="flex items-center gap-2 flex-wrap">
+                                  <span className="text-[var(--text-primary)] font-medium truncate">{src.filename ?? "Unknown"}</span>
+                                  {src.page && <span className="text-[var(--text-muted)]">p. {src.page}</span>}
+                                </div>
+                                {src.content && (
+                                  <p className="text-[11px] text-[var(--text-secondary)] mt-1 leading-relaxed italic line-clamp-2">&ldquo;{src.content}&rdquo;</p>
                                 )}
                               </div>
-                              {src.content && (
-                                <p className="text-[11px] text-[var(--text-secondary)] mt-1 leading-relaxed italic line-clamp-2">
-                                  &ldquo;{src.content}&rdquo;
-                                </p>
-                              )}
                             </div>
-                          </div>
-                        </motion.div>
-                      );
-                    })}
-                  </motion.div>
-                )}
-              </AnimatePresence>
-            </div>
-          )}
+                          </motion.div>
+                        );
+                      })}
+                    </motion.div>
+                  )}
+                </AnimatePresence>
+              </div>
+            )}
+          </div>
         </div>
-      </div>
+      )}
+
+      {/* ── User: bubble right ── */}
+      {isUser && (
+        <div className="flex items-end gap-2.5 max-w-[78%] lg:max-w-[65%]">
+          <div className="flex flex-col items-end gap-1">
+            <p className="text-[10px] font-medium text-[var(--text-muted)] mr-1">You</p>
+            <div
+              className="rounded-2xl rounded-br-sm px-4 py-3"
+              style={{
+                background: "var(--bg-surface)",
+                color: "var(--text-primary)",
+                border: "1px solid var(--border)",
+                boxShadow: "var(--shadow-sm)",
+              }}
+            >
+              <p className="text-sm leading-relaxed whitespace-pre-wrap">{content}</p>
+            </div>
+          </div>
+          <div
+            className="w-8 h-8 rounded-full flex-shrink-0 flex items-center justify-center text-[11px] font-bold text-white mb-0.5"
+            aria-hidden="true"
+            style={{
+              background: "var(--accent)",
+              boxShadow: "var(--skeu-raised)",
+            }}
+          >
+            {userInitials}
+          </div>
+        </div>
+      )}
     </motion.div>
   );
 });

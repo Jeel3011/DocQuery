@@ -10,6 +10,7 @@ import { useParams, useSearchParams } from "next/navigation";
 import { AnimatePresence, motion } from "framer-motion";
 import { ChatMessage } from "@/components/chat/ChatMessage";
 import { ChatInput } from "@/components/chat/ChatInput";
+import { ArtifactPanel, detectArtifact, Artifact } from "@/components/chat/ArtifactPanel";
 import { ThinkingStreamFixture, ThinkingStream, ThinkingStep } from "@/components/chat/ThinkingStream";
 import { SkeletonMessage } from "@/components/ui/Skeleton";
 import { MOCK_ANSWER_META, AnswerMeta, ConfidenceLevel } from "@/components/chat/TrustBar";
@@ -63,6 +64,7 @@ function ChatPageInner() {
   const [compareFocus, setCompareFocus] = useState("");
   const [compareLoading, setCompareLoading] = useState(false);
   const [compareResult, setCompareResult] = useState<ComparisonResult | null>(null);
+  const [artifact, setArtifact] = useState<Artifact | null>(null);
 
   const scrollRef = useRef<HTMLDivElement>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
@@ -138,13 +140,18 @@ function ChatPageInner() {
           isFallback = true;
         },
         onDone: () => {
-          setMessages((prev) =>
-            prev.map((m) =>
-              m.id === assistantMsgId
-                ? { ...m, isStreaming: false, isFallback }
-                : m
-            )
-          );
+          setMessages((prev) => {
+            const updated = prev.map((m) =>
+              m.id === assistantMsgId ? { ...m, isStreaming: false, isFallback } : m
+            );
+            // Auto-detect artifact from the completed assistant message
+            const completed = updated.find((m) => m.id === assistantMsgId);
+            if (completed) {
+              const detected = detectArtifact(completed.content);
+              if (detected) setArtifact(detected);
+            }
+            return updated;
+          });
           setIsStreaming(false);
         },
         onError: (msg: string) => {
@@ -384,9 +391,19 @@ function ChatPageInner() {
   }
 
   return (
-    <div className="flex flex-col h-full overflow-hidden">
+    <div className="flex h-full overflow-hidden">
+      {/* ── Main chat column ── */}
+      <div className="flex flex-col flex-1 min-w-0 overflow-hidden">
       {/* Top bar — collection badge + export */}
-      <div className="flex items-center justify-between px-4 py-1.5 border-b border-[var(--border)] bg-[var(--bg-surface)] flex-shrink-0">
+      <div
+        className="flex items-center justify-between px-4 py-1.5 border-b flex-shrink-0"
+        style={{
+          background: "var(--glass-bg-strong)",
+          backdropFilter: "blur(16px)",
+          WebkitBackdropFilter: "blur(16px)",
+          borderColor: "var(--glass-border)",
+        }}
+      >
         {/* Active collection indicator */}
         {activeCollectionId ? (
           <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-[var(--bg-hover)] text-[10px] text-[var(--accent)]">
@@ -406,7 +423,7 @@ function ChatPageInner() {
           <button
             onMouseEnter={loadDocuments}
             onClick={() => { loadDocuments(); setShowCompare(true); setCompareResult(null); }}
-            className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-[10px] text-[var(--text-muted)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-hover)] transition-all"
+            className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-[10px] text-[var(--text-muted)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-hover)] transition-[color,background-color]"
           >
             <GitCompare size={11} />
             Compare
@@ -417,7 +434,7 @@ function ChatPageInner() {
             <div className="relative" ref={exportRef}>
               <button
                 onClick={() => setShowExport(!showExport)}
-                className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-[10px] text-[var(--text-muted)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-hover)] transition-all"
+                className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-[10px] text-[var(--text-muted)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-hover)] transition-[color,background-color]"
               >
                 <Download size={11} />
                 Export
@@ -671,6 +688,10 @@ function ChatPageInner() {
           </div>
         </div>
       )}
+      </div>{/* end main chat column */}
+
+      {/* ── Artifact panel (right, slide-in) ── */}
+      <ArtifactPanel artifact={artifact} onClose={() => setArtifact(null)} />
     </div>
   );
 }

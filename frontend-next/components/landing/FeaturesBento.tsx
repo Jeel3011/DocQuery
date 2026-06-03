@@ -68,9 +68,9 @@ export function FeaturesBento() {
           >
             <div
               onClick={() => setExpandedIdx(expandedIdx === i ? null : i)}
-              className="card h-full p-8 flex flex-col items-start gap-4 hover:-translate-y-1 transition-all group cursor-pointer hover:shadow-md"
+              className="card-glass h-full p-8 flex flex-col items-start gap-4 hover:-translate-y-1 transition-[transform,box-shadow] duration-[200ms] ease-[cubic-bezier(0.23,1,0.32,1)] group cursor-pointer hover:shadow-[var(--glass-shadow-lg)]"
             >
-              <div className="p-3 bg-[var(--bg-hover)] rounded-xl group-hover:bg-[var(--bg-active)] transition-colors border border-[var(--border)] text-[var(--text-secondary)]">
+              <div className="p-3 rounded-xl transition-colors text-[var(--text-secondary)]" style={{ background: "linear-gradient(165deg,#FFFFFF,#F1EEE9)", border: "1px solid rgba(0,0,0,0.06)", boxShadow: "var(--skeu-raised)" }}>
                 {feat.icon}
               </div>
               <h3 className="text-xl font-semibold text-[var(--text-primary)] mt-2">

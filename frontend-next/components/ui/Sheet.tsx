@@ -1,7 +1,7 @@
 "use client";
 
 import { createContext, useContext, useState, ReactNode, useEffect } from "react";
-import { AnimatePresence, motion } from "framer-motion";
+import { AnimatePresence, motion, useReducedMotion } from "framer-motion";
 import { X } from "lucide-react";
 import { clsx } from "clsx";
 
@@ -38,6 +38,7 @@ interface SheetContentProps {
 
 export function SheetContent({ children, className, side = "right", width = "420px" }: SheetContentProps) {
   const { open, setOpen } = useContext(SheetCtx);
+  const shouldReduceMotion = useReducedMotion();
 
   useEffect(() => {
     if (!open) return;
@@ -65,10 +66,17 @@ export function SheetContent({ children, className, side = "right", width = "420
           />
           <motion.div
             key="sheet"
-            initial={{ x: side === "right" ? "100%" : "-100%", opacity: 0 }}
-            animate={{ x: 0, opacity: 1 }}
-            exit={{ x: side === "right" ? "100%" : "-100%", opacity: 0 }}
-            transition={{ type: "spring", stiffness: 320, damping: 32 }}
+            initial={{ x: shouldReduceMotion ? 0 : side === "right" ? "100%" : "-100%", opacity: 0 }}
+            animate={{
+              x: 0,
+              opacity: 1,
+              transition: { duration: shouldReduceMotion ? 0.15 : 0.28, ease: [0.32, 0.72, 0, 1] },
+            }}
+            exit={{
+              x: shouldReduceMotion ? 0 : side === "right" ? "100%" : "-100%",
+              opacity: 0,
+              transition: { duration: shouldReduceMotion ? 0.12 : 0.2, ease: [0.32, 0.72, 0, 1] },
+            }}
             className={clsx(
               "fixed top-0 bottom-0 flex flex-col bg-[var(--bg-surface)] border-l border-[var(--border)] shadow-xl overflow-hidden",
               side === "right" ? "right-0" : "left-0",

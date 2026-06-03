@@ -4,9 +4,9 @@ import { AuthProvider } from "@/components/AuthProvider";
 import { Toaster } from "sonner";
 
 export const metadata: Metadata = {
-  title: "DocQuery — Intelligent Document Q&A",
+  title: "DocQuery: Intelligent Document Q&A",
   description:
-    "Ask questions about your documents using AI. Powered by RAG with RAGAS-evaluated quality.",
+    "Ask questions across your documents. Multi-source answers with source citations and confidence scoring.",
 };
 
 export default function RootLayout({

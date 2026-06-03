@@ -56,7 +56,7 @@ export function TabsTrigger({ value, children, className }: TabsTriggerProps) {
       onClick={() => setActive(value)}
       className={twMerge(
         clsx(
-          "px-3 py-2 text-xs font-medium transition-all border-b-2 -mb-px focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)]",
+          "px-3 py-2 text-xs font-medium transition-[color,border-color] duration-[120ms] ease-[cubic-bezier(0.23,1,0.32,1)] border-b-2 -mb-px focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)]",
           isActive
             ? "text-[var(--text-primary)] border-[var(--accent)]"
             : "text-[var(--text-muted)] border-transparent hover:text-[var(--text-secondary)]",

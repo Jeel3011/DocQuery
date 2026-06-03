@@ -109,17 +109,13 @@ export function CommandPalette({ onNewChat, onUpload, conversations = [], collec
               initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}
               exit={{ opacity: 0 }}
-              transition={{ duration: 0.15 }}
+              transition={{ duration: 0.1 }}
               className="fixed inset-0 bg-black/30"
               style={{ zIndex: "var(--z-dialog)" as unknown as number }}
               onClick={close}
             />
-            <motion.div
-              key="palette"
-              initial={{ opacity: 0, scale: 0.97, y: -8 }}
-              animate={{ opacity: 1, scale: 1, y: 0 }}
-              exit={{ opacity: 0, scale: 0.97, y: -8 }}
-              transition={{ type: "spring", stiffness: 400, damping: 32 }}
+            {/* No enter/exit animation: ⌘K is used 100+ times/day; animation makes it feel sluggish */}
+            <div
               className="fixed top-[20vh] left-1/2 -translate-x-1/2 w-full max-w-[520px] mx-4 bg-[var(--bg-surface)] border border-[var(--border)] rounded-2xl shadow-xl overflow-hidden"
               style={{ zIndex: "var(--z-dialog)" as unknown as number }}
             >
@@ -175,7 +171,7 @@ export function CommandPalette({ onNewChat, onUpload, conversations = [], collec
                 <span>esc close</span>
                 <span className="ml-auto">⌘K</span>
               </div>
-            </motion.div>
+            </div>
           </>
         )}
       </AnimatePresence>

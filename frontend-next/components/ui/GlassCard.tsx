@@ -14,7 +14,7 @@ export function GlassCard({
   ...props
 }: GlassCardProps) {
   const baseStyles =
-    "will-change-transform transition-all duration-200 ease-in-out";
+    "will-change-transform transition-[transform,box-shadow,border-color] duration-[120ms] ease-[cubic-bezier(0.23,1,0.32,1)]";
 
   const variantStyles = {
     default: "card",

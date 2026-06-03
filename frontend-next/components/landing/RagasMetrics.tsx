@@ -13,7 +13,7 @@ const metrics = [
 export function RagasMetrics() {
   return (
     <section className="py-24 px-6 lg:px-12 max-w-4xl mx-auto relative z-10">
-      <div className="card shadow-lg p-8 md:p-12">
+      <div className="card-glass shadow-lg p-8 md:p-12">
         <div className="text-center mb-10">
           <h2 className="text-3xl font-bold text-[var(--text-primary)] mb-4">
             Evaluated for Production

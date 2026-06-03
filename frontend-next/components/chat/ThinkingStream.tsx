@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState, useRef } from "react";
-import { motion } from "framer-motion";
+import { motion, useReducedMotion } from "framer-motion";
 import { Check, Loader2, AlertCircle, Clock } from "lucide-react";
 
 export type StepStatus = "pending" | "active" | "done" | "failed";
@@ -35,6 +35,7 @@ const statusLineColor: Record<StepStatus, string> = {
 };
 
 export function ThinkingStream({ steps, totalMs, collapsed = false }: ThinkingStreamProps) {
+  const shouldReduceMotion = useReducedMotion();
   const allDone = steps.every((s) => s.status === "done" || s.status === "failed");
 
   if (collapsed || allDone) {
@@ -60,9 +61,9 @@ export function ThinkingStream({ steps, totalMs, collapsed = false }: ThinkingSt
       {steps.map((step, i) => (
         <motion.div
           key={step.id}
-          initial={{ opacity: 0, x: -6 }}
+          initial={{ opacity: 0, x: shouldReduceMotion ? 0 : -6 }}
           animate={{ opacity: 1, x: 0 }}
-          transition={{ delay: i * 0.08, ease: [0.16, 1, 0.3, 1] }}
+          transition={{ delay: shouldReduceMotion ? 0 : i * 0.06, duration: shouldReduceMotion ? 0.01 : 0.18, ease: [0.23, 1, 0.32, 1] }}
           className="flex items-start gap-2.5"
         >
           {/* Connector line + icon */}
