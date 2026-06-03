@@ -2,7 +2,7 @@
 
 import { useRef, useState, useCallback, KeyboardEvent } from "react";
 import { AnimatePresence, motion } from "framer-motion";
-import { ArrowUp, Square, Loader2, Zap } from "lucide-react";
+import { ArrowUp, Square, Loader2, Zap, Brain } from "lucide-react";
 
 const SLASH_COMMANDS = [
   { cmd: "/compare", desc: "Compare two documents side by side" },
@@ -19,6 +19,8 @@ interface ChatInputProps {
   disabled?: boolean;
   agenticMode?: boolean;
   onToggleAgentic?: () => void;
+  brainMode?: boolean;
+  onToggleBrain?: () => void;
 }
 
 export function ChatInput({
@@ -29,6 +31,8 @@ export function ChatInput({
   disabled = false,
   agenticMode = false,
   onToggleAgentic,
+  brainMode = false,
+  onToggleBrain,
 }: ChatInputProps) {
   const [value, setValue] = useState("");
   const [showSlash, setShowSlash] = useState(false);
@@ -88,7 +92,7 @@ export function ChatInput({
         {isStreaming && (
           <div className="flex items-center gap-2 mb-2 text-xs text-[var(--text-muted)]">
             <Loader2 size={12} className="animate-spin" />
-            <span>{agenticMode ? "Agentic analysis in progress…" : "Generating response…"}</span>
+            <span>{brainMode ? "Brain synthesizing across documents…" : agenticMode ? "Agentic analysis in progress…" : "Generating response…"}</span>
           </div>
         )}
 
@@ -130,7 +134,7 @@ export function ChatInput({
             value={value}
             onChange={onChange}
             onKeyDown={onKey}
-            placeholder={agenticMode ? "Ask a complex question (agentic deep analysis)…" : placeholder}
+            placeholder={brainMode ? "Ask a cross-document question (Brain synthesis over a collection)…" : agenticMode ? "Ask a complex question (agentic deep analysis)…" : placeholder}
             disabled={disabled}
             rows={1}
             aria-label="Chat input"
@@ -138,6 +142,22 @@ export function ChatInput({
               placeholder:text-[var(--text-muted)] resize-none outline-none min-h-[24px]"
             style={{ maxHeight: 140 }}
           />
+
+          {/* Brain (cross-document synthesis) toggle */}
+          {onToggleBrain && (
+            <button
+              onClick={onToggleBrain}
+              title={brainMode ? "Brain synthesis ON — cross-document map-reduce (needs a collection)" : "Click for cross-document Brain synthesis (needs a collection)"}
+              aria-pressed={brainMode}
+              className={`w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0 transition-all duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)]
+                ${brainMode
+                  ? "bg-[var(--accent)] text-white shadow-sm"
+                  : "bg-[var(--bg-hover)] text-[var(--text-muted)] hover:text-[var(--text-secondary)]"
+                }`}
+            >
+              <Brain size={14} className={brainMode ? "fill-current" : ""} />
+            </button>
+          )}
 
           {/* Agentic mode toggle */}
           {onToggleAgentic && (
@@ -180,7 +200,7 @@ export function ChatInput({
         </div>
 
         <p className="text-[10px] text-[var(--text-muted)] mt-2 text-center select-none">
-          ↵ send · ⇧↵ newline · / slash commands{agenticMode ? " · ⚡ agentic mode" : ""} · always verify sources
+          ↵ send · ⇧↵ newline · / slash commands{brainMode ? " · 🧠 brain mode" : agenticMode ? " · ⚡ agentic mode" : ""} · always verify sources
         </p>
       </div>
     </div>

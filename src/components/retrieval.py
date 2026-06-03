@@ -54,6 +54,35 @@ class RetrievalManager:
 
     # ── Private helper: raw vector search (shared by retrieve & retrieve_multi_query) ──
 
+    @staticmethod
+    def _build_filter(
+        filename_filter: str = None,
+        page_filter: str = None,
+        filename_filters: list[str] = None,
+        collection_id: str = None,
+        doc_id: str = None,
+    ) -> dict | None:
+        """Build a Pinecone metadata filter dict from the supplied scope parameters.
+
+        Priority (most selective wins):
+          doc_id        → single-doc scalar filter (most efficient)
+          collection_id → scalar filter on the stamped collection_id field (Phase 1+)
+          filename_filters → $in list (legacy fallback for un-stamped vectors)
+          filename_filter  → single filename scalar
+        """
+        f: dict = {}
+        if doc_id:
+            f["doc_id"] = doc_id
+        elif collection_id:
+            f["collection_id"] = collection_id
+        elif filename_filters:
+            f["filename"] = {"$in": filename_filters}
+        elif filename_filter:
+            f["filename"] = filename_filter
+        if page_filter:
+            f["page_number"] = page_filter
+        return f if f else None
+
     def _raw_retrieve(
         self,
         query: str,
@@ -61,18 +90,26 @@ class RetrievalManager:
         page_filter: str = None,
         filename_filters: list[str] = None,
         apply_threshold: bool = True,
+        collection_id: str = None,
+        doc_id: str = None,
+        fetch_k_override: int = None,
     ) -> list[Document]:
         """Run similarity search against Pinecone and return docs above threshold.
 
         When USE_HYBRID_SEARCH is True the caller should pass a larger fetch_k
         so the BM25 step has enough candidates to re-rank from.
 
+        fetch_k_override raises the candidate pool (used by the Brain, which reads
+        many chunks per document so it can find needles in large filings).
+
         apply_threshold=False keeps the top-k regardless of absolute score — used by
         per-file collection retrieval, where we want each file's best chunks even if
         modestly scored (the reranker provides precision).
         """
         similarity_threshold = self.config.SIMILARITY_THRESHOLD
-        if self._hybrid:
+        if fetch_k_override:
+            fetch_k = fetch_k_override
+        elif self._hybrid:
             fetch_k = self.config.HYBRID_FETCH_K
         elif self._reranker:
             fetch_k = self.config.RERANK_INITIAL_K
@@ -80,13 +117,13 @@ class RetrievalManager:
             fetch_k = self.config.TOP_K
 
         try:
-            filter_dict = {}
-            if filename_filters:
-                filter_dict["filename"] = {"$in": filename_filters}
-            elif filename_filter:
-                filter_dict["filename"] = filename_filter
-            if page_filter:
-                filter_dict["page_number"] = page_filter
+            filter_dict = self._build_filter(
+                filename_filter=filename_filter,
+                page_filter=page_filter,
+                filename_filters=filename_filters,
+                collection_id=collection_id,
+                doc_id=doc_id,
+            )
 
             docs_and_scores = self.vectorstore.similarity_search_with_score(
                 query,
@@ -114,6 +151,8 @@ class RetrievalManager:
         page_filter: str = None,
         filename_filters: list[str] = None,
         apply_threshold: bool = True,
+        collection_id: str = None,
+        doc_id: str = None,
     ) -> list[Document]:
         """Run similarity search using a pre-computed embedding vector.
 
@@ -133,13 +172,13 @@ class RetrievalManager:
             fetch_k = self.config.TOP_K
 
         try:
-            filter_dict = {}
-            if filename_filters:
-                filter_dict["filename"] = {"$in": filename_filters}
-            elif filename_filter:
-                filter_dict["filename"] = filename_filter
-            if page_filter:
-                filter_dict["page_number"] = page_filter
+            filter_dict = self._build_filter(
+                filename_filter=filename_filter,
+                page_filter=page_filter,
+                filename_filters=filename_filters,
+                collection_id=collection_id,
+                doc_id=doc_id,
+            )
 
             docs_and_scores = self.vectorstore.similarity_search_by_vector_with_score(
                 query_embedding,
@@ -169,13 +208,24 @@ class RetrievalManager:
         filename_filter: str = None,
         page_filter: str = None,
         filename_filters: list[str] = None,
+        top_k: int = None,
     ) -> list[Document]:
-        """Retrieve relevant docs with optional hybrid BM25+RRF fusion and/or reranking."""
+        """Retrieve relevant docs with optional hybrid BM25+RRF fusion and/or reranking.
+
+        top_k overrides the final number of chunks returned (and widens the candidate
+        pool accordingly). Used by the Brain to read many chunks per document.
+        """
         # Collection scope spanning multiple files → guarantee each file is represented.
         if filename_filters and len(filename_filters) > 1:
             return self.retrieve_across_files(query, filename_filters, page_filter=page_filter)
 
-        docs = self._raw_retrieve(query, filename_filter, page_filter, filename_filters=filename_filters)
+        # Widen the candidate pool when a large top_k is requested so rerank has enough
+        # to choose from (≈4× the final count, floored at the configured default).
+        fetch_override = max(top_k * 4, self.config.RERANK_INITIAL_K) if top_k else None
+        docs = self._raw_retrieve(
+            query, filename_filter, page_filter,
+            filename_filters=filename_filters, fetch_k_override=fetch_override,
+        )
 
         # Step 1: Hybrid BM25 + RRF fusion
         if self._hybrid and docs:
@@ -183,8 +233,9 @@ class RetrievalManager:
 
         # Step 2: Cross-encoder reranker
         if self._reranker and docs:
-            top_k = self.config.RERANK_TOP_K
-            docs = self._reranker.rerank(query, docs, top_k=top_k)
+            docs = self._reranker.rerank(query, docs, top_k=top_k or self.config.RERANK_TOP_K)
+        elif top_k:
+            docs = docs[:top_k]
 
         return docs
 
@@ -315,8 +366,22 @@ class RetrievalManager:
         always sees content from every document in the collection. The global
         similarity threshold is skipped on purpose: a file's best chunks are kept even
         if their absolute score is modest (the cross-encoder reranker gives precision).
+
+        Invariant R1: fan-out is capped at ROUTING_MAX_FANOUT.  Callers that pass a
+        larger list must run Stage-1 routing first to reduce the corpus; if they don't,
+        we warn and truncate to the cap so the request never melts down.  Once the
+        Stage-1 router exists (Phase 3) it will pre-filter before calling this method.
         """
         from concurrent.futures import ThreadPoolExecutor
+
+        max_fanout = self.config.ROUTING_MAX_FANOUT
+        if len(filenames) > max_fanout:
+            self.logger.warning(
+                "retrieve_across_files: %d files exceeds ROUTING_MAX_FANOUT=%d — "
+                "truncating to first %d. Deploy Stage-1 router (Phase 3) to fix this properly.",
+                len(filenames), max_fanout, max_fanout,
+            )
+            filenames = filenames[:max_fanout]
 
         n = len(filenames)
         if per_file_k is None:

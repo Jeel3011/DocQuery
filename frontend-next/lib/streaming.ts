@@ -9,7 +9,10 @@ import { API_BASE } from "./config";
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 export interface StreamEvent {
-  type: "sources" | "token" | "error" | "done" | "status" | "meta" | "sub_queries" | "web_search";
+  type:
+    | "sources" | "token" | "error" | "done" | "status" | "meta" | "sub_queries" | "web_search"
+    // Brain (map-reduce) step events — emitted by /query/brain/stream
+    | "brain_start" | "brain_map" | "brain_verify" | "brain_reduce" | "brain_meta";
   content?: string;        // for type='token'
   sources?: SourceInfo[];  // for type='sources'
   message?: string;        // for type='error'
@@ -18,6 +21,25 @@ export interface StreamEvent {
   similarity?: number;     // for type='meta' — cache similarity score
   queries?: string[];      // for type='sub_queries' — decomposed sub-queries
   results_count?: number;  // for type='web_search'
+  // ── Brain event fields ──
+  docs_routed?: number;       // brain_start
+  filename?: string;          // brain_map
+  claims?: number;            // brain_map (claims extracted from this doc)
+  relevant?: boolean;         // brain_map
+  progress?: string;          // brain_map (e.g. "3/12")
+  claims_total?: number;      // brain_verify
+  claims_verified?: number;   // brain_verify
+  docs_relevant?: number;     // brain_reduce
+  confidence?: number;        // brain_meta (0-1)
+  abstained?: boolean;        // brain_meta
+  coverage?: BrainCoverage;   // brain_meta
+}
+
+export interface BrainCoverage {
+  docs_routed: number;
+  docs_read: number;
+  docs_relevant: number;
+  docs_failed: number;
 }
 
 export interface StreamCallbacks {
@@ -248,6 +270,137 @@ export async function streamAgenticQuery(
           }
         } catch {
           console.warn("[agentic-streaming] Malformed SSE line:", dataStr);
+        }
+      }
+    }
+  } catch (err) {
+    if ((err as Error).name === "AbortError") {
+      callbacks.onDone();
+    } else {
+      callbacks.onError("Stream interrupted. Please try again.");
+    }
+  } finally {
+    reader.releaseLock();
+  }
+}
+
+
+// ─── Brain (map-reduce synthesis) streaming — Phase 4 ─────────────────────────
+// POST /api/v1/query/brain/stream. Requires collection_id and USE_BRAIN=true on
+// the backend. Emits the standard sources/token events PLUS brain_* step events
+// that drive the live ThinkingStream and the TrustBar coverage/confidence.
+
+export interface BrainStreamCallbacks extends StreamCallbacks {
+  onBrainStart?: (docsRouted: number) => void;
+  onBrainMap?: (ev: { filename?: string; claims?: number; relevant?: boolean; progress?: string }) => void;
+  onBrainVerify?: (claimsTotal: number, claimsVerified: number) => void;
+  onBrainReduce?: (docsRelevant: number) => void;
+  onBrainMeta?: (meta: { confidence: number; abstained: boolean; coverage?: BrainCoverage }) => void;
+}
+
+export async function streamBrainQuery(
+  token: string,
+  body: StreamQueryRequest,
+  callbacks: BrainStreamCallbacks,
+  signal?: AbortSignal
+): Promise<void> {
+  let response: Response;
+
+  try {
+    response = await fetch(`${API_BASE}/api/v1/query/brain/stream`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "application/json",
+        Accept: "text/event-stream",
+      },
+      body: JSON.stringify(body),
+      signal,
+    });
+  } catch (err) {
+    if ((err as Error).name === "AbortError") {
+      callbacks.onDone();
+      return;
+    }
+    callbacks.onError("Network error — could not connect to server.");
+    return;
+  }
+
+  if (!response.ok) {
+    const text = await response.text().catch(() => "Unknown error");
+    // 403 = USE_BRAIN disabled, 400 = collection_id missing — surface clearly.
+    callbacks.onError(`Server error ${response.status}: ${text}`);
+    return;
+  }
+
+  if (!response.body) {
+    callbacks.onError("No response body — streaming not supported.");
+    return;
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split("\n");
+      buffer = lines.pop() ?? "";
+
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (!trimmed || !trimmed.startsWith("data: ")) continue;
+        const dataStr = trimmed.slice(6);
+
+        if (dataStr === "[DONE]") {
+          callbacks.onDone();
+          return;
+        }
+
+        try {
+          const event = JSON.parse(dataStr) as StreamEvent;
+
+          switch (event.type) {
+            case "brain_start":
+              callbacks.onBrainStart?.(event.docs_routed ?? 0);
+              break;
+            case "brain_map":
+              callbacks.onBrainMap?.({
+                filename: event.filename,
+                claims: event.claims,
+                relevant: event.relevant,
+                progress: event.progress,
+              });
+              break;
+            case "brain_verify":
+              callbacks.onBrainVerify?.(event.claims_total ?? 0, event.claims_verified ?? 0);
+              break;
+            case "brain_reduce":
+              callbacks.onBrainReduce?.(event.docs_relevant ?? 0);
+              break;
+            case "brain_meta":
+              callbacks.onBrainMeta?.({
+                confidence: event.confidence ?? 0,
+                abstained: event.abstained ?? false,
+                coverage: event.coverage,
+              });
+              break;
+            case "sources":
+              callbacks.onSources(event.sources ?? []);
+              break;
+            case "token":
+              if (event.content) callbacks.onToken(event.content);
+              break;
+            case "error":
+              callbacks.onError(event.message ?? "Stream error");
+              break;
+          }
+        } catch {
+          console.warn("[brain-streaming] Malformed SSE line:", dataStr);
         }
       }
     }

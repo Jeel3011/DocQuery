@@ -36,7 +36,9 @@ function parseCitations(text: string, sources: SourceInfo[]): {
   const cleaned = text.replace(pattern, (_, filename) => {
     const id = sourceMap.get(filename.trim().toLowerCase()) ?? 1;
     citedIds.add(id);
-    return `[${id}]`;
+    // Emit a recognizable link so the markdown `a` renderer can turn it into a
+    // clickable citation chip (the existing onClick handler reads data-source-id).
+    return `[${id}](#cite-${id})`;
   });
   return { cleaned, citedIds };
 }
@@ -97,11 +99,27 @@ const mdComponents: Components = {
       {children}
     </blockquote>
   ),
-  a: ({ href, children }: { href?: string; children?: React.ReactNode }) => (
-    <a href={href} target="_blank" rel="noopener noreferrer" className="text-[var(--accent)] underline underline-offset-2 hover:opacity-70 transition-opacity">
-      {children}
-    </a>
-  ),
+  a: ({ href, children }: { href?: string; children?: React.ReactNode }) => {
+    // Citation chips: [n](#cite-n) → clickable superscript that opens/highlights
+    // source n (handled by the parent onClick via the citation-chip class).
+    const m = href?.match(/^#cite-(\d+)$/);
+    if (m) {
+      return (
+        <sup
+          className="citation-chip cursor-pointer select-none text-[10px] font-semibold text-[var(--accent)] bg-[var(--bg-hover)] border border-[var(--border)] rounded px-1 py-0.5 mx-0.5 align-super hover:bg-[var(--accent)] hover:text-white transition-colors"
+          data-source-id={m[1]}
+          title={`Jump to source ${m[1]}`}
+        >
+          {m[1]}
+        </sup>
+      );
+    }
+    return (
+      <a href={href} target="_blank" rel="noopener noreferrer" className="text-[var(--accent)] underline underline-offset-2 hover:opacity-70 transition-opacity">
+        {children}
+      </a>
+    );
+  },
 };
 
 export const ChatMessage = memo(function ChatMessage({

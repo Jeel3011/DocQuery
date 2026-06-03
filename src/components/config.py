@@ -104,3 +104,38 @@ class Config:
     TAVILY_API_KEY: str = os.getenv("TAVILY_API_KEY", "")
     USE_WEB_FALLBACK: bool = True    # Enable web search when docs return no results
     WEB_SEARCH_MAX_RESULTS: int = 3  # Max web results to merge with doc results
+
+    # ── Phase 0 / Brain safety invariants ──
+    # Invariant R1: per-file fan-out only runs when the collection is this small.
+    # Above this, Stage-1 routing must first narrow the corpus; fan-out then runs
+    # over the routed top-N, never the raw collection. Prevents 200 Pinecone
+    # round-trips and sequential reranker passes on large collections.
+    ROUTING_MAX_FANOUT: int = int(os.getenv("ROUTING_MAX_FANOUT", "8"))
+
+    # Invariant R2: hard token ceiling for the single-call generation path.
+    # If context exceeds this after reranking, chunks are trimmed furthest-first.
+    # When the map-reduce Brain (Phase 4) exists it takes over above this threshold
+    # instead of silently truncating.  ~12k tokens ≈ comfortable gpt-4o-mini window.
+    CONTEXT_TOKEN_BUDGET: int = int(os.getenv("CONTEXT_TOKEN_BUDGET", "12000"))
+
+    # ── Stage-1 Document Router (Phase 3) ──
+    # Top-N most-relevant documents the router returns for a collection query,
+    # ordered most-relevant first. The Brain (Stage-2) reads all N. The legacy
+    # per-file fan-out path (retrieve_across_files) additionally caps at
+    # ROUTING_MAX_FANOUT, keeping the most-relevant docs since the list is ordered.
+    ROUTING_TOP_N: int = int(os.getenv("ROUTING_TOP_N", "12"))
+
+    # ── Stage-2 Brain (Phase 4) ──
+    # Opt-in: set USE_BRAIN=true to route synthesis/collection queries through
+    # the map-reduce Brain instead of the single-call fast path.
+    USE_BRAIN: bool = os.getenv("USE_BRAIN", "false").lower() == "true"
+    # REDUCE uses a stronger model; MAP uses the cheap LLM_MODEL_NAME.
+    REDUCE_LLM_MODEL: str = os.getenv("REDUCE_LLM_MODEL", "gpt-4o")
+    # VERIFY uses a different model from REDUCE to de-correlate errors (§4a.3).
+    VERIFY_LLM_MODEL: str = os.getenv("VERIFY_LLM_MODEL", "gpt-4o-mini")
+    # How many chunks the Brain reads per document in MAP. Higher = better recall on
+    # large filings (a 5-chunk read misses needles in a 300-chunk 10-K), at more cost.
+    BRAIN_CHUNKS_PER_DOC: int = int(os.getenv("BRAIN_CHUNKS_PER_DOC", "15"))
+    # Per-document retrieval timeout (seconds) for the Brain — fail fast on a network/
+    # DNS blip instead of hanging on Pinecone retries for minutes.
+    BRAIN_RETRIEVE_TIMEOUT_S: float = float(os.getenv("BRAIN_RETRIEVE_TIMEOUT_S", "20"))

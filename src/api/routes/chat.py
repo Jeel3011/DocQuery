@@ -42,21 +42,66 @@ logger = get_logger(__name__)
 _REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
 
 
-def _resolve_collection_filters(sb, collection_id: str = None) -> list[str] | None:
-    """Resolve a collection_id to a list of filenames for Pinecone filtering.
+def _resolve_collection_filters(
+    sb,
+    collection_id: str = None,
+    query: str = None,
+    query_embedding: list = None,
+    user_config=None,
+) -> list[str] | None:
+    """Resolve a collection_id to a filename list for Pinecone filtering.
 
-    Returns None if no collection_id is provided (= search all docs).
-    Returns a list of filenames if collection_id is provided.
+    Phase 3+: when a DocumentRouter is available, uses Stage-1 routing to return
+    only the top-N most relevant docs (caps fan-out per Invariant R1).  Falls back
+    to the full filename list for small collections or when routing data is absent.
+
+    Returns:
+        None  — no collection scope (search all docs).
+        []    — empty collection.
+        list  — filenames to scope retrieval to.
     """
     if not collection_id:
         return None
+
+    # Resolve full filename list (needed for fallback + size check)
     doc_ids = sb.get_collection_document_ids(collection_id)
     if not doc_ids:
-        return []  # empty collection = no results
+        return []
     docs_in_coll = sb.client.table("documents").select("filename").in_(
         "id", doc_ids
     ).eq("user_id", sb.user_id).execute()
-    return [d["filename"] for d in (docs_in_coll.data or [])]
+    all_filenames = [d["filename"] for d in (docs_in_coll.data or [])]
+
+    if not all_filenames:
+        return []
+
+    # Small collection: skip routing overhead, fanout is already safe
+    max_fanout = getattr(user_config, "ROUTING_MAX_FANOUT", 8) if user_config else 8
+    if len(all_filenames) <= max_fanout:
+        return all_filenames
+
+    # Large collection: use Stage-1 router to narrow to top-N docs
+    if query and user_config:
+        try:
+            from src.components.document_router import DocumentRouter
+            router = DocumentRouter(user_config)
+            routed = router.route(
+                query=query,
+                collection_id=collection_id,
+                user_id=sb.user_id,
+                query_embedding=query_embedding,
+            )
+            if routed:
+                logger.info(
+                    "Stage-1 router: collection %s has %d docs → routed to top %d",
+                    collection_id, len(all_filenames), len(routed),
+                )
+                return routed
+        except Exception as exc:
+            logger.warning("Stage-1 router failed, falling back to full list: %s", exc)
+
+    # Fallback: return full list (ROUTING_MAX_FANOUT cap applied inside retrieve_across_files)
+    return all_filenames
 
 
 def _saving_stream_wrapper(
@@ -231,7 +276,7 @@ async def query(
     # moderate → multi-query variants, skip self-review (~1.5-2.0s total)
     # complex  → full pipeline (handled by /query/agent endpoint)
     # Phase 1: Collection-scoped retrieval
-    filename_filters = _resolve_collection_filters(sb, getattr(body, 'collection_id', None))
+    filename_filters = _resolve_collection_filters(sb, getattr(body, "collection_id", None), query=getattr(body, "question", None), query_embedding=query_embedding, user_config=user_config)
 
     complexity = generator.classify_query_complexity(body.question)
     logger.info("Query complexity: %s for: %.60s", complexity, body.question)
@@ -403,7 +448,7 @@ async def query_stream(
     t_llm_prep = time.perf_counter() - t_prep
 
     # Phase 1: Collection-scoped retrieval
-    filename_filters = _resolve_collection_filters(sb, getattr(body, 'collection_id', None))
+    filename_filters = _resolve_collection_filters(sb, getattr(body, "collection_id", None), query=getattr(body, "question", None), query_embedding=query_embedding, user_config=user_config)
 
     t_retrieve = time.perf_counter()
     if complexity == "simple" and query_embedding:
@@ -561,7 +606,7 @@ async def query_agent(
     cache_misses.inc()
 
     # Phase 1: Collection-scoped retrieval
-    filename_filters = _resolve_collection_filters(sb, getattr(body, 'collection_id', None))
+    filename_filters = _resolve_collection_filters(sb, getattr(body, "collection_id", None), query=getattr(body, "question", None), query_embedding=query_embedding, user_config=user_config)
 
     # ── Step 1+2+3: Agentic retrieval (parallel sub-queries) ──
     agentic = AgenticRetriever(config=user_config, retrieval_mgr=retrieval_mgr)
@@ -648,8 +693,9 @@ async def agent_query_stream(
             for m in existing_msgs
         ]
 
+    query_embedding: list = []
     # Phase 1: Collection-scoped retrieval
-    filename_filters = _resolve_collection_filters(sb, getattr(body, 'collection_id', None))
+    filename_filters = _resolve_collection_filters(sb, getattr(body, "collection_id", None), query=getattr(body, "question", None), query_embedding=query_embedding, user_config=user_config)
 
     # Agentic retrieval: decompose → parallel retrieve → deduplicate
     agentic = AgenticRetriever(config=user_config, retrieval_mgr=retrieval_mgr)
@@ -856,6 +902,8 @@ async def send_message(
         for m in existing_msgs
     ]
 
+    query_embedding: list = []  # not pre-computed in this path; routing uses text query
+
     page_filter = body.page_filter
     if not page_filter:
         page_match = re.search(r'page\s+(\d+)', body.question.lower())
@@ -880,7 +928,7 @@ async def send_message(
     search_query = await rewrite_task
 
     # Phase 1: Collection-scoped retrieval
-    filename_filters = _resolve_collection_filters(sb, getattr(body, 'collection_id', None))
+    filename_filters = _resolve_collection_filters(sb, getattr(body, "collection_id", None), query=getattr(body, "question", None), query_embedding=query_embedding, user_config=user_config)
 
     if variants_task is not None:
         variants = [search_query] + await variants_task
@@ -943,4 +991,136 @@ async def send_message(
         content=result["answer"],
         sources=serializable_sources,
         created_at=msg.get("created_at"),
+    )
+
+
+# ── Brain endpoint (Phase 4) ─────────────────────────────────────────────────
+
+@router.post("/query/brain/stream")
+@limiter.limit("5/minute")
+async def brain_query_stream(
+    request: Request,
+    body: QueryRequest,
+    sb=Depends(get_current_user),
+    user_config: Config = Depends(get_user_config),
+    retrieval_mgr=Depends(get_retrieval_mgr),
+    generator=Depends(get_generator),
+):
+    """Stage-2 Brain: map-reduce synthesis over a collection with SSE step streaming.
+
+    Requires body.collection_id.  Returns brain_start → brain_map (per doc) →
+    brain_verify → brain_reduce → sources → token* → brain_meta → [DONE] events.
+
+    This endpoint is the 'synthesis / multi-doc' path.  It:
+      1. Uses Stage-1 router to pick top-N docs.
+      2. Runs MAP in parallel (one LLM call per doc, cheap model).
+      3. Runs VERIFY (independent model) claim-by-claim — before synthesis.
+      4. Runs REDUCE (one call, strong model) over the verified claims.
+      5. Streams all events back to the client.
+
+    Non-regression: single-doc / simple queries should use /query/stream instead.
+    """
+    from src.components.brain.map_reduce import Brain
+
+    # Opt-in gate (Phase 4): the Brain path is off by default.  Set USE_BRAIN=true.
+    if not getattr(user_config, "USE_BRAIN", False):
+        raise HTTPException(
+            status_code=403,
+            detail="Brain path is disabled. Set USE_BRAIN=true to enable /query/brain/stream.",
+        )
+
+    collection_id = getattr(body, "collection_id", None)
+    if not collection_id:
+        raise HTTPException(
+            status_code=400,
+            detail="collection_id is required for the Brain endpoint.",
+        )
+
+    query_embedding: list = []
+    try:
+        query_embedding = await _embed_query(
+            body.question, user_config.EMBEDDING_MODEL_NAME, user_config.OPENAI_API_KEY
+        )
+    except Exception:
+        pass
+
+    filename_filters = _resolve_collection_filters(
+        sb, collection_id,
+        query=body.question,
+        query_embedding=query_embedding,
+        user_config=user_config,
+    )
+    if not filename_filters:
+        def _empty():
+            import json as _j
+            yield f"data: {_j.dumps({'type': 'token', 'content': 'No documents found in this collection.'})}\n\n"
+            yield "data: [DONE]\n\n"
+        return StreamingResponse(_empty(), media_type="text/event-stream")
+
+    # Retrieve each routed doc's chunks in parallel (bounded by the routed top-N).
+    # Read many chunks per doc (BRAIN_CHUNKS_PER_DOC) so MAP can find needles in big
+    # filings, and bound each retrieval with a timeout so a network/DNS blip fails fast
+    # instead of hanging on Pinecone retries for minutes.
+    per_doc_k = getattr(user_config, "BRAIN_CHUNKS_PER_DOC", 15)
+    retrieve_timeout = getattr(user_config, "BRAIN_RETRIEVE_TIMEOUT_S", 20)
+
+    async def _retrieve_one(fname: str):
+        try:
+            chunks = await asyncio.wait_for(
+                asyncio.to_thread(
+                    retrieval_mgr.retrieve,
+                    body.question,
+                    fname,            # filename_filter = single file
+                    body.page_filter,
+                    None,             # filename_filters
+                    per_doc_k,        # top_k
+                ),
+                timeout=retrieve_timeout,
+            )
+            return fname, chunks
+        except asyncio.TimeoutError:
+            logger.warning("[brain] retrieval timed out for %s after %ss", fname, retrieve_timeout)
+            return fname, []
+        except Exception as exc:
+            logger.warning("[brain] retrieval failed for %s: %s", fname, exc)
+            return fname, []
+
+    retrieved = await asyncio.gather(*[_retrieve_one(fn) for fn in filename_filters])
+
+    doc_chunks: dict[str, tuple[str, list]] = {}
+    for fname, chunks in retrieved:
+        if chunks:
+            doc_id = chunks[0].metadata.get("doc_id", fname)
+            doc_chunks[doc_id] = (fname, chunks)
+
+    if not doc_chunks:
+        def _no_chunks():
+            import json as _j
+            yield f"data: {_j.dumps({'type': 'token', 'content': 'No relevant content found in the collection for this question.'})}\n\n"
+            yield "data: [DONE]\n\n"
+        return StreamingResponse(_no_chunks(), media_type="text/event-stream")
+
+    brain = Brain(user_config)
+
+    # Pass the sync generator straight to StreamingResponse — Starlette iterates it
+    # in a worker thread, so the blocking MAP/REDUCE/VERIFY work stays off the event
+    # loop (matches /query/stream and the other streaming endpoints in this file).
+    # Wrapped in _saving_stream_wrapper so the Q&A persists to the conversation
+    # (collects token/sources from the stream; brain_* events pass through untouched).
+    conversation_id = getattr(body, "conversation_id", None)
+    return StreamingResponse(
+        _saving_stream_wrapper(
+            brain.run_stream(
+                body.question,
+                doc_chunks,
+                user_id=sb.user_id,
+                collection_id=collection_id,
+                conversation_id=conversation_id,
+            ),
+            sb,
+            conversation_id,
+            body.question,
+            retrieval_docs_count=len(doc_chunks),
+        ),
+        media_type="text/event-stream",
     )

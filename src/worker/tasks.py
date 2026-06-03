@@ -49,6 +49,7 @@ def process_document_task(
     storage_path: str,
     user_id: str,
     pinecone_namespace: str,
+    collection_id: str | None = None,
 ):
     """
     Celery task: ingest -> chunk -> embed -> save chunks.
@@ -127,6 +128,15 @@ def process_document_task(
         chunks = processor.build_langchain_documents(elements=elements)
         sb.update_document_status(doc_id, "processing", progress_pct=50)
 
+        # -- Stamp workspace/doc/collection IDs on every chunk so Stage-1 routing
+        # (Phase 3) can filter by collection_id without a huge $in filename list.
+        # workspace_id == user_id for now; migrated to a real workspace table in Phase 7.
+        for chunk in chunks:
+            chunk.metadata["workspace_id"] = user_id
+            chunk.metadata["doc_id"] = doc_id
+            if collection_id:
+                chunk.metadata["collection_id"] = collection_id
+
         # -- Stage 3: Embed and upsert to Pinecone --
         logger.info("[%s] Stage 3/4: Embedding %d chunks", doc_id, len(chunks))
         t_embed_start = time.perf_counter()
@@ -155,6 +165,22 @@ def process_document_task(
             sb.save_document_chunks(doc_id, chunks)
         except Exception as save_exc:
             logger.warning("[%s] Chunk save failed (non-fatal): %s", doc_id, save_exc)
+
+        # -- Stage-1 routing data: summary + topic embedding per doc (Phase 3).
+        # Non-fatal — the document is already queryable without it; routing just
+        # falls back to unranked fanout until the row is present.
+        try:
+            from src.components.document_router import compute_and_store_doc_routing_data
+            compute_and_store_doc_routing_data(
+                chunks=chunks,
+                doc_id=doc_id,
+                user_id=user_id,
+                collection_id=collection_id,
+                config=config,
+                db_client=sb,
+            )
+        except Exception as router_exc:
+            logger.warning("[%s] Doc routing data failed (non-fatal): %s", doc_id, router_exc)
 
         return {"status": "ready", "chunks": len(chunks), "time_s": round(total_time, 1)}
 

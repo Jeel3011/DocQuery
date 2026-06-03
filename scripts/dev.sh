@@ -67,8 +67,13 @@ fi
 ok "API healthy on http://localhost:$API_PORT"
 
 # ── 2. Celery worker (current code) ──────────────────────────────────
-say "Starting Celery worker..."
-nohup celery -A src.worker.celery_app worker --loglevel=info --concurrency=2 \
+# --pool=solo: run tasks in the worker's main process, NOT a billiard fork.
+# The PDF table/layout model (unstructured hi_res, detectron/onnx) segfaults
+# (SIGSEGV) when loaded inside a forked child on macOS. A non-forking pool lets
+# hi_res table extraction run safely (keeps §4b table fidelity). Local dev is
+# single-doc-at-a-time anyway; production (Linux/ECS) uses prefork.
+say "Starting Celery worker (pool=solo, fork-safe for hi_res tables)..."
+nohup celery -A src.worker.celery_app worker --loglevel=info --pool=solo \
   -Q documents.fast,documents.normal,documents.heavy > "$LOG_DIR/worker.log" 2>&1 &
 for i in $(seq 1 40); do
   grep -q "PDF pool ready\|celery@.*ready" "$LOG_DIR/worker.log" 2>/dev/null && break

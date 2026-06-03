@@ -10,12 +10,12 @@ import { useParams, useSearchParams } from "next/navigation";
 import { AnimatePresence, motion } from "framer-motion";
 import { ChatMessage } from "@/components/chat/ChatMessage";
 import { ChatInput } from "@/components/chat/ChatInput";
-import { ThinkingStreamFixture } from "@/components/chat/ThinkingStream";
+import { ThinkingStreamFixture, ThinkingStream, ThinkingStep } from "@/components/chat/ThinkingStream";
 import { SkeletonMessage } from "@/components/ui/Skeleton";
-import { MOCK_ANSWER_META } from "@/components/chat/TrustBar";
+import { MOCK_ANSWER_META, AnswerMeta, ConfidenceLevel } from "@/components/chat/TrustBar";
 import { useAuthStore } from "@/stores/auth.store";
 import { getMessages, MessageResponse, SourceInfo, exportConversation, compareDocuments, ComparisonResult, DocumentResponse, listDocuments } from "@/lib/api";
-import { streamQuery, streamAgenticQuery } from "@/lib/streaming";
+import { streamQuery, streamAgenticQuery, streamBrainQuery } from "@/lib/streaming";
 import { useCollectionStore } from "@/stores/collection.store";
 import { toast } from "sonner";
 import { Search, Download, FolderOpen, GitCompare, Globe, X, ChevronRight } from "lucide-react";
@@ -29,6 +29,11 @@ interface LocalMessage {
   isFallback?: boolean;
   subQueries?: string[];
   webSearchUsed?: boolean;
+  // Brain (map-reduce synthesis) — real thinking stream + trust meta
+  isBrain?: boolean;
+  thinkingSteps?: ThinkingStep[];
+  thinkingTotalMs?: number;
+  answerMeta?: AnswerMeta;
 }
 
 export default function ChatPage() {
@@ -49,6 +54,7 @@ function ChatPageInner() {
   const [isStreaming, setIsStreaming] = useState(false);
   const [loading, setLoading] = useState(true);
   const [agenticMode, setAgenticMode] = useState(false);
+  const [brainMode, setBrainMode] = useState(false);
   const [showExport, setShowExport] = useState(false);
   const [showCompare, setShowCompare] = useState(false);
   const [documents, setDocuments] = useState<DocumentResponse[]>([]);
@@ -67,11 +73,13 @@ function ChatPageInner() {
   // Stable refs to avoid re-creating handleSubmit on every state change
   const isStreamingRef = useRef(false);
   const agenticModeRef = useRef(false);
+  const brainModeRef = useRef(false);
   const activeCollectionIdRef = useRef<string | null>(null);
 
   // Keep refs in sync with state
   useEffect(() => { isStreamingRef.current = isStreaming; }, [isStreaming]);
   useEffect(() => { agenticModeRef.current = agenticMode; }, [agenticMode]);
+  useEffect(() => { brainModeRef.current = brainMode; }, [brainMode]);
   useEffect(() => { activeCollectionIdRef.current = activeCollectionId; }, [activeCollectionId]);
 
   // Close export dropdown on outside click
@@ -148,7 +156,93 @@ function ChatPageInner() {
 
       const collId = activeCollectionIdRef.current;
 
-      if (agenticModeRef.current) {
+      if (brainModeRef.current) {
+        // Brain (map-reduce synthesis) requires a collection scope.
+        if (!collId) {
+          toast.error("Select a collection to use Brain synthesis");
+          setMessages((prev) => prev.filter((m) => m.id !== assistantMsgId && m.id !== userMsgId));
+          setIsStreaming(false);
+          return;
+        }
+
+        // Live thinking-step state machine, mirrored into the message.
+        const brainStart = Date.now();
+        let relevantCount = 0;
+        let steps: ThinkingStep[] = [
+          { id: "route", label: "Routing", detail: "Selecting relevant documents", status: "active" },
+          { id: "read", label: "Reading documents", status: "pending" },
+          { id: "verify", label: "Verifying claims", status: "pending" },
+          { id: "synth", label: "Synthesizing", status: "pending" },
+        ];
+        const pushSteps = () => {
+          const snapshot = steps.map((s) => ({ ...s }));
+          setMessages((prev) =>
+            prev.map((m) => (m.id === assistantMsgId ? { ...m, thinkingSteps: snapshot } : m))
+          );
+        };
+        const setStep = (id: string, patch: Partial<ThinkingStep>) => {
+          steps = steps.map((s) => (s.id === id ? { ...s, ...patch } : s));
+          pushSteps();
+        };
+
+        setMessages((prev) =>
+          prev.map((m) => (m.id === assistantMsgId ? { ...m, isBrain: true } : m))
+        );
+        pushSteps();
+
+        await streamBrainQuery(
+          token,
+          { question, conversation_id: convId, collection_id: collId },
+          {
+            ...callbacks,
+            onDone: () => {
+              // Finalize any still-running steps and stamp total time.
+              steps = steps.map((s) =>
+                s.status === "active" || s.status === "pending" ? { ...s, status: "done" as const } : s
+              );
+              const total = Date.now() - brainStart;
+              const snapshot = steps.map((s) => ({ ...s }));
+              setMessages((prev) =>
+                prev.map((m) =>
+                  m.id === assistantMsgId ? { ...m, thinkingSteps: snapshot, thinkingTotalMs: total } : m
+                )
+              );
+              callbacks.onDone();
+            },
+            onBrainStart: (docsRouted) => {
+              setStep("route", { status: "done", detail: `Selected ${docsRouted} document${docsRouted !== 1 ? "s" : ""}` });
+              setStep("read", { status: "active", detail: `0 / ${docsRouted}` });
+            },
+            onBrainMap: (ev) => {
+              if (ev.relevant) relevantCount += 1;
+              setStep("read", { status: "active", detail: `${ev.progress ?? ""} · ${relevantCount} relevant` });
+            },
+            onBrainVerify: (total, verified) => {
+              setStep("read", { status: "done" });
+              setStep("verify", { status: "active", detail: `Verified ${verified} of ${total} claim${total !== 1 ? "s" : ""}` });
+            },
+            onBrainReduce: (docsRelevant) => {
+              setStep("verify", { status: "done" });
+              setStep("synth", { status: "active", detail: `Merging ${docsRelevant} source${docsRelevant !== 1 ? "s" : ""}` });
+            },
+            onBrainMeta: ({ confidence, abstained, coverage }) => {
+              setStep("synth", { status: "done" });
+              const level: ConfidenceLevel =
+                abstained || confidence < 0.45 ? "low" : confidence >= 0.75 ? "high" : "medium";
+              const meta: AnswerMeta = {
+                confidence: level,
+                consulted: coverage?.docs_relevant,
+                total: coverage?.docs_routed,
+                claimTypes: ["fact"],
+              };
+              setMessages((prev) =>
+                prev.map((m) => (m.id === assistantMsgId ? { ...m, answerMeta: meta } : m))
+              );
+            },
+          },
+          abortRef.current.signal
+        );
+      } else if (agenticModeRef.current) {
         await streamAgenticQuery(
           token,
           { question, conversation_id: convId, collection_id: collId },
@@ -180,7 +274,7 @@ function ChatPageInner() {
         );
       }
     },
-    [token, convId] // Stable deps only — no isStreaming, agenticMode, activeCollectionId
+    [token, convId] // Stable deps only — no isStreaming, agenticMode, brainMode, activeCollectionId
   );
 
   // ── Load documents for the comparison picker (C2: lazy, not on every mount) ──
@@ -362,8 +456,24 @@ function ChatPageInner() {
             <AnimatePresence initial={false}>
               {messages.map((msg) => (
                 <div key={msg.id}>
+                  {/* Brain thinking stream — real, driven by SSE step events */}
+                  {msg.role === "assistant" && msg.isBrain && msg.thinkingSteps && msg.thinkingSteps.length > 0 && (
+                    <motion.div
+                      initial={{ opacity: 0, height: 0 }}
+                      animate={{ opacity: 1, height: "auto" }}
+                      className="max-w-3xl mx-auto px-4 md:px-8 mb-3"
+                    >
+                      <div className="card-dotted p-4">
+                        <ThinkingStream
+                          steps={msg.thinkingSteps}
+                          totalMs={msg.thinkingTotalMs}
+                          collapsed={!msg.isStreaming}
+                        />
+                      </div>
+                    </motion.div>
+                  )}
                   {/* Agentic thinking stream — mock fixture while streaming */}
-                  {msg.role === "assistant" && msg.isStreaming && agenticMode && (
+                  {msg.role === "assistant" && msg.isStreaming && agenticMode && !msg.isBrain && (
                     <motion.div
                       initial={{ opacity: 0, height: 0 }}
                       animate={{ opacity: 1, height: "auto" }}
@@ -417,7 +527,7 @@ function ChatPageInner() {
                     isFallback={msg.isFallback}
                     userInitials={userInitials}
                     showTrust={!msg.isStreaming && msg.role === "assistant" && !!msg.sources?.length}
-                    answerMeta={MOCK_ANSWER_META}
+                    answerMeta={msg.answerMeta ?? MOCK_ANSWER_META}
                   />
                 </div>
               ))}
@@ -433,7 +543,9 @@ function ChatPageInner() {
         onCancel={handleCancel}
         isStreaming={isStreaming}
         agenticMode={agenticMode}
-        onToggleAgentic={() => setAgenticMode((v) => !v)}
+        onToggleAgentic={() => { setAgenticMode((v) => !v); setBrainMode(false); }}
+        brainMode={brainMode}
+        onToggleBrain={() => { setBrainMode((v) => !v); setAgenticMode(false); }}
       />
 
       {/* Compare Documents Modal */}

@@ -60,29 +60,46 @@ class RAGASEvaluator:
         return data
 
     def run_pipeline_on_questions(
-        self, questions: List[Dict[str, Any]], mode: str = "baseline"
+        self,
+        questions: List[Dict[str, Any]],
+        mode: str = "baseline",
+        collection_id: Optional[str] = None,
     ) -> Dict[str, List]:
         """Run the RAG pipeline on each question and collect results.
 
         Args:
-            questions: List of {question, ground_truth} dicts.
-            mode:      'baseline' (dense+reranker) or 'hybrid' (BM25+dense+reranker).
+            questions:     List of {question, ground_truth, ...} dicts.
+            mode:          'baseline' / 'hybrid' / 'multidoc'.
+            collection_id: Optional Supabase collection to scope multi-doc retrieval.
 
         Returns:
             Dict with keys: question, answer, contexts, ground_truth.
         """
-        results = {
+        results: Dict[str, List] = {
             "question": [],
             "answer": [],
             "contexts": [],
             "ground_truth": [],
         }
 
+        # Resolve collection to filename list once (avoids N DB round-trips)
+        filename_filters: Optional[List[str]] = None
+        if collection_id:
+            try:
+                from src.components.db import SupabaseManager
+                sb = SupabaseManager()
+                filename_filters = [
+                    d["filename"] for d in sb.get_collection_documents(collection_id)
+                ]
+                logger.info("Eval: resolved collection %s → %d files", collection_id, len(filename_filters))
+            except Exception as e:
+                logger.warning("Eval: could not resolve collection %s: %s", collection_id, e)
+
         use_multi_query = self.config.USE_MULTI_QUERY
 
         for i, item in enumerate(questions, 1):
             question = item["question"]
-            ground_truth = item["ground_truth"]
+            ground_truth = item.get("ground_truth", "")
 
             print(f"  [{i}/{len(questions)}] [{mode.upper()}] {question[:65]}...")
 
@@ -92,9 +109,13 @@ class RAGASEvaluator:
                     question, n=self.config.MULTI_QUERY_COUNT
                 )
                 all_queries = [question] + variants
-                docs = self.retrieval_mgr.retrieve_multi_query(all_queries)
+                docs = self.retrieval_mgr.retrieve_multi_query(
+                    all_queries, filename_filters=filename_filters
+                )
             else:
-                docs = self.retrieval_mgr.retrieve(question)
+                docs = self.retrieval_mgr.retrieve(
+                    question, filename_filters=filename_filters
+                )
 
             contexts = [doc.page_content for doc in docs]
 
@@ -121,13 +142,15 @@ class RAGASEvaluator:
         eval_dataset_path: str,
         output_path: Optional[str] = None,
         mode: str = "baseline",
+        collection_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Run full RAGAS evaluation.
 
         Args:
             eval_dataset_path: Path to JSON file with test questions.
             output_path:       Optional path to save results JSON.
-            mode:              'baseline' or 'hybrid' — recorded in output for comparison.
+            mode:              'baseline', 'hybrid', or 'multidoc' — recorded in output.
+            collection_id:     Optional collection to scope multi-doc retrieval.
 
         Returns:
             Dict with aggregate scores, per-question breakdown, and pipeline config.
@@ -143,7 +166,7 @@ class RAGASEvaluator:
         # 2. Run pipeline
         print("Running pipeline on questions...")
         t1 = time.time()
-        pipeline_results = self.run_pipeline_on_questions(questions, mode=mode)
+        pipeline_results = self.run_pipeline_on_questions(questions, mode=mode, collection_id=collection_id)
         t2 = time.time()
         print(f"\nPipeline complete in {t2 - t1:.2f}s\n")
 

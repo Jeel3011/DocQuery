@@ -592,8 +592,12 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
                     {doc.status === "failed" && <AlertCircle size={11} className="text-[var(--status-failed)] flex-shrink-0" />}
                   </div>
                   <div className="flex items-center justify-between mt-1">
-                    <span className="text-[9px] text-[var(--text-muted)]">
-                      {doc.status === "processing" ? `Processing${doc.processing_progress != null ? ` (${doc.processing_progress}%)` : "…"}` : `${doc.chunk_count} chunks · ${fmtBytes(doc.file_size_bytes)}`}
+                    <span className={`text-[9px] ${doc.status === "failed" ? "text-[var(--status-failed)]" : "text-[var(--text-muted)]"}`}>
+                      {doc.status === "processing"
+                        ? `Processing${doc.processing_progress != null ? ` (${doc.processing_progress}%)` : "…"}`
+                        : doc.status === "failed"
+                        ? "Failed to process — delete & re-upload"
+                        : `${doc.chunk_count} chunks · ${fmtBytes(doc.file_size_bytes)}`}
                     </span>
                     <div className="flex items-center gap-1">
                       {/* Add/Remove from collection button */}

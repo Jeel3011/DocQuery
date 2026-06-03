@@ -326,18 +326,26 @@ class DocumentProcessor:
                 return self.config.PDF_STRATEGY
             if page_count <= self.config.PDF_FAST_THRESHOLD_PAGES:
                 return "fast"
-            if page_count <= self.config.PDF_MEDIUM_THRESHOLD_PAGES:
-                return "auto"
-            # A5: a long PDF only needs expensive OCR (hi_res) if it's genuinely
-            # scanned. If it carries a real text layer, "auto" is far cheaper and
-            # just as accurate. Probe a sample; fall back to hi_res on uncertainty.
+            # NOTE on strategy choice (2026-06-02):
+            # "auto"/"hi_res" run unstructured's native layout+table model to get
+            # STRUCTURED tables (HTML) — the §4b ideal. But that pipeline is currently
+            # BROKEN in this environment: it raises UnicodeDecodeError (0x89 = PNG
+            # byte) decoding rendered page images — a pdfminer.six(20251230)/
+            # unstructured(0.18.27) version conflict — yielding 0 elements after ~200s.
+            # "fast" (pdfminer text) is reliable and extracts the full text INCLUDING
+            # every table cell value (verified: 211,915 / 198,270 / … from the 10-K
+            # tables), which is exactly what the Brain reads today. Structured HTML
+            # tables for §4b's deterministic compute require fixing the hi_res
+            # dependency conflict first (tracked). Until then, text-layer PDFs use
+            # "fast"; only genuinely scanned PDFs attempt OCR ("hi_res").
             density = _pdf_text_density(file_path)
             if density >= self.config.PDF_TEXT_LAYER_MIN_CHARS_PER_PAGE:
                 _logger.info(
-                    "A5: %d-page PDF has text layer (%.0f chars/page) — using 'auto', skipping OCR",
+                    "%d-page PDF has text layer (%.0f chars/page) — using 'fast' "
+                    "(hi_res table model broken in this env; numbers still extracted)",
                     page_count, density,
                 )
-                return "auto"
+                return "fast"
             return "hi_res"
 
         return "auto"

@@ -14,6 +14,44 @@ import logging
 logging.getLogger("httpx").setLevel(logging.WARNING)
 from src.utils import format_chat_history
 
+# ── Token budget (Invariant R2) ───────────────────────────────────────────────
+# Use tiktoken when available; fall back to a chars/4 heuristic so we never hard-
+# crash if the package isn't installed yet.
+try:
+    import tiktoken
+    _ENC = tiktoken.get_encoding("cl100k_base")
+
+    def _count_tokens(text: str) -> int:
+        return len(_ENC.encode(text, disallowed_special=()))
+except ImportError:  # pragma: no cover
+    logger.warning("tiktoken not installed — using char/4 token estimate (install tiktoken for accuracy)")
+
+    def _count_tokens(text: str) -> int:  # type: ignore[misc]
+        return len(text) // 4
+
+
+def _apply_token_budget(docs: List[Document], budget: int) -> tuple[List[Document], bool]:
+    """Trim docs (furthest-first) so their combined text fits within *budget* tokens.
+
+    Returns (trimmed_docs, truncated_flag).  Preserves at least one doc so the
+    caller always has something to generate from.
+    """
+    if not docs:
+        return docs, False
+    total = sum(_count_tokens(d.page_content) for d in docs)
+    if total <= budget:
+        return docs, False
+    # Drop from the tail (lowest-ranked after reranking) until we fit.
+    kept = list(docs)
+    while len(kept) > 1 and sum(_count_tokens(d.page_content) for d in kept) > budget:
+        kept.pop()
+    logger.warning(
+        "Context token budget (%d) exceeded (%d tokens across %d docs); "
+        "trimmed to %d docs. Consider enabling map-reduce Brain path.",
+        budget, total, len(docs), len(kept),
+    )
+    return kept, True
+
 
 # ── Prompt injection patterns ──────────────────────────────────────────────────
 # Documents uploaded by users may contain adversarial instructions.
@@ -232,6 +270,7 @@ Conversation History:
         return standalone_query.strip()
 
     def generate(self, query: str, retrieved_docs: List[Document], chat_history: list = None) -> Dict:
+        retrieved_docs, _truncated = _apply_token_budget(retrieved_docs, self.config.CONTEXT_TOKEN_BUDGET)
         context_parts = []
         sources = []
 
@@ -276,8 +315,7 @@ Conversation History:
         chat_history: list = None,
         user_id: str = None,
     ) -> Dict:
-        """
-        Phase 6: Harvey-style self-critique loop.
+        """Harvey-style self-critique loop.
 
         Step 1 — Generate an initial answer normally.
         Step 2 — Ask the same LLM to identify any claims NOT directly supported
@@ -298,6 +336,7 @@ Conversation History:
             "revised":       bool — whether a revision was needed
             "critique":      str  — the raw critique output (for logging/debugging)
         """
+        retrieved_docs, _truncated = _apply_token_budget(retrieved_docs, self.config.CONTEXT_TOKEN_BUDGET)
         context_parts = []
         sources = []
         for i, doc in enumerate(retrieved_docs, 1):
@@ -428,6 +467,7 @@ Return ONLY the queries, one per line, no numbering or bullets."""),
         retrieval-only response so the client always gets a complete SSE sequence.
         Prompt injection: context is sanitised before injection into the prompt.
         """
+        retrieved_docs, _truncated = _apply_token_budget(retrieved_docs, self.config.CONTEXT_TOKEN_BUDGET)
         context_parts = []
         sources = []
         for i, doc in enumerate(retrieved_docs, 1):

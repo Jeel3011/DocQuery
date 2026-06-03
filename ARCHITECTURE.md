@@ -1,8 +1,8 @@
 # DocQuery — System Architecture & Design
 
-> **A production-grade distributed RAG system** designed for horizontal scalability, fault tolerance, and sub-second query latency across millions of documents and concurrent users.
+> **A multi-document RAG system** designed for horizontal scalability, fault tolerance, and sub-second query latency — engineered to scale to large document collections as the user base grows.
 
-> **Note on current deployment:** Infrastructure is scaled down to minimal resources for cost efficiency during development. The architecture is fully designed, implemented, and validated for production-scale workloads — every component described below exists in the codebase and has been deployed to AWS ECS Fargate with auto-scaling.
+> **Note on current deployment:** The system runs locally during development. The architecture targets AWS ECS Fargate with auto-scaling; deployment will be activated once user/revenue milestones justify the infra cost. Capacity claims will be gated on the eval harness (Phase 2) — only proven numbers are published.
 
 ---
 
@@ -223,7 +223,7 @@ User Query
     │      ("attention mechanism" → + "self-attention layers" + "query key value computation")
     │
     ├─ Stage 3: Hybrid Dense + Sparse Search
-    │   ├─ Dense: Pinecone cosine similarity (text-embedding-3-small, 512D)
+    │   ├─ Dense: Pinecone cosine similarity (text-embedding-3-small, 1536D)
     │   ├─ Sparse: BM25Okapi on candidate pool (keyword exact-match)
     │   └─ Fusion: Reciprocal Rank Fusion (k=60, Cormack et al. 2009)
     │
@@ -513,7 +513,7 @@ python compare_evals.py --baseline eval_results_baseline.json --candidate eval_r
 ### AI / ML
 | Technology | Purpose |
 |-----------|---------|
-| OpenAI text-embedding-3-small | Document embeddings (512D) |
+| OpenAI text-embedding-3-small | Document embeddings (1536D default) |
 | GPT-4o-mini | Answer generation |
 | Cross-Encoder ms-marco-MiniLM-L-6-v2 | Result reranking |
 | Unstructured (hi_res + YOLOX) | Document parsing with layout analysis |

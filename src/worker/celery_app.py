@@ -110,3 +110,31 @@ def on_worker_init(sender, **kwargs):
         logging.getLogger(__name__).warning(
             "Worker startup warm-up failed (non-fatal, first PDF will be slower): %s", exc
         )
+
+    # \u2500\u2500 Sweep zombie ingests \u2500\u2500
+    # A worker crash (e.g. SIGSEGV in native parsing) kills the task process
+    # before its except-block can mark the document "failed", so the doc is stuck
+    # in "processing" forever and the UI spins indefinitely. On every worker boot,
+    # flip any doc that has been "processing" longer than the longest plausible
+    # ingest to "failed", so the user sees a clear error instead of a hang.
+    try:
+        from datetime import datetime, timedelta, timezone
+        from src.components.db import SupabaseManager
+        cutoff = (datetime.now(timezone.utc) - timedelta(minutes=15)).isoformat()
+        _db = SupabaseManager(use_service_role=True)
+        _res = (
+            _db.client.table("documents")
+            .update({"status": "failed"})
+            .eq("status", "processing")
+            .lt("created_at", cutoff)
+            .execute()
+        )
+        _n = len(_res.data or [])
+        if _n:
+            logger.warning("Worker startup: swept %d stale 'processing' doc(s) \u2192 'failed'", _n)
+        else:
+            logger.info("Worker startup: no stale 'processing' docs to sweep.")
+    except Exception as exc:
+        logging.getLogger(__name__).warning(
+            "Worker startup: stale-processing sweep failed (non-fatal): %s", exc
+        )
