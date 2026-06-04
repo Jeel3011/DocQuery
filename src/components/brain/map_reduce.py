@@ -40,7 +40,7 @@ from src.components.config import Config
 from src.components.brain.claims import (
     Claim, EvidenceSpan, PerDocExtract, BrainResult,
 )
-from src.components.brain.verifier import verify_claims, ABSTAIN_THRESHOLD
+from src.components.brain.verifier import verify_claims, verify_reduce_output, ABSTAIN_THRESHOLD
 from src.logger import get_logger
 
 logger = get_logger(__name__)
@@ -162,6 +162,13 @@ def _locate_evidence(span: str, chunks: list, fallback_doc_id: str) -> tuple[str
 
     Returns (chunk_id, doc_id).  Falls back to the first chunk if the span can't
     be matched (e.g. the model lightly paraphrased it).
+
+    NOTE: the returned doc_id is ALWAYS ``fallback_doc_id`` — the document_id MAP
+    was invoked with, which is the key used in ``doc_chunks`` everywhere
+    downstream (_group_claims_by_doc, _build_sources, the REDUCE source header).
+    The per-chunk ``doc_id`` metadata can be a different identifier; using it here
+    leaks a raw UUID into the answer instead of the filename. Only ``chunk_id``
+    varies per chunk.
     """
     if span and chunks:
         probe = span.strip()[:60].lower()
@@ -169,16 +176,10 @@ def _locate_evidence(span: str, chunks: list, fallback_doc_id: str) -> tuple[str
             for c in chunks:
                 content = (c.page_content or "").lower()
                 if probe in content:
-                    return (
-                        c.metadata.get("chunk_id", "") or "",
-                        c.metadata.get("doc_id", fallback_doc_id),
-                    )
+                    return (c.metadata.get("chunk_id", "") or "", fallback_doc_id)
     first = chunks[0] if chunks else None
     if first is not None:
-        return (
-            first.metadata.get("chunk_id", "") or "",
-            first.metadata.get("doc_id", fallback_doc_id),
-        )
+        return (first.metadata.get("chunk_id", "") or "", fallback_doc_id)
     return "", fallback_doc_id
 
 
@@ -534,6 +535,20 @@ class Brain:
             verified_extracts = self._group_claims_by_doc(verified_claims, doc_chunks)
             answer, confidence, _ = self._reduce(query, verified_extracts)
 
+            # ── VERIFY REDUCE output (§4a.3 step 2) ────────────────────────────
+            # The claim-level verify above checked the MAP extracts; REDUCE then
+            # synthesised prose, which can introduce an unsupported connection.
+            # Re-check the synthesised sentences against the verified claim pool.
+            groundedness, unsupported = verify_reduce_output(
+                answer, verified_claims, self._get_verify_llm(),
+            )
+            confidence *= groundedness  # ungrounded synthesis cannot stay high-confidence
+            if unsupported:
+                logger.warning(
+                    "[Brain] REDUCE groundedness=%.2f; %d unsupported sentence(s) flagged",
+                    groundedness, len(unsupported),
+                )
+
         # Abstain if confidence is too low (§4a.4)
         abstained = False
         abstain_reason = None
@@ -668,11 +683,18 @@ class Brain:
                 "question, so I can't give a grounded answer.",
                 0.0,
             )
+            groundedness, n_unsupported = 1.0, 0
         else:
             answer, confidence, _ = self._reduce(
                 query, self._group_claims_by_doc(verified_claims, doc_chunks)
             )
-        yield f"data: {_json.dumps({'type': 'brain_reduce', 'docs_relevant': docs_relevant})}\n\n"
+            # §4a.3 step 2: verify the synthesised prose against verified claims.
+            groundedness, unsupported = verify_reduce_output(
+                answer, verified_claims, self._get_verify_llm(),
+            )
+            confidence *= groundedness
+            n_unsupported = len(unsupported)
+        yield f"data: {_json.dumps({'type': 'brain_reduce', 'docs_relevant': docs_relevant, 'groundedness': round(groundedness, 2), 'unsupported': n_unsupported})}\n\n"
 
         abstained = confidence < BRAIN_ABSTAIN_THRESHOLD
         if abstained:

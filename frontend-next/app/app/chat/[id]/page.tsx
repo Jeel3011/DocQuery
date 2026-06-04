@@ -179,7 +179,8 @@ function ChatPageInner() {
           { id: "route", label: "Routing", detail: "Selecting relevant documents", status: "active" },
           { id: "read", label: "Reading documents", status: "pending" },
           { id: "verify", label: "Verifying claims", status: "pending" },
-          { id: "synth", label: "Synthesizing", status: "pending" },
+          { id: "ground", label: "Checking answer against evidence", status: "pending" },
+          { id: "synth", label: "Writing answer", status: "pending" },
         ];
         const pushSteps = () => {
           const snapshot = steps.map((s) => ({ ...s }));
@@ -228,8 +229,22 @@ function ChatPageInner() {
               setStep("read", { status: "done" });
               setStep("verify", { status: "active", detail: `Verified ${verified} of ${total} claim${total !== 1 ? "s" : ""}` });
             },
-            onBrainReduce: (docsRelevant) => {
+            onBrainReduce: (docsRelevant, groundedness, unsupported) => {
               setStep("verify", { status: "done" });
+              // The §4a.3-step-2 answer-entailment check has already run by the time
+              // brain_reduce fires. Surface its result as its own trust step.
+              if (groundedness !== undefined) {
+                const pct = Math.round(groundedness * 100);
+                const allGrounded = !unsupported;
+                setStep("ground", {
+                  status: allGrounded ? "done" : "failed",
+                  detail: allGrounded
+                    ? `All sentences grounded (${pct}%)`
+                    : `${unsupported} sentence${unsupported !== 1 ? "s" : ""} flagged · ${pct}% grounded`,
+                });
+              } else {
+                setStep("ground", { status: "done" });
+              }
               setStep("synth", { status: "active", detail: `Merging ${docsRelevant} source${docsRelevant !== 1 ? "s" : ""}` });
             },
             onBrainMeta: ({ confidence, abstained, coverage }) => {

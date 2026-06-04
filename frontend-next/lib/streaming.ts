@@ -30,6 +30,8 @@ export interface StreamEvent {
   claims_total?: number;      // brain_verify
   claims_verified?: number;   // brain_verify
   docs_relevant?: number;     // brain_reduce
+  groundedness?: number;      // brain_reduce (0-1: fraction of answer sentences entailed by verified claims)
+  unsupported?: number;       // brain_reduce (count of answer sentences not entailed)
   confidence?: number;        // brain_meta (0-1)
   abstained?: boolean;        // brain_meta
   coverage?: BrainCoverage;   // brain_meta
@@ -294,7 +296,7 @@ export interface BrainStreamCallbacks extends StreamCallbacks {
   onBrainStart?: (docsRouted: number) => void;
   onBrainMap?: (ev: { filename?: string; claims?: number; relevant?: boolean; progress?: string }) => void;
   onBrainVerify?: (claimsTotal: number, claimsVerified: number) => void;
-  onBrainReduce?: (docsRelevant: number) => void;
+  onBrainReduce?: (docsRelevant: number, groundedness?: number, unsupported?: number) => void;
   onBrainMeta?: (meta: { confidence: number; abstained: boolean; coverage?: BrainCoverage }) => void;
 }
 
@@ -380,7 +382,7 @@ export async function streamBrainQuery(
               callbacks.onBrainVerify?.(event.claims_total ?? 0, event.claims_verified ?? 0);
               break;
             case "brain_reduce":
-              callbacks.onBrainReduce?.(event.docs_relevant ?? 0);
+              callbacks.onBrainReduce?.(event.docs_relevant ?? 0, event.groundedness, event.unsupported);
               break;
             case "brain_meta":
               callbacks.onBrainMeta?.({

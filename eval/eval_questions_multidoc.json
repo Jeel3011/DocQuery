@@ -1,0 +1,41 @@
+[
+  {
+    "_comment": "Multi-doc eval set bound to the live 'very big' collection (id 1c485387-3fd0-4608-a677-64d724323f90): Google FY2023 10-K (goog-20231231.pdf) + Microsoft FY2023 10-K (0000950170-23-035122.pdf). gold_doc_filenames is the gradable target for routing recall; ground_truth is a description, not an exact figure, so numeric drift in the source doesn't fail the gate.",
+    "_collection_name": "very big",
+    "_collection_id": "1c485387-3fd0-4608-a677-64d724323f90",
+    "question": "Compare how Google and Microsoft each describe their primary sources of revenue.",
+    "ground_truth": "Google's revenue is primarily from advertising (Google Search, YouTube ads, Google Network), plus Google Cloud and other bets. Microsoft's revenue is organized across Productivity and Business Processes (Office, LinkedIn), Intelligent Cloud (Azure, server products), and More Personal Computing (Windows, devices, gaming, search). The answer must draw on both filings.",
+    "gold_doc_filenames": ["goog-20231231.pdf", "0000950170-23-035122.pdf"],
+    "min_docs_required": 2,
+    "query_type": "synthesis"
+  },
+  {
+    "question": "What risk factors do both Google and Microsoft identify in common across their filings?",
+    "ground_truth": "Both filings discuss competition, regulatory/antitrust scrutiny, cybersecurity and data-privacy risk, dependence on talent, and macroeconomic conditions. The answer must synthesize overlapping risk factors from both 10-Ks.",
+    "gold_doc_filenames": ["goog-20231231.pdf", "0000950170-23-035122.pdf"],
+    "min_docs_required": 2,
+    "query_type": "synthesis"
+  },
+  {
+    "question": "How do Google and Microsoft each position their cloud businesses, and how do their cloud strategies differ?",
+    "ground_truth": "Google describes Google Cloud (GCP + Workspace) as a growth segment; Microsoft describes Azure within Intelligent Cloud as a core growth driver alongside server products. The answer should contrast their cloud positioning, drawing on both documents.",
+    "gold_doc_filenames": ["goog-20231231.pdf", "0000950170-23-035122.pdf"],
+    "min_docs_required": 2,
+    "query_type": "synthesis"
+  },
+  {
+    "question": "Across both companies' filings, what are the common themes in how they describe investment in artificial intelligence?",
+    "ground_truth": "Both companies emphasize AI as central to product strategy and future investment; Google around Search/Cloud/DeepMind, Microsoft around Azure AI and Copilot/OpenAI partnership. A global question requiring evidence from both filings.",
+    "gold_doc_filenames": ["goog-20231231.pdf", "0000950170-23-035122.pdf"],
+    "min_docs_required": 2,
+    "query_type": "global"
+  },
+  {
+    "question": "Which filing belongs to Microsoft and what are its reportable operating segments?",
+    "ground_truth": "0000950170-23-035122.pdf is Microsoft's 10-K. Its three reportable segments are Productivity and Business Processes, Intelligent Cloud, and More Personal Computing. This is a single-doc lookup used as a routing/precision sanity check.",
+    "gold_doc_filenames": ["0000950170-23-035122.pdf"],
+    "min_docs_required": 1,
+    "query_type": "lookup",
+    "_note": "Single-doc lookup: routing must select the Microsoft filing specifically. Sanity check for precision, not just recall."
+  }
+]
