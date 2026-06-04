@@ -125,6 +125,13 @@ class Config:
     # ROUTING_MAX_FANOUT, keeping the most-relevant docs since the list is ordered.
     ROUTING_TOP_N: int = int(os.getenv("ROUTING_TOP_N", "12"))
 
+    # Diversity-aware routing (MMR). Plain top-N cosine over-concentrates on
+    # near-duplicate docs (e.g. 3 years of one company), crowding out the docs a
+    # cross-entity question needs. ROUTING_MMR_LAMBDA balances relevance vs.
+    # diversity when selecting: 1.0 = pure relevance (old behaviour), lower = more
+    # diverse. 0.7 keeps relevance dominant while breaking up redundant clusters.
+    ROUTING_MMR_LAMBDA: float = float(os.getenv("ROUTING_MMR_LAMBDA", "0.7"))
+
     # ── Stage-2 Brain (Phase 4) ──
     # Opt-in: set USE_BRAIN=true to route synthesis/collection queries through
     # the map-reduce Brain instead of the single-call fast path.

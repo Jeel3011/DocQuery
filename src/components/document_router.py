@@ -53,6 +53,59 @@ def _centroid(vectors: list[list]) -> list:
     return arr.mean(axis=0).tolist()
 
 
+def _mmr_select(
+    candidates: list[tuple[float, str, Optional[list]]],
+    top_n: int,
+    lambda_relevance: float = 0.7,
+) -> list[str]:
+    """Maximal Marginal Relevance selection — diversity-aware document routing.
+
+    Plain top-N cosine over-concentrates: near-duplicate docs (e.g. three years
+    of the *same* company's 10-K) cluster tightly and crowd out the docs a
+    cross-entity question actually needs (Entry 7 finding — the cross-company
+    comparison kept the 3 Microsoft docs and dropped Google/Amazon FY23).
+
+    MMR fixes that by picking docs one at a time, each maximizing:
+        λ · relevance(doc, query)  −  (1−λ) · max similarity(doc, already_picked)
+    so a candidate that's highly relevant *but* near-identical to something already
+    chosen is penalised — naturally spreading selection across distinct documents
+    (and therefore across companies/topics) without hard-coding "company".
+
+    Args:
+        candidates:        list of (relevance_score, filename, topic_vec | None).
+                           topic_vec is the doc's embedding (for redundancy calc);
+                           None falls back to pure relevance for that doc.
+        top_n:             how many to select.
+        lambda_relevance:  1.0 = pure relevance (old behaviour); lower = more diverse.
+
+    Returns:
+        filenames, ordered by selection.
+    """
+    if top_n <= 0 or not candidates:
+        return []
+    # Sort by relevance once; the first pick is always the most relevant doc.
+    pool = sorted(candidates, key=lambda c: c[0], reverse=True)
+    if len(pool) <= top_n:
+        return [fn for _, fn, _ in pool]
+
+    selected: list[tuple[float, str, Optional[list]]] = [pool.pop(0)]
+    while pool and len(selected) < top_n:
+        best_idx, best_mmr = 0, -1e9
+        for i, (rel, _fn, vec) in enumerate(pool):
+            if vec is None:
+                redundancy = 0.0  # no embedding → can't measure overlap, don't penalise
+            else:
+                redundancy = max(
+                    (_cosine(vec, s_vec) for _, _, s_vec in selected if s_vec is not None),
+                    default=0.0,
+                )
+            mmr = lambda_relevance * rel - (1.0 - lambda_relevance) * redundancy
+            if mmr > best_mmr:
+                best_mmr, best_idx = mmr, i
+        selected.append(pool.pop(best_idx))
+    return [fn for _, fn, _ in selected]
+
+
 # ── Extractive summary ────────────────────────────────────────────────────────
 
 def _extractive_summary(chunks, max_chars: int = 400) -> str:
@@ -244,30 +297,38 @@ class DocumentRouter:
 
             # 4. Score EVERY collection doc so a doc without routing data is still a
             #    candidate (recall-first): cosine on the topic embedding when present,
-            #    else keyword overlap on the summary, else on the filename.
-            scored: list[tuple[float, str]] = []
+            #    else keyword overlap on the summary, else on the filename. Keep each
+            #    doc's topic vector so MMR (step 5) can measure redundancy.
+            scored: list[tuple[float, str, Optional[list]]] = []
             for did, filename in id_to_filename.items():
                 row = summaries.get(did)
                 emb_raw = row.get("topic_embedding") if row else None
+                topic_vec: Optional[list] = None
                 if emb_raw and query_embedding:
                     try:
                         topic_vec = json.loads(emb_raw) if isinstance(emb_raw, str) else emb_raw
                         score = _cosine(query_embedding, topic_vec)
                     except Exception:
+                        topic_vec = None
                         score = _keyword_score(query, (row or {}).get("summary", "") or filename)
                 elif row:
                     score = _keyword_score(query, row.get("summary", "") or filename)
                 else:
                     score = _keyword_score(query, filename)
-                scored.append((score, filename))
+                scored.append((score, filename, topic_vec))
 
-            scored.sort(reverse=True)
-            result = [fn for _, fn in scored[:top_n]]
+            # 5. Diversity-aware selection (MMR). When more docs than top_n,
+            #    penalise candidates near-identical to ones already picked so a
+            #    cross-entity query gets a spread of distinct docs instead of N
+            #    near-duplicates from one cluster (Entry 7 fix). λ=1 reproduces the
+            #    old pure-relevance ordering.
+            lam = getattr(self.config, "ROUTING_MMR_LAMBDA", 0.7)
+            result = _mmr_select(scored, top_n, lambda_relevance=lam)
 
             elapsed = (time.perf_counter() - t0) * 1000
             logger.info(
-                "[doc_router] Routed collection %s: %d docs (%d with summaries) → top %d in %.1fms",
-                collection_id, len(scored), len(summaries), len(result), elapsed,
+                "[doc_router] Routed collection %s: %d docs (%d with summaries) → top %d (MMR λ=%.2f) in %.1fms",
+                collection_id, len(scored), len(summaries), len(result), lam, elapsed,
             )
             return result
 
