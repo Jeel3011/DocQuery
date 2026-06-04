@@ -92,9 +92,16 @@ def _reduce_messages(question: str, n_docs: int, extracts: str) -> tuple[str, st
         "4. If evidence is thin or uncertain on a point, say so — do NOT guess.\n"
         "5. Do NOT add information not present in the claims below.\n"
         "6. When the claims contain the numbers needed for a calculation the question asks for, "
-        "perform the arithmetic and show it.\n\n"
+        "perform the arithmetic and show it.\n"
+        "7. When the answer compares items across two or more dimensions (e.g. metrics across "
+        "documents, clauses across agreements, values vs thresholds), present that comparison as a "
+        "GitHub-flavored Markdown table: a header row, a `|---|` separator row, then one row per "
+        "item. The app renders these as interactive sortable tables, so prefer a table over bullets "
+        "whenever the data is naturally tabular. Keep cells short; put the [Source: <filename>] "
+        "citations in the prose around the table, not inside cells.\n\n"
         "Output format:\n"
-        "- A direct, well-structured prose answer with [Source: <filename>] inline citations.\n"
+        "- A direct, well-structured answer with [Source: <filename>] inline citations, using a "
+        "Markdown table for any multi-dimensional comparison.\n"
         '- End with a "## Confidence" section: overall confidence 0.0-1.0 and a one-line reason.\n\n'
         f"Question: {question}"
     )
@@ -677,9 +684,23 @@ class Brain:
         sources = self._build_sources(verified_claims, doc_chunks)
         yield f"data: {_json.dumps({'type': 'sources', 'sources': sources})}\n\n"
 
-        # Stream answer tokens
-        for word in answer.split(" "):
-            yield f"data: {_json.dumps({'type': 'token', 'content': word + ' '})}\n\n"
+        # Stream the answer. Markdown tables only parse correctly when each table
+        # row arrives as a whole line, so we stream line-by-line: words within a
+        # line stream for the live "typing" feel, but every newline is preserved
+        # and flushed intact — keeping the `| col | col |` rows un-shattered so the
+        # frontend renders them as proper sortable tables (not broken fragments).
+        for line in answer.splitlines(keepends=True):
+            if line.strip().startswith("|"):
+                # Table row — emit the whole line atomically so GFM can parse it.
+                yield f"data: {_json.dumps({'type': 'token', 'content': line})}\n\n"
+            else:
+                # Prose — stream word-by-word, preserving the trailing newline.
+                stripped = line.rstrip("\n")
+                newline = line[len(stripped):]
+                for word in stripped.split(" "):
+                    yield f"data: {_json.dumps({'type': 'token', 'content': word + ' '})}\n\n"
+                if newline:
+                    yield f"data: {_json.dumps({'type': 'token', 'content': newline})}\n\n"
 
         elapsed_ms = int((time.perf_counter() - t0) * 1000)
         yield f"data: {_json.dumps({'type': 'brain_meta', 'confidence': confidence, 'abstained': abstained, 'coverage': {'docs_routed': docs_routed, 'docs_read': docs_read, 'docs_relevant': docs_relevant, 'docs_failed': docs_failed}})}\n\n"

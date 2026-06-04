@@ -19,6 +19,10 @@ const RagasMetrics = dynamic(
   () => import("./RagasMetrics").then((m) => m.RagasMetrics),
   { ssr: false }
 );
+const Pricing = dynamic(
+  () => import("./Pricing").then((m) => m.Pricing),
+  { ssr: false }
+);
 const TrustStrip = dynamic(
   () => import("./TrustStrip").then((m) => m.TrustStrip),
   { ssr: false }
@@ -31,6 +35,7 @@ export function BelowFold() {
       <AudienceTabs />
       <HowItWorks />
       <RagasMetrics />
+      <Pricing />
       <TrustStrip />
     </>
   );

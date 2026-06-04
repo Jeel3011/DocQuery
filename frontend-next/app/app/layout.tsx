@@ -342,17 +342,23 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
       <div
         className="flex flex-col h-full"
         style={{
-          background: "linear-gradient(180deg, rgba(255,255,255,0.55), rgba(255,255,255,0.38))",
-          backdropFilter: "blur(20px) saturate(1.5)",
-          WebkitBackdropFilter: "blur(20px) saturate(1.5)",
+          background: "linear-gradient(180deg, rgba(250,250,250,0.72), rgba(244,244,244,0.58))",
+          backdropFilter: "blur(22px) saturate(1.5)",
+          WebkitBackdropFilter: "blur(22px) saturate(1.5)",
         }}
       >
         {/* Header */}
         <div className="flex items-center gap-2 px-4 py-4 border-b border-[var(--glass-border)] flex-shrink-0">
           {!collapsed && (
             <div className="flex items-center gap-2 flex-1">
-              <div className="w-6 h-6 rounded-lg bg-[var(--accent)] flex items-center justify-center font-bold text-white text-xs shadow-sm flex-shrink-0">D</div>
-              <span className="text-sm font-semibold text-[var(--text-primary)] tracking-tight">
+              <div
+                className="w-6 h-6 rounded-[7px] flex items-center justify-center font-bold text-xs shadow-sm flex-shrink-0"
+                style={{ background: "var(--ink)", color: "var(--on-ink)", fontFamily: "Fraunces, Georgia, serif" }}
+              >D</div>
+              <span
+                className="text-[15px] font-semibold tracking-tight"
+                style={{ color: "var(--ink)", fontFamily: "Fraunces, Georgia, serif", letterSpacing: "-0.025em" }}
+              >
                 DocQuery
               </span>
             </div>
@@ -435,8 +441,9 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
                   : "text-[var(--text-secondary)] hover:bg-[var(--bg-hover)]"
               }`}
               style={activeCollectionId === null ? {
-                background: "rgba(255,255,255,0.9)",
-                boxShadow: "0 2px 8px -3px rgba(40,30,20,0.16), inset 0 1px 0 rgba(255,255,255,0.9)",
+                background: "rgba(255,255,255,0.85)",
+                border: "1px solid var(--line)",
+                boxShadow: "var(--shadow-sm)",
               } : undefined}
             >
               <span className="truncate">All Documents</span>
@@ -453,8 +460,9 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
                     : "text-[var(--text-secondary)] hover:bg-[var(--bg-hover)] border-transparent"
                 }`}
                 style={activeCollectionId === coll.id ? {
-                  background: "rgba(255,255,255,0.92)",
-                  boxShadow: "0 4px 12px -4px rgba(40,30,20,0.18), inset 0 1px 0 rgba(255,255,255,0.9)",
+                  background: "rgba(255,255,255,0.85)",
+                  border: "1px solid var(--line)",
+                  boxShadow: "var(--shadow-sm)",
                 } : undefined}
                 onClick={() => setActiveCollectionId(activeCollectionId === coll.id ? null : coll.id)}
               >
@@ -577,7 +585,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
               className={`card-dotted mx-3 mb-2 flex flex-col items-center justify-center gap-1 py-4 cursor-pointer transition-[border-color,background-color,opacity]
                 ${uploadQueue ? "opacity-50 pointer-events-none" : ""}`}
               onClick={() => fileRef.current?.click()}
-              onDragOver={(e) => { e.preventDefault(); e.currentTarget.style.borderColor = "#0A0A0A"; e.currentTarget.style.background = "#F5F5F5"; }}
+              onDragOver={(e) => { e.preventDefault(); e.currentTarget.style.borderColor = "var(--ink)"; e.currentTarget.style.background = "var(--accent-soft)"; }}
               onDragLeave={(e) => { e.currentTarget.style.borderColor = ""; e.currentTarget.style.background = ""; }}
               onDrop={(e) => { e.preventDefault(); e.currentTarget.style.borderColor = ""; e.currentTarget.style.background = ""; const files = Array.from(e.dataTransfer.files); if (files.length) uploadFiles(files); }}
             >
@@ -682,7 +690,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
   }
 
   return (
-    <div className="relative flex h-dvh overflow-hidden bg-[var(--bg-base)]">
+    <div className="relative flex h-dvh overflow-hidden" style={{ background: "var(--canvas)" }}>
       {/* Soft aurora wash so glass surfaces (input, top bar, panels) blur real colour */}
       <div className="aurora aurora-soft" />
       <CommandPalette

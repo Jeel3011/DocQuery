@@ -3,19 +3,18 @@
 @tailwind utilities;
 
 /* ── Google Fonts ──────────────────────────────────────────────────────────── */
-@import url("https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap");
+@import url("https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,300;0,9..144,400;0,9..144,500;0,9..144,600;1,9..144,300;1,9..144,400&family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap");
 
-/* ── DocQuery Monochrome Design System ────────────────────────────────────── */
+/* ── DocQuery Premium Design System ───────────────────────────────────────── */
 :root {
   /* Motion tokens */
-  --ease-out:    cubic-bezier(0.23, 1, 0.32, 1);   /* strong ease-out: enter/exit */
-  --ease-in-out: cubic-bezier(0.77, 0, 0.175, 1);  /* on-screen movement */
-  --ease-drawer: cubic-bezier(0.32, 0.72, 0, 1);   /* Sheet/drawer */
-  /* spring kept only for drag/gesture surfaces */
+  --ease-out:    cubic-bezier(0.23, 1, 0.32, 1);
+  --ease-in-out: cubic-bezier(0.77, 0, 0.175, 1);
+  --ease-drawer: cubic-bezier(0.32, 0.72, 0, 1);
   --ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
   --dur-fast: 120ms;
   --dur-base: 200ms;
-  --dur-slow: 300ms;
+  --dur-slow: 320ms;
 
   /* Z-index scale */
   --z-dropdown: 100;
@@ -24,70 +23,73 @@
   --z-dialog: 400;
   --z-toast: 500;
 
-  /* Warm-neutral ramp */
-  --warm-50: #FAF8F5;
-  --warm-100: #F0EBE3;
-  --warm-300: #D9CFC0;
-  --warm-500: #A1907A;
-  --warm-700: #6B5B4D;
-  --warm-900: #3A312A;
+  /* ── Pure monochrome canvas ──
+     Neutral off-white canvas; surfaces graduate toward pure white.
+     No warmth — true black / white / grey only. */
+  --canvas:    #F4F4F4;     /* page canvas — light grey */
+  --surface:   #FFFFFF;     /* card / modal surfaces */
+  --surface-2: #FAFAFA;     /* near-white */
+  --surface-3: #EFEFEF;     /* recessed panels / code blocks */
 
-  /* Surfaces */
-  --bg-base: #FAFAFA;
-  --bg-surface: #FFFFFF;
-  --bg-elevated: #FFFFFF;
-  --bg-hover: #F5F5F5;
-  --bg-active: #F0F0F0;
-  --bg-sidebar: #FAFAFA;
+  /* ── Ink scale (neutral grey) ── */
+  --ink:   #0E0E0E;          /* near-black, neutral */
+  --ink-2: #525252;          /* body text, secondary */
+  --ink-3: #8A8A8A;          /* muted, captions */
+  --on-ink: #FAFAFA;         /* text on dark backgrounds */
 
-  /* Text */
-  --text-primary: #0A0A0A;
-  --text-secondary: #525252;
-  --text-muted: #A3A3A3;
-  --text-inverse: #FFFFFF;
+  /* ── Line / border scale ── */
+  --line:   #E4E4E4;         /* default border */
+  --line-2: #D4D4D4;         /* stronger border */
 
-  /* Borders */
-  --border: #E5E5E5;
-  --border-strong: #D4D4D4;
-  --border-dotted: #C4C4C4;
-
-  /* Accent */
-  --accent: #0A0A0A;
+  /* ── Accent ── */
+  --accent:       #0E0E0E;   /* black — primary CTA/link */
   --accent-hover: #262626;
-  --accent-subtle: #F5F5F5;
-  --accent-ring: rgba(10, 10, 10, 0.08);
+  --accent-ring:  rgba(14, 14, 14, 0.10);
+  --accent-taupe: #525252;   /* neutral grey — was warm brown, now monochrome */
+  --accent-soft:  #EDEDED;   /* tinted hover surface */
 
-  /* Status */
-  --status-ready: #16A34A;
-  --status-processing: #CA8A04;
-  --status-failed: #DC2626;
+  /* ── Legacy aliases (keep app components working) ── */
+  --bg-base:     var(--canvas);
+  --bg-surface:  var(--surface);
+  --bg-elevated: var(--surface);
+  --bg-hover:    var(--surface-3);
+  --bg-active:   #EAE4D9;
+  --bg-sidebar:  var(--canvas);
+  --text-primary:   var(--ink);
+  --text-secondary: var(--ink-2);
+  --text-muted:     var(--ink-3);
+  --text-inverse:   var(--on-ink);
+  --border:        var(--line);
+  --border-strong: var(--line-2);
+  --border-dotted: #C8BFB0;
 
-  /* Thinking-stream step states (used by ThinkingStream) */
-  --step-pending: var(--border-strong);
+  /* Status — monochrome; red retained only for genuine risk/failure */
+  --status-ready: #2E2E2E;
+  --status-processing: #6B6B6B;
+  --status-failed: #C0392B;
+
+  /* Thinking-stream step states */
+  --step-pending: var(--line-2);
   --step-active: var(--status-processing);
   --step-done: var(--status-ready);
   --step-failed: var(--status-failed);
 
-  /* Shadows */
-  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.04);
-  --shadow-md: 0 2px 8px rgba(0, 0, 0, 0.06);
-  --shadow-lg: 0 4px 16px rgba(0, 0, 0, 0.08);
-  --shadow-xl: 0 8px 32px rgba(0, 0, 0, 0.10);
+  /* ── Shadows — neutral, deep ── */
+  --shadow-sm: 0 1px 2px rgba(0,0,0,0.05);
+  --shadow-md: 0 4px 14px -4px rgba(0,0,0,0.10), 0 1px 3px rgba(0,0,0,0.06);
+  --shadow-lg: 0 18px 44px -12px rgba(0,0,0,0.16), 0 6px 14px -6px rgba(0,0,0,0.08);
+  --shadow-xl: 0 32px 70px -16px rgba(0,0,0,0.20), 0 8px 20px -8px rgba(0,0,0,0.10);
 
-  /* ── Glass system ─────────────────────────────────────────────────────────── */
-  /* Translucent enough that the aurora mesh shows through as real frosted
-     glass, opaque enough to keep text legible. Saturation boosts the colour
-     that bleeds through the blur (the signature glassmorphism look). */
-  --glass-bg:        rgba(255, 255, 255, 0.55);
-  --glass-bg-strong: rgba(255, 255, 255, 0.70);
-  --glass-border:    rgba(255, 255, 255, 0.65);
+  /* ── Glass system — neutral ── */
+  --glass-bg:        rgba(255, 255, 255, 0.60);
+  --glass-bg-strong: rgba(255, 255, 255, 0.78);
+  --glass-border:    rgba(255, 255, 255, 0.70);
   --glass-border-subtle: rgba(0, 0, 0, 0.06);
-  --glass-blur:      18px;
-  --glass-blur-sm:   10px;
-  --glass-sat:       1.6;
-  /* Layered: ambient drop + crisp contact shadow + top sheen + faint inner glow */
-  --glass-shadow:    0 8px 24px -6px rgba(40,30,20,0.12), 0 2px 6px -2px rgba(40,30,20,0.08), inset 0 1px 0 rgba(255,255,255,0.7);
-  --glass-shadow-lg: 0 24px 60px -12px rgba(40,30,20,0.18), 0 6px 16px -6px rgba(40,30,20,0.10), inset 0 1px 0 rgba(255,255,255,0.75);
+  --glass-blur:      20px;
+  --glass-blur-sm:   12px;
+  --glass-sat:       1.0;
+  --glass-shadow:    0 8px 32px -8px rgba(0,0,0,0.14), 0 2px 6px -2px rgba(0,0,0,0.08), inset 0 1px 0 rgba(255,255,255,0.80);
+  --glass-shadow-lg: 0 24px 64px -16px rgba(0,0,0,0.20), 0 6px 16px -6px rgba(0,0,0,0.10), inset 0 1px 0 rgba(255,255,255,0.85);
 
   /* ── Skeuomorphic depth ───────────────────────────────────────────────────── */
   --skeu-paper:      #FEFEFE;
@@ -131,13 +133,18 @@ html {
 }
 
 body {
-  background-color: var(--bg-base);
-  color: var(--text-primary);
+  background-color: var(--canvas);
+  color: var(--ink);
   font-family: "Inter", system-ui, -apple-system, sans-serif;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
   min-height: 100dvh;
   margin: 0;
+}
+
+.font-display {
+  font-family: "Fraunces", Georgia, "Times New Roman", serif;
+  font-feature-settings: "ss01";
 }
 
 /* ── Component layer ──────────────────────────────────────────────────────── */
@@ -192,17 +199,17 @@ body {
     position: absolute;
     inset: -20%;
     background:
-      radial-gradient(40% 46% at 16% 22%, rgba(216,170,108,0.55) 0%, transparent 62%),
-      radial-gradient(38% 42% at 84% 16%, rgba(170,148,210,0.42) 0%, transparent 62%),
-      radial-gradient(48% 52% at 76% 80%, rgba(110,168,184,0.42) 0%, transparent 64%),
-      radial-gradient(44% 48% at 26% 84%, rgba(232,150,128,0.42) 0%, transparent 62%);
-    filter: blur(48px);
+      radial-gradient(44% 52% at 14% 20%, rgba(160,160,160,0.28) 0%, transparent 60%),
+      radial-gradient(36% 44% at 88% 12%, rgba(140,140,140,0.20) 0%, transparent 60%),
+      radial-gradient(44% 48% at 72% 82%, rgba(120,120,120,0.18) 0%, transparent 62%),
+      radial-gradient(40% 44% at 24% 86%, rgba(150,150,150,0.20) 0%, transparent 60%);
+    filter: blur(52px);
     will-change: transform;
     animation: aurora-drift 26s var(--ease-in-out) infinite alternate;
   }
   .aurora::after {
     inset: -25%;
-    opacity: 0.65;
+    opacity: 0.55;
     animation: aurora-drift-2 34s var(--ease-in-out) infinite alternate;
   }
 
@@ -394,9 +401,9 @@ body {
     text-transform: uppercase;
   }
   .label-strategy {
-    color: var(--warm-700);
-    border: 1px solid var(--warm-300);
-    background: var(--warm-50);
+    color: var(--ink-2);
+    border: 1px solid var(--line-2);
+    background: var(--surface-3);
     border-radius: 4px;
     padding: 1px 6px;
     font-size: 10px;
@@ -438,6 +445,141 @@ body {
     background: var(--accent);
     color: white;
     border-color: var(--accent);
+  }
+
+  /* ── Premium landing utilities ── */
+
+  /* Section container — max width + generous padding */
+  .section-container {
+    max-width: 1280px;
+    margin-left: auto;
+    margin-right: auto;
+    padding-left: 64px;
+    padding-right: 64px;
+  }
+  @media (max-width: 1024px) {
+    .section-container { padding-left: 40px; padding-right: 40px; }
+  }
+  @media (max-width: 768px) {
+    .section-container { padding-left: 24px; padding-right: 24px; }
+  }
+
+  /* Eyebrow label — small-caps track */
+  .eyebrow {
+    font-family: "Inter", sans-serif;
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.13em;
+    text-transform: uppercase;
+    color: var(--ink-3);
+  }
+
+  /* Display headline — Fraunces editorial */
+  .headline-display {
+    font-family: "Fraunces", Georgia, serif;
+    font-feature-settings: "ss01";
+    letter-spacing: -0.025em;
+    line-height: 1.02;
+    color: var(--ink);
+  }
+
+  /* Section headline — Inter tight */
+  .headline-section {
+    font-family: "Inter", sans-serif;
+    font-weight: 700;
+    letter-spacing: -0.02em;
+    line-height: 1.12;
+    color: var(--ink);
+  }
+
+  /* Metric number — large tabular */
+  .metric-number {
+    font-family: "Fraunces", Georgia, serif;
+    font-feature-settings: "tnum","ss01";
+    letter-spacing: -0.03em;
+    line-height: 1;
+    color: var(--ink);
+  }
+
+  /* Divider line — warm */
+  .divider-warm {
+    border: none;
+    border-top: 1px solid var(--line);
+  }
+
+  /* Card — elevated warm white */
+  .card-premium {
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: 20px;
+    box-shadow: var(--shadow-md);
+  }
+
+  /* Tag / badge chip */
+  .tag {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 5px 12px;
+    border-radius: 99px;
+    font-size: 12px;
+    font-weight: 600;
+    letter-spacing: 0.01em;
+    background: var(--accent-soft);
+    color: var(--accent-taupe);
+    border: 1px solid var(--line-2);
+  }
+
+  /* CTA button — primary ink, large */
+  .btn-cta {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    padding: 16px 32px;
+    background: var(--accent);
+    color: var(--on-ink);
+    border: none;
+    border-radius: 14px;
+    font-size: 16px;
+    font-weight: 600;
+    letter-spacing: -0.01em;
+    cursor: pointer;
+    box-shadow: 0 4px 16px -4px rgba(23,19,13,0.28), inset 0 1px 0 rgba(255,255,255,0.12);
+    transition: background var(--dur-fast) var(--ease-out), transform var(--dur-fast) var(--ease-out), box-shadow var(--dur-fast) var(--ease-out);
+  }
+  .btn-cta:active { transform: scale(0.97); }
+  @media (hover: hover) and (pointer: fine) {
+    .btn-cta:hover {
+      background: var(--accent-hover);
+      box-shadow: 0 8px 24px -6px rgba(23,19,13,0.32), inset 0 1px 0 rgba(255,255,255,0.12);
+    }
+  }
+
+  /* Ghost CTA — bordered */
+  .btn-ghost-lg {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    padding: 15px 28px;
+    background: transparent;
+    color: var(--ink-2);
+    border: 1.5px solid var(--line-2);
+    border-radius: 14px;
+    font-size: 16px;
+    font-weight: 500;
+    letter-spacing: -0.01em;
+    cursor: pointer;
+    transition: background var(--dur-fast) var(--ease-out), border-color var(--dur-fast) var(--ease-out), color var(--dur-fast) var(--ease-out), transform var(--dur-fast) var(--ease-out);
+  }
+  .btn-ghost-lg:active { transform: scale(0.97); }
+  @media (hover: hover) and (pointer: fine) {
+    .btn-ghost-lg:hover {
+      background: var(--accent-soft);
+      border-color: var(--accent-taupe);
+      color: var(--ink);
+    }
   }
 
   /* ── Scrollbar ── */
@@ -507,8 +649,8 @@ body {
 
 /* ── Dot grid background ──────────────────────────────────────────────────── */
 .dot-grid {
-  background-image: radial-gradient(circle, var(--border) 1px, transparent 1px);
-  background-size: 24px 24px;
+  background-image: radial-gradient(circle, var(--line-2) 1px, transparent 1px);
+  background-size: 28px 28px;
 }
 
 /* ── Reduced motion ──────────────────────────────────────────────────────── */

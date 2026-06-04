@@ -148,7 +148,13 @@ def _verify_jwt_local(token: str):
     sub = claims.get("sub")
     if not sub:
         return None
-    return SimpleNamespace(id=sub, email=claims.get("email"))
+    # Carry user_metadata from the verified claims so server-side personalization
+    # (e.g. preferred_name) reads from the AUTHENTICATED token, not a request body.
+    # Supabase includes user_metadata in the access-token claims.
+    meta = claims.get("user_metadata")
+    if not isinstance(meta, dict):
+        meta = {}
+    return SimpleNamespace(id=sub, email=claims.get("email"), user_metadata=meta)
 
 
 async def get_current_user(

@@ -129,15 +129,15 @@ export function ChatInput({
         <div
           className={`flex flex-col gap-2 rounded-[20px] px-4 pt-3 pb-2.5 transition-[border-color,box-shadow] duration-[160ms] ease-[cubic-bezier(0.23,1,0.32,1)]`}
           style={{
-            background: "linear-gradient(180deg, rgba(255,255,255,0.78), rgba(255,255,255,0.62))",
-            backdropFilter: "blur(24px) saturate(1.6)",
-            WebkitBackdropFilter: "blur(24px) saturate(1.6)",
+            background: "linear-gradient(180deg, rgba(255,255,255,0.82), rgba(250,250,250,0.68))",
+            backdropFilter: "blur(24px) saturate(1.5)",
+            WebkitBackdropFilter: "blur(24px) saturate(1.5)",
             border: value.length > 0
-              ? "1px solid rgba(10,10,10,0.3)"
-              : "1px solid var(--glass-border)",
+              ? "1px solid rgba(23,19,13,0.28)"
+              : "1px solid var(--line)",
             boxShadow: value.length > 0
-              ? "0 16px 48px -12px rgba(40,30,20,0.22), 0 0 0 3px rgba(10,10,10,0.05), inset 0 1px 0 rgba(255,255,255,0.85)"
-              : "0 14px 40px -14px rgba(40,30,20,0.20), inset 0 1px 0 rgba(255,255,255,0.8)",
+              ? "var(--shadow-lg), 0 0 0 3px rgba(23,19,13,0.05), inset 0 1px 0 rgba(255,255,255,0.85)"
+              : "var(--shadow-md), inset 0 1px 0 rgba(255,255,255,0.80)",
           }}
         >
           {/* Streaming status — integrated thin row inside the bar */}

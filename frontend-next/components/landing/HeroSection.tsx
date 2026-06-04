@@ -3,40 +3,20 @@
 import React, { useEffect, useRef } from "react";
 import Link from "next/link";
 import { motion, useReducedMotion } from "framer-motion";
-import { ArrowRight, FileText, Sparkles, Shield, Zap } from "lucide-react";
+import { ArrowRight, Sparkles, Shield, Zap, Brain, BookOpen } from "lucide-react";
 import { HeroChatPreview } from "./HeroChatPreview";
 
-/* ── Stat pill ── */
-function StatPill({
-  value,
-  label,
-  delay,
-}: {
-  value: string;
-  label: string;
-  delay: number;
-}) {
-  const rm = useReducedMotion();
-  return (
-    <motion.div
-      initial={{ opacity: 0, y: rm ? 0 : 10 }}
-      animate={{ opacity: 1, y: 0 }}
-      transition={{ delay, duration: 0.4, ease: [0.23, 1, 0.32, 1] }}
-      className="flex flex-col items-center gap-0.5"
-    >
-      <span className="text-base font-bold tracking-tight text-[var(--text-primary)] whitespace-nowrap">
-        {value}
-      </span>
-      <span className="text-[11px] text-[var(--text-muted)] whitespace-nowrap">{label}</span>
-    </motion.div>
-  );
-}
+const STATS = [
+  { value: "0.96", label: "Answer relevancy", sub: "RAGAS eval" },
+  { value: "1.00", label: "Context precision", sub: "RAGAS eval" },
+  { value: "< 2s", label: "First answer token", sub: "p50 latency" },
+  { value: "100+", label: "Docs per collection", sub: "concurrent" },
+];
 
 export function HeroSection() {
   const rm = useReducedMotion();
   const containerRef = useRef<HTMLDivElement>(null);
 
-  /* Subtle parallax on mouse-move — CSS variable, no state churn */
   useEffect(() => {
     if (rm) return;
     const el = containerRef.current;
@@ -52,167 +32,220 @@ export function HeroSection() {
     return () => el.removeEventListener("mousemove", onMove);
   }, [rm]);
 
+  const ease = [0.23, 1, 0.32, 1] as const;
+
   return (
     <section
       ref={containerRef}
-      className="relative min-h-[92vh] flex items-center justify-center pt-24 pb-16 px-6 lg:px-12 overflow-hidden"
-      style={{ "--px": "0", "--py": "0" } as React.CSSProperties}
+      className="relative flex flex-col items-center justify-center overflow-hidden"
+      style={{
+        paddingTop: "clamp(120px, 14vw, 180px)",
+        paddingBottom: "clamp(80px, 10vw, 140px)",
+        "--px": "0",
+        "--py": "0",
+      } as React.CSSProperties}
     >
-      {/* (Floating doc cards removed — the live demo window now tells the full
-          doc-collection story on its own, so extra cards just clutter.) */}
+      {/* ── Centre-aligned copy block ── */}
+      <div className="section-container w-full">
+        <div className="flex flex-col items-center text-center gap-8">
 
-      <div className="max-w-7xl w-full grid grid-cols-1 lg:grid-cols-2 gap-12 lg:gap-16 items-center relative z-10">
-
-        {/* ── Left: copy + CTAs ── */}
-        <motion.div
-          initial={{ opacity: 0, y: rm ? 0 : 24 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: 0.55, ease: [0.23, 1, 0.32, 1] }}
-          className="flex flex-col items-center lg:items-start text-center lg:text-left gap-7"
-        >
-          {/* Badge */}
-          <div className="glass inline-flex items-center gap-2 px-3.5 py-1.5 rounded-full text-[11px] font-semibold text-[var(--text-secondary)]">
-            <Sparkles size={11} className="text-[var(--accent)]" />
-            Multi-document reasoning · Brain synthesis
-          </div>
-
-          {/* Headline */}
-          <h1 className="text-5xl lg:text-6xl xl:text-[68px] font-bold tracking-tight text-[var(--text-primary)] leading-[1.08]"
-            style={{ textWrap: "balance" } as React.CSSProperties}
+          {/* Eyebrow chip */}
+          <motion.div
+            initial={{ opacity: 0, y: rm ? 0 : 12 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.5, ease }}
+            className="tag"
           >
-            Ask anything across<br />
-            <span className="relative inline-block">
-              your documents.
-              {/* Subtle underline accent */}
-              <svg
-                aria-hidden="true"
-                className="absolute -bottom-1 left-0 w-full"
-                height="4"
-                viewBox="0 0 300 4"
-                fill="none"
-                preserveAspectRatio="none"
-              >
-                <path
-                  d="M0 2 Q75 0 150 2 Q225 4 300 2"
-                  stroke="var(--accent)"
-                  strokeWidth="2"
-                  strokeLinecap="round"
-                  opacity="0.25"
-                />
-              </svg>
-            </span>
-          </h1>
+            <Brain size={12} />
+            Multi-document Brain · Cited answers in seconds
+          </motion.div>
 
-          {/* Body */}
-          <p className="text-lg text-[var(--text-secondary)] max-w-lg leading-relaxed">
-            Upload PDFs, contracts, research papers. DocQuery reads across all of them simultaneously — returning cited, verifiable answers in seconds.
-          </p>
+          {/* Headline — Fraunces display editorial */}
+          <motion.div
+            initial={{ opacity: 0, y: rm ? 0 : 20 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.6, delay: 0.05, ease }}
+            className="flex flex-col items-center gap-0"
+          >
+            <h1
+              className="font-display font-light text-center"
+              style={{
+                fontSize: "clamp(52px, 7.5vw, 100px)",
+                lineHeight: "1.02",
+                letterSpacing: "-0.03em",
+                color: "var(--ink)",
+                textWrap: "balance",
+              } as React.CSSProperties}
+            >
+              Ask anything across
+            </h1>
+            <h1
+              className="font-display font-light text-center"
+              style={{
+                fontSize: "clamp(52px, 7.5vw, 100px)",
+                lineHeight: "1.02",
+                letterSpacing: "-0.03em",
+                color: "var(--ink)",
+                textWrap: "balance",
+              } as React.CSSProperties}
+            >
+              <span style={{ color: "var(--accent-taupe)" }}>your</span> documents.
+            </h1>
+          </motion.div>
 
-          {/* Feature pills */}
-          <div className="flex flex-wrap gap-2 justify-center lg:justify-start">
-            {[
-              { icon: Shield, label: "Source citations" },
-              { icon: Zap, label: "Sub-second retrieval" },
-              { icon: FileText, label: "100+ doc collections" },
-            ].map(({ icon: Icon, label }) => (
-              <div
-                key={label}
-                className="glass-sm inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-[11px] font-medium text-[var(--text-secondary)]"
-              >
-                <Icon size={11} className="text-[var(--text-muted)]" />
-                {label}
-              </div>
-            ))}
-          </div>
+          {/* Body copy */}
+          <motion.p
+            initial={{ opacity: 0, y: rm ? 0 : 14 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.55, delay: 0.12, ease }}
+            className="max-w-[600px]"
+            style={{
+              fontSize: "clamp(17px, 2vw, 20px)",
+              lineHeight: "1.65",
+              color: "var(--ink-2)",
+              letterSpacing: "-0.01em",
+            }}
+          >
+            Upload PDFs, contracts, research papers. DocQuery reads across all of them simultaneously — returning cited, verifiable answers your team can stand behind.
+          </motion.p>
 
           {/* CTAs */}
-          <div className="flex flex-col sm:flex-row items-center gap-3 w-full sm:w-auto mt-2">
-            <Link
-              href="/login"
-              className="btn-primary flex items-center justify-center gap-2 w-full sm:w-auto px-7 py-3.5 text-sm"
-            >
+          <motion.div
+            initial={{ opacity: 0, y: rm ? 0 : 12 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.5, delay: 0.2, ease }}
+            className="flex flex-col sm:flex-row items-center gap-3"
+          >
+            <Link href="/login" className="btn-cta">
               Start for free
-              <ArrowRight size={16} />
+              <ArrowRight size={18} strokeWidth={2.2} />
             </Link>
-            <a
-              href="#how-it-works"
-              className="btn-ghost flex items-center justify-center gap-2 w-full sm:w-auto px-7 py-3.5 text-sm"
-              style={{ boxShadow: "var(--skeu-raised)" }}
-            >
+            <a href="#how-it-works" className="btn-ghost-lg">
               See how it works
             </a>
-          </div>
+          </motion.div>
 
-          <p className="text-xs text-[var(--text-muted)]">
-            No credit card required. Free tier available.
-          </p>
-
-          {/* Capability row — honest claims, not fabricated metrics */}
-          <div
-            className="flex items-center gap-8 pt-4 mt-1 border-t border-[var(--border)]"
+          {/* Trust micro-copy */}
+          <motion.p
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            transition={{ delay: 0.35, duration: 0.4 }}
+            className="text-[13px]"
+            style={{ color: "var(--ink-3)" }}
           >
-            <StatPill value="PDF" label="contracts · papers" delay={0.9} />
-            <div className="w-px h-8 bg-[var(--border)]" />
-            <StatPill value="Cited" label="every answer" delay={1.0} />
-            <div className="w-px h-8 bg-[var(--border)]" />
-            <StatPill value="Multi-doc" label="reasoning" delay={1.1} />
-          </div>
-        </motion.div>
+            No credit card required · Free tier available · SOC 2 in progress
+          </motion.p>
 
-        {/* ── Right: glass chat window ──
-            NOTE: no transform on the glass-bearing element. A transformed
-            ancestor establishes a containing block that disables
-            `backdrop-filter` against the page in Chrome/Safari, so the parallax
-            translate lives only on the decorative halo below — the frame itself
-            stays untransformed and blurs correctly. */}
-        <motion.div
-          initial={{ opacity: 0, y: rm ? 0 : 28 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: 0.65, delay: 0.15, ease: [0.23, 1, 0.32, 1] }}
-          className="flex justify-center lg:justify-end"
-        >
-          <div className="relative w-full max-w-[480px]">
-            {/* Glass halo behind window — carries the parallax so the frame can't */}
-            <div
-              aria-hidden="true"
-              className="absolute -inset-6 rounded-3xl"
-              style={{
-                background:
-                  "radial-gradient(ellipse at 60% 40%, rgba(0,0,0,0.04) 0%, transparent 70%)",
-                transform: `translate(calc(var(--px, 0) * -10px), calc(var(--py, 0) * -8px))`,
-                transition: "transform 0.12s linear",
-              }}
-            />
-            {/* Outer glass frame */}
-            <div
-              className="relative rounded-2xl overflow-hidden glass-strong"
-            >
-              {/* Traffic-light title bar — translucent strip over the frosted frame */}
+          {/* Stat grid */}
+          <motion.div
+            initial={{ opacity: 0, y: rm ? 0 : 16 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.55, delay: 0.28, ease }}
+            className="w-full max-w-3xl grid grid-cols-2 md:grid-cols-4 mt-4"
+            style={{
+              borderTop: "1px solid var(--line)",
+              borderLeft: "1px solid var(--line)",
+              borderRadius: "20px",
+              overflow: "hidden",
+              background: "rgba(255,255,255,0.55)",
+              backdropFilter: "blur(16px)",
+              WebkitBackdropFilter: "blur(16px)",
+              boxShadow: "var(--shadow-md)",
+            }}
+          >
+            {STATS.map((s, i) => (
               <div
-                className="flex items-center gap-2 px-4 py-3 border-b"
+                key={i}
+                className="flex flex-col items-center text-center py-7 px-5 gap-1.5"
                 style={{
-                  background: "linear-gradient(180deg, rgba(255,255,255,0.45), rgba(255,255,255,0.15))",
-                  borderColor: "var(--glass-border)",
+                  borderRight: "1px solid var(--line)",
+                  borderBottom: "1px solid var(--line)",
                 }}
               >
-                <div className="flex gap-1.5">
-                  <div className="w-3 h-3 rounded-full bg-[var(--status-failed)] opacity-70" style={{ boxShadow: "inset 0 1px 0 rgba(255,255,255,0.4)" }} />
-                  <div className="w-3 h-3 rounded-full bg-[var(--status-processing)] opacity-70" style={{ boxShadow: "inset 0 1px 0 rgba(255,255,255,0.4)" }} />
-                  <div className="w-3 h-3 rounded-full bg-[var(--status-ready)] opacity-70" style={{ boxShadow: "inset 0 1px 0 rgba(255,255,255,0.4)" }} />
-                </div>
-                <div
-                  className="flex-1 text-center text-[10px] font-medium text-[var(--text-muted)] flex items-center justify-center gap-1.5"
+                <span
+                  className="font-display"
+                  style={{
+                    fontSize: "clamp(26px, 3.5vw, 36px)",
+                    fontWeight: 300,
+                    letterSpacing: "-0.03em",
+                    lineHeight: 1,
+                    color: "var(--ink)",
+                    fontFeatureSettings: '"tnum","ss01"',
+                  }}
                 >
-                  <div className="w-2 h-2 rounded-full bg-[var(--status-ready)] animate-pulse" />
-                  DocQuery — live demo
-                </div>
+                  {s.value}
+                </span>
+                <span
+                  className="text-[13px] font-semibold leading-tight"
+                  style={{ color: "var(--ink-2)", letterSpacing: "-0.01em" }}
+                >
+                  {s.label}
+                </span>
+                <span
+                  className="eyebrow"
+                  style={{ fontSize: "10px" }}
+                >
+                  {s.sub}
+                </span>
               </div>
+            ))}
+          </motion.div>
+        </div>
 
-              <HeroChatPreview />
+        {/* ── Chat preview window ── */}
+        <motion.div
+          initial={{ opacity: 0, y: rm ? 0 : 32 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.72, delay: 0.38, ease }}
+          className="mt-16 w-full max-w-4xl mx-auto"
+        >
+          {/* Browser chrome */}
+          <div
+            className="rounded-[22px] overflow-hidden"
+            style={{
+              background: "rgba(255,255,255,0.72)",
+              backdropFilter: "blur(22px) saturate(1.0)",
+              WebkitBackdropFilter: "blur(22px) saturate(1.0)",
+              border: "1px solid rgba(255,255,255,0.80)",
+              boxShadow: "var(--shadow-xl), inset 0 1px 0 rgba(255,255,255,0.90)",
+            }}
+          >
+            {/* Title bar */}
+            <div
+              className="flex items-center gap-3 px-5 py-3.5"
+              style={{
+                background: "linear-gradient(180deg, rgba(255,255,255,0.90) 0%, rgba(255,255,255,0.55) 100%)",
+                borderBottom: "1px solid var(--glass-border)",
+              }}
+            >
+              <div className="flex gap-1.5">
+                {["#C4C4C4","#A8A8A8","#8C8C8C"].map((c,i) => (
+                  <div key={i} className="w-3 h-3 rounded-full opacity-90" style={{ background: c, boxShadow: `inset 0 1px 0 rgba(255,255,255,0.4)` }} />
+                ))}
+              </div>
+              <div
+                className="flex-1 mx-6 flex items-center justify-center gap-2 px-4 py-1.5 rounded-lg"
+                style={{ background: "rgba(244,244,244,0.70)", border: "1px solid var(--line)" }}
+              >
+                <Shield size={10} className="opacity-40" />
+                <span className="text-[11px] font-medium" style={{ color: "var(--ink-3)" }}>
+                  DocQuery — live demo
+                </span>
+                <div className="w-1.5 h-1.5 rounded-full ml-1" style={{ background: "var(--status-ready)", opacity: 0.85 }} />
+              </div>
+              <div className="flex items-center gap-1.5" style={{ color: "var(--ink-3)" }}>
+                {[Sparkles, BookOpen, Zap].map((Icon, i) => (
+                  <div key={i} className="w-6 h-6 flex items-center justify-center rounded-md" style={{ background: "rgba(244,244,244,0.60)" }}>
+                    <Icon size={11} />
+                  </div>
+                ))}
+              </div>
             </div>
+
+            {/* Live chat demo — sidebar + chat, both driven by the active scenario */}
+            <HeroChatPreview />
           </div>
         </motion.div>
-
       </div>
     </section>
   );

@@ -1,141 +1,179 @@
 "use client";
 
-import React, { useState } from "react";
-import { motion, AnimatePresence } from "framer-motion";
-import { FileText, Cpu, Activity, Zap, Layers, X } from "lucide-react";
+import React from "react";
+import { motion } from "framer-motion";
+import { Table, Cpu, Activity, Zap, Layers, Workflow } from "lucide-react";
+import { Reveal } from "./Reveal";
 
-const features = [
+type Feature = {
+  icon: React.ElementType;
+  title: string;
+  description: string;
+  detail: string;
+};
+
+/* Hero row: the two things that matter most — the Brain orchestration and
+   table-aware ingestion. These get a wide 2-up feature row at the top. */
+const heroFeatures: Feature[] = [
   {
-    title: "Multi-Format Documents",
-    description: "Upload PDFs, Word docs, PowerPoints, and text. DocQuery's Unstructured.io pipeline intelligently extracts text, tables, and structure.",
-    detail: "Powered by Unstructured.io with hi_res strategy. Extracts tables as HTML, images as base64, and preserves document structure through title-based semantic chunking. Supports PDF, DOCX, PPTX, XLSX, TXT, and Markdown files up to 10MB.",
-    icon: <FileText size={24} />,
-    className: "md:col-span-2",
+    icon: Workflow,
+    title: "Multi-agent Brain",
+    description:
+      "For large collections a map-reduce orchestration routes the query, reads documents in parallel, synthesises the findings, then verifies every claim against the source — at any scale.",
+    detail: "Router → Map (parallel readers) → Reduce (synthesiser) → Verifier. Live SSE step events throughout, so you watch it reason.",
   },
   {
-    title: "Hybrid Retrieval",
-    description: "Combines Pinecone vector search with BM25 keyword matching via Reciprocal Rank Fusion.",
-    detail: "Three-stage retrieval pipeline: Dense vector search via Pinecone (text-embedding-3-small), sparse BM25 keyword matching, and Reciprocal Rank Fusion to merge results. Final reranking via cross-encoder (ms-marco-MiniLM-L-6-v2) selects the most relevant chunks.",
-    icon: <Layers size={24} />,
-    className: "md:col-span-1",
-  },
-  {
-    title: "RAGAS Evaluated",
-    description: "Evaluated at 0.92 production-quality accuracy using the rigorous RAGAS framework.",
-    detail: "Faithfulness: 0.93, Answer Relevancy: 0.96, Context Precision: 1.00, Context Recall: 1.00. We exclude questions with heavy mathematical notation from Faithfulness — honest evaluation, not inflated numbers.",
-    icon: <Activity size={24} />,
-    className: "md:col-span-1",
-  },
-  {
-    title: "Celery Workers",
-    description: "Horizontal scaling built-in. Heavy document chunking runs asynchronously without blocking the API.",
-    detail: "Distributed Celery task queue with Redis broker, priority-based routing (fast/default/heavy queues), dead letter queue for failed tasks, and admin API for DLQ inspection. Auto-scaling on AWS ECS Fargate with spot instances for cost efficiency.",
-    icon: <Cpu size={24} />,
-    className: "md:col-span-1",
-  },
-  {
-    title: "Real-time SSE Streaming",
-    description: 'Watch the AI "type" its answer in real-time, just like ChatGPT. Powered by Server-Sent Events for zero-latency perception.',
-    detail: "Server-Sent Events stream tokens from GPT-4o-mini as they're generated. The frontend renders each token instantly with a streaming cursor animation. Includes circuit breaker fallback — if the LLM is unavailable, shows retrieved passages directly.",
-    icon: <Zap size={24} />,
-    className: "md:col-span-1",
+    icon: Table,
+    title: "Table-aware ingestion",
+    description:
+      "Finance and legal docs live in tables. DocQuery extracts them as structured HTML — not flattened text — so covenant schedules, cap tables, and rate grids stay queryable.",
+    detail: "Unstructured.io hi_res strategy · tables → structured HTML · images → base64 · title-based semantic chunking. PDF, DOCX, PPTX, XLSX, TXT.",
   },
 ];
 
-export function FeaturesBento() {
-  const [expandedIdx, setExpandedIdx] = useState<number | null>(null);
+/* Supporting row: the rest of the system architecture, balanced 4-up. */
+const gridFeatures: Feature[] = [
+  {
+    icon: Layers,
+    title: "Hybrid retrieval",
+    description: "Dense vectors + BM25 keyword matching, fused via Reciprocal Rank Fusion then cross-encoder reranked.",
+    detail: "Pinecone (text-embedding-3-small) + BM25 + RRF + ms-marco-MiniLM-L-6-v2.",
+  },
+  {
+    icon: Activity,
+    title: "RAGAS-evaluated",
+    description: "0.92 overall on the RAGAS framework. Context Precision & Recall both 1.00 — verified, not claimed.",
+    detail: "Faithfulness 0.93 · Answer Relevancy 0.96. Math-heavy questions excluded honestly.",
+  },
+  {
+    icon: Cpu,
+    title: "Async workers",
+    description: "Parsing never blocks the API. Priority-routed Celery queues with DLQ inspection and auto-scaling.",
+    detail: "Redis broker · fast/default/heavy queues · spot-instance Fargate.",
+  },
+  {
+    icon: Zap,
+    title: "SSE streaming",
+    description: "Tokens stream the instant they're generated. Circuit-breaker falls back to source passages if the LLM is down.",
+    detail: "Server-Sent Events · inline citation chips · graceful degradation.",
+  },
+];
 
+const ease = [0.23, 1, 0.32, 1] as const;
+
+function FeatureCard({
+  icon: Icon,
+  title,
+  description,
+  detail,
+  delay,
+  large = false,
+}: Feature & { delay: number; large?: boolean }) {
   return (
-    <section className="py-24 px-6 lg:px-12 max-w-7xl mx-auto relative z-10">
-      <div className="text-center mb-16">
-        <h2 className="text-3xl md:text-5xl font-bold text-[var(--text-primary)] mb-6 tracking-tight">
-          Production-Grade Architecture
-        </h2>
-        <p className="text-[var(--text-secondary)] max-w-2xl mx-auto text-lg">
-          DocQuery isn&apos;t a toy app. It&apos;s built with the same patterns used by multi-billion dollar enterprise AI companies.
-        </p>
-      </div>
+    <Reveal delay={delay} className="h-full">
+      <div
+        className="group h-full flex flex-col gap-5 rounded-[20px] cursor-default"
+        style={{
+          background: "var(--surface)",
+          border: "1px solid var(--line)",
+          boxShadow: "var(--shadow-md)",
+          padding: large ? "36px" : "28px",
+          transition: "box-shadow 200ms ease, transform 200ms ease",
+        }}
+        onMouseEnter={(e) => {
+          const el = e.currentTarget as HTMLElement;
+          el.style.boxShadow = "var(--shadow-lg)";
+          el.style.transform = "translateY(-2px)";
+        }}
+        onMouseLeave={(e) => {
+          const el = e.currentTarget as HTMLElement;
+          el.style.boxShadow = "var(--shadow-md)";
+          el.style.transform = "translateY(0)";
+        }}
+      >
+        <div
+          className="rounded-xl flex items-center justify-center shrink-0"
+          style={{
+            width: large ? 48 : 42,
+            height: large ? 48 : 42,
+            background: "var(--ink)",
+            color: "var(--on-ink)",
+          }}
+        >
+          <Icon size={large ? 22 : 19} strokeWidth={1.7} />
+        </div>
 
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-        {features.map((feat, i) => (
-          <motion.div
-            key={i}
-            initial={{ opacity: 0, y: 20 }}
-            whileInView={{ opacity: 1, y: 0 }}
-            viewport={{ once: true, margin: "-100px" }}
-            transition={{ duration: 0.5, delay: i * 0.1 }}
-            className={feat.className}
+        <div className="flex flex-col gap-3 flex-1">
+          <h3
+            className="font-semibold leading-snug"
+            style={{ color: "var(--ink)", letterSpacing: "-0.02em", fontSize: large ? "20px" : "16px" }}
           >
-            <div
-              onClick={() => setExpandedIdx(expandedIdx === i ? null : i)}
-              className="card-glass h-full p-8 flex flex-col items-start gap-4 hover:-translate-y-1 transition-[transform,box-shadow] duration-[200ms] ease-[cubic-bezier(0.23,1,0.32,1)] group cursor-pointer hover:shadow-[var(--glass-shadow-lg)]"
-            >
-              <div className="p-3 rounded-xl transition-colors text-[var(--text-secondary)]" style={{ background: "linear-gradient(165deg,#FFFFFF,#F1EEE9)", border: "1px solid rgba(0,0,0,0.06)", boxShadow: "var(--skeu-raised)" }}>
-                {feat.icon}
-              </div>
-              <h3 className="text-xl font-semibold text-[var(--text-primary)] mt-2">
-                {feat.title}
-              </h3>
-              <p className="text-[var(--text-secondary)] leading-relaxed">
-                {feat.description}
-              </p>
-              <span className="text-xs text-[var(--text-muted)] mt-auto group-hover:text-[var(--text-secondary)] transition-colors">
-                Click to learn more →
-              </span>
-            </div>
-          </motion.div>
-        ))}
-      </div>
-
-      {/* Detail Modal Overlay */}
-      <AnimatePresence>
-        {expandedIdx !== null && (
-          <motion.div
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-            className="fixed inset-0 bg-black/30 backdrop-blur-sm z-50 flex items-center justify-center p-6"
-            onClick={() => setExpandedIdx(null)}
+            {title}
+          </h3>
+          <p
+            className="leading-relaxed"
+            style={{ color: "var(--ink-2)", fontSize: large ? "15px" : "13.5px" }}
           >
-            <motion.div
-              initial={{ opacity: 0, scale: 0.95, y: 10 }}
-              animate={{ opacity: 1, scale: 1, y: 0 }}
-              exit={{ opacity: 0, scale: 0.95, y: 10 }}
-              transition={{ duration: 0.2 }}
-              onClick={(e) => e.stopPropagation()}
-              className="card max-w-lg w-full p-8 relative shadow-xl"
-            >
-              <button
-                onClick={() => setExpandedIdx(null)}
-                className="absolute top-4 right-4 p-1.5 rounded-lg hover:bg-[var(--bg-hover)] text-[var(--text-muted)] hover:text-[var(--text-primary)] transition-colors"
-              >
-                <X size={16} />
-              </button>
+            {description}
+          </p>
+          <p
+            className="text-[12.5px] leading-relaxed mt-auto pt-4"
+            style={{ color: "var(--ink-3)", borderTop: "1px solid var(--line)" }}
+          >
+            {detail}
+          </p>
+        </div>
+      </div>
+    </Reveal>
+  );
+}
 
-              <div className="p-3 bg-[var(--bg-hover)] rounded-xl border border-[var(--border)] text-[var(--text-secondary)] w-fit mb-4">
-                {features[expandedIdx].icon}
-              </div>
+export function FeaturesBento() {
+  return (
+    <section
+      id="product"
+      className="relative z-10 scroll-mt-24"
+      style={{ paddingTop: "clamp(80px, 10vw, 140px)", paddingBottom: "clamp(80px, 10vw, 140px)" }}
+    >
+      <div className="section-container">
+        {/* Header */}
+        <Reveal className="text-center mb-16">
+          <p className="eyebrow mb-4">Architecture</p>
+          <h2
+            className="font-display font-light mb-5"
+            style={{
+              fontSize: "clamp(36px, 5vw, 58px)",
+              lineHeight: "1.05",
+              letterSpacing: "-0.03em",
+              color: "var(--ink)",
+            }}
+          >
+            A Brain on top of
+            <br />
+            production-grade retrieval.
+          </h2>
+          <p
+            className="max-w-xl mx-auto text-[17px] leading-relaxed"
+            style={{ color: "var(--ink-2)", letterSpacing: "-0.01em" }}
+          >
+            Map-reduce orchestration, table-aware ingestion, and verified citations — the same patterns enterprise AI teams build in-house, out of the box.
+          </p>
+        </Reveal>
 
-              <h3 className="text-2xl font-bold text-[var(--text-primary)] mb-3">
-                {features[expandedIdx].title}
-              </h3>
+        {/* Hero row — Brain + table handling, the two focal points */}
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-5 mb-5">
+          {heroFeatures.map((f, i) => (
+            <FeatureCard key={i} {...f} delay={i * 0.06} large />
+          ))}
+        </div>
 
-              <p className="text-[var(--text-secondary)] leading-relaxed mb-4">
-                {features[expandedIdx].description}
-              </p>
-
-              <div className="border-t border-dashed border-[var(--border-dotted)] pt-4">
-                <p className="text-xs font-medium text-[var(--text-muted)] uppercase tracking-wider mb-2">
-                  Technical Details
-                </p>
-                <p className="text-sm text-[var(--text-secondary)] leading-relaxed">
-                  {features[expandedIdx].detail}
-                </p>
-              </div>
-            </motion.div>
-          </motion.div>
-        )}
-      </AnimatePresence>
+        {/* Supporting row — balanced 4-up, no dead whitespace */}
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-5">
+          {gridFeatures.map((f, i) => (
+            <FeatureCard key={i} {...f} delay={0.12 + i * 0.06} />
+          ))}
+        </div>
+      </div>
     </section>
   );
 }

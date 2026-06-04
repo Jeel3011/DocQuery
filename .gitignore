@@ -77,3 +77,6 @@ pyproject.toml
 .agents
 .claude/skills
 skills-lock.json
+SECURITY_AUDIT.md
+verified-good-requirements.lock.txt
+.next

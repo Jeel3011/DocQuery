@@ -462,3 +462,36 @@ export async function getHealth(): Promise<{
     handleAxiosError(err);
   }
 }
+
+// ─── Profile / preferences ─────────────────────────────────────────────────────
+
+export interface MeResponse {
+  user_id: string;
+  email: string;
+  preferred_name: string | null;
+}
+
+export async function getMe(token: string): Promise<MeResponse> {
+  try {
+    const res = await makeClient(token).get<MeResponse>("/auth/me");
+    return res.data;
+  } catch (err) {
+    handleAxiosError(err);
+  }
+}
+
+// Update the name the assistant addresses the user by. The server sanitises and
+// scopes the write to the authenticated user; pass null to clear it.
+export async function updatePreferredName(
+  token: string,
+  preferredName: string | null
+): Promise<MeResponse> {
+  try {
+    const res = await makeClient(token).patch<MeResponse>("/auth/me/preferences", {
+      preferred_name: preferredName,
+    });
+    return res.data;
+  } catch (err) {
+    handleAxiosError(err);
+  }
+}

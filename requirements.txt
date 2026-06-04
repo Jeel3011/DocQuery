@@ -1,7 +1,7 @@
 --extra-index-url https://download.pytorch.org/whl/cpu
 langchain==1.2.3
 langchain-community==0.4.1
-langchain-text-splitters==1.1.0
+langchain-text-splitters==1.1.2  # SEC: CVE fixed vs 1.1.0
 langchain-openai==1.1.7
 langchain-pinecone
 langchain-experimental==0.4.1
@@ -11,26 +11,42 @@ unstructured[all-docs]==0.18.27
 unstructured-client==0.42.6
 
 pdf2image==1.17.0
-pypdf==6.6.0
+pypdf==6.10.2         # SEC: 16 CVEs fixed (malicious-PDF DoS/parsing) vs 6.6.0
 python-pptx==1.0.2
 openpyxl==3.1.5
 
 streamlit==1.55.0
-python-dotenv==1.2.1
+python-dotenv==1.2.2  # SEC: CVE-2026-28684
 ragas==0.4.3
 datasets>=3.0.0
 
 fastapi==0.128.0
 uvicorn[standard]==0.40.0
-python-multipart==0.0.21
+python-multipart==0.0.27  # SEC: upload-parsing CVEs fixed vs 0.0.21
 pydantic[email]==2.11.7
 
 supabase==2.28.3
-PyJWT==2.12.1          # B1: local verification of Supabase access tokens
-cryptography==46.0.6  # B1: ES256/RS256 (asymmetric) JWT signature verification
+PyJWT==2.13.0          # B1 + SEC: 4 CVEs fixed vs 2.12.1 (auth token verification)
+cryptography==46.0.7  # B1 + SEC: PYSEC-2026-36
 httpx==0.28.1
 tiktoken==0.12.0
 aiofiles==25.1.0
+
+# ── Security pins for transitive deps (CVE remediation; see SECURITY_AUDIT) ──
+aiohttp==3.14.0       # SEC: 12 CVEs fixed vs 3.13.3
+urllib3==2.7.0        # SEC: PYSEC-2026-141/142
+idna==3.15            # SEC: CVE-2026-45409
+lxml==6.1.0           # SEC: parser CVE
+Pillow==12.2.0        # SEC: 5 CVEs (image decode) vs 12.1.1
+pygments==2.20.0      # SEC: CVE-2026-4539
+GitPython==3.1.50     # SEC: 4 CVEs fixed vs 3.1.46
+onnx==1.21.0          # SEC: 6 CVEs vs 1.20.1 (model-load parsing) — reranker verified working
+langsmith==0.7.31     # SEC: 2 CVEs fixed vs 0.7.22
+# NOTE: starlette held at 0.50.0 — its CVE fix (1.0.1) requires a FastAPI major
+# bump (breaking). Accepted risk; revisit when upgrading FastAPI.
+# NOTE: langchain-core / langchain-openai held — their CVE fixes require a
+# coordinated full langchain-stack major bump that risks the RAG pipeline.
+# chromadb / diskcache / ragas: no upstream fix published yet.
 
 # Rate limiting & async file I/O
 slowapi

@@ -9,51 +9,64 @@ const config: Config = {
   theme: {
     extend: {
       colors: {
-        // Monochrome system
-        "bg-base": "#FAFAFA",
+        // ── Pure monochrome canvas system (black / white / grey) ──
+        canvas: "#F4F4F4",
+        surface: "#FFFFFF",
+        "surface-2": "#FAFAFA",
+        "surface-3": "#EFEFEF",
+
+        ink: "#0E0E0E",
+        "ink-2": "#525252",
+        "ink-3": "#8A8A8A",
+        "on-ink": "#FAFAFA",
+
+        line: "#E4E4E4",
+        "line-2": "#D4D4D4",
+
+        "accent-taupe": "#525252",
+        "accent-soft": "#EDEDED",
+
+        // Legacy aliases
+        "bg-base": "#F4F4F4",
         "bg-surface": "#FFFFFF",
-        "bg-hover": "#F5F5F5",
-        "bg-active": "#F0F0F0",
-        "bg-sidebar": "#FAFAFA",
-
-        "text-primary": "#0A0A0A",
+        "bg-hover": "#EFEFEF",
+        "bg-active": "#E6E6E6",
+        "bg-sidebar": "#F4F4F4",
+        "text-primary": "#0E0E0E",
         "text-secondary": "#525252",
-        "text-muted": "#A3A3A3",
-
-        "border-default": "#E5E5E5",
+        "text-muted": "#8A8A8A",
+        "border-default": "#E4E4E4",
         "border-strong": "#D4D4D4",
         "border-dotted": "#C4C4C4",
-
-        accent: "#0A0A0A",
+        accent: "#0E0E0E",
         "accent-hover": "#262626",
-        "accent-subtle": "#F5F5F5",
+        "accent-subtle": "#EDEDED",
 
-        "status-ready": "#16A34A",
-        "status-processing": "#CA8A04",
-        "status-failed": "#DC2626",
+        // Neutral grey ramp
+        "warm-50": "#F7F7F7",
+        "warm-100": "#EDEDED",
+        "warm-300": "#D4D4D4",
+        "warm-500": "#969696",
+        "warm-700": "#5C5C5C",
+        "warm-900": "#2E2E2E",
 
-        // Warm-neutral ramp — used sparingly for assets/illustrations/landing accents
-        "warm-50": "#FAF8F5",
-        "warm-100": "#F0EBE3",
-        "warm-300": "#D9CFC0",
-        "warm-500": "#A1907A",
-        "warm-700": "#6B5B4D",
-        "warm-900": "#3A312A",
+        "status-ready": "#2E2E2E",
+        "status-processing": "#6B6B6B",
+        "status-failed": "#C0392B",
 
-        // Confidence semantic tokens (primary rendering is mono bar; color is secondary)
-        "conf-high": "#16A34A",
-        "conf-med": "#CA8A04",
-        "conf-low": "#DC2626",
+        "conf-high": "#2E2E2E",
+        "conf-med": "#6B6B6B",
+        "conf-low": "#C0392B",
 
-        // Agent/step state tokens
-        "step-pending": "#A3A3A3",
-        "step-active": "#0A0A0A",
-        "step-done": "#16A34A",
-        "step-failed": "#DC2626",
+        "step-pending": "#8A8A8A",
+        "step-active": "#0E0E0E",
+        "step-done": "#2E2E2E",
+        "step-failed": "#C0392B",
       },
       fontFamily: {
         sans: ["Inter", "system-ui", "sans-serif"],
         mono: ["JetBrains Mono", "Fira Code", "monospace"],
+        display: ["Fraunces", "Georgia", "Times New Roman", "serif"],
       },
       borderRadius: {
         xl: "12px",

@@ -326,7 +326,8 @@ async def query(
         )
 
     result = await asyncio.to_thread(
-        generator.generate, query=body.question, retrieved_docs=docs
+        generator.generate, query=body.question, retrieved_docs=docs,
+        user_name=sb.preferred_name,
     )
 
     sources = [
@@ -531,6 +532,7 @@ async def query_stream(
             query=search_query,
             retrieved_docs=docs,
             chat_history=chat_history,
+            user_name=sb.preferred_name,
         )
 
     return StreamingResponse(
@@ -635,6 +637,7 @@ async def query_agent(
         query=body.question,
         retrieved_docs=docs,
         user_id=sb.user_id,
+        user_name=sb.preferred_name,
     )
 
     sources = [
@@ -753,6 +756,7 @@ async def agent_query_stream(
             query=body.question,
             retrieved_docs=docs,
             chat_history=chat_history,
+            user_name=sb.preferred_name,
         ):
             yield chunk
 

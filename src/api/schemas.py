@@ -30,6 +30,13 @@ class AuthResponse(BaseModel):
 class UserResponse(BaseModel):
     user_id: str
     email: str
+    preferred_name: Optional[str] = None
+
+
+class UpdatePreferencesRequest(BaseModel):
+    # The display name the assistant should use. Length-capped; None clears it.
+    # Server-side sanitisation strips control chars / prompt-injection markers.
+    preferred_name: Optional[str] = Field(default=None, max_length=40)
 
 
 # ─────────────────────────────────────────

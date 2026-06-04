@@ -41,6 +41,16 @@ export const useAuthStore = create<AuthStore>()(
       logout: async () => {
         await supabase.auth.signOut();
         set({ user: null, token: null });
+        // Clear cached profile (in-memory + persisted) so the next user on this
+        // browser never sees the previous user's preferred name. The server
+        // (/auth/me) is the source of truth and re-hydrates on next login.
+        try {
+          const { useProfileStore } = await import("./profile.store");
+          useProfileStore.getState().reset();
+        } catch { /* ignore */ }
+        if (typeof window !== "undefined") {
+          try { window.localStorage.removeItem("docquery-profile"); } catch { /* ignore */ }
+        }
       },
 
       initialize: async () => {

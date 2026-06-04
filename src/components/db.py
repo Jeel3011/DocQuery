@@ -105,6 +105,45 @@ class SupabaseManager:
     def user_email(self) -> Optional[str]:
         return self._user.email if self._user else None
 
+    @property
+    def preferred_name(self) -> Optional[str]:
+        """The name the assistant should address the user by, read from the
+        VERIFIED user object's user_metadata. Never sourced from a request body —
+        only from the token Supabase already authenticated. Returns None if unset."""
+        if not self._user:
+            return None
+        meta = getattr(self._user, "user_metadata", None) or {}
+        if isinstance(meta, dict):
+            name = meta.get("preferred_name")
+            if isinstance(name, str) and name.strip():
+                return name.strip()
+        return None
+
+    def update_preferred_name(self, name: Optional[str]) -> None:
+        """Persist the user's preferred display name into Supabase user_metadata.
+
+        Security:
+        - Scoped strictly to self.user_id (the verified token subject) via the
+          service-role admin API — a user can never write another user's metadata.
+        - Requires a service-role client; refuses otherwise.
+        - Caller is responsible for sanitising/validating `name` before this.
+        """
+        if not self.user_id:
+            raise PermissionError("No authenticated user to update.")
+        # admin.update_user_by_id is only available on the service-role client.
+        self.client.auth.admin.update_user_by_id(
+            self.user_id,
+            {"user_metadata": {"preferred_name": name}},
+        )
+        # Reflect locally so the same request sees the new value.
+        if self._user is not None:
+            meta = dict(getattr(self._user, "user_metadata", None) or {})
+            meta["preferred_name"] = name
+            try:
+                self._user.user_metadata = meta
+            except Exception:
+                pass
+
     # ─────────────────────────────────────────
     # STORAGE — File Upload / Download / Delete
     # ─────────────────────────────────────────
