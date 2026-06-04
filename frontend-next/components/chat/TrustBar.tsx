@@ -83,7 +83,7 @@ export function TrustBar({ meta }: TrustBarProps) {
             className="flex items-center gap-1 text-[10px] text-[var(--text-muted)] hover:text-[var(--text-primary)] transition-colors"
           >
             <BookOpen size={10} />
-            <span>
+            <span className="tabular-nums">
               {meta.consulted} / {meta.total} docs consulted
             </span>
           </button>
@@ -93,11 +93,11 @@ export function TrustBar({ meta }: TrustBarProps) {
               <div className="space-y-1 text-[10px] text-[var(--text-secondary)]">
                 <div className="flex justify-between">
                   <span className="text-[var(--status-ready)]">Read</span>
-                  <span>{meta.consulted} docs</span>
+                  <span className="tabular-nums">{meta.consulted} docs</span>
                 </div>
                 <div className="flex justify-between">
                   <span className="text-[var(--text-muted)]">Skipped (no match)</span>
-                  <span>{(meta.total ?? 0) - (meta.consulted ?? 0)} docs</span>
+                  <span className="tabular-nums">{(meta.total ?? 0) - (meta.consulted ?? 0)} docs</span>
                 </div>
               </div>
               <p className="text-[9px] text-[var(--text-muted)] mt-2 leading-snug">

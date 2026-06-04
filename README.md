@@ -21,7 +21,7 @@ A multi-document RAG system engineered to scale — ask hard questions across co
 | **Token Budget Guard** | Hard `tiktoken`-based budget stops context overflow; oversized collections are routed to the Brain, never silently truncated |
 | **Scale Cap (Invariant R1)** | Per-file Pinecone fan-out is capped at `ROUTING_MAX_FANOUT` (default 8); larger collections go through the Stage-1 router first |
 | **Coverage Ledger** | Every Brain run records which documents were routed, read, and produced evidence — auditable, stored in the `runs` table |
-| **Trust UI** | Streaming step display (Routing → Reading → Verifying → Synthesising), confidence bar, coverage badge, clickable citation chips with quoted source spans |
+| **Trust UI** | Streaming step display (Routing → Reading → Verifying → Synthesising), confidence bar, coverage badge, clickable citation chips with quoted source spans, and a slide-in Artifact panel (copy/download code, tables & markdown) |
 | **Async Processing** | Celery + Redis workers offload PDF parsing & embedding — API never blocks |
 | **Fault Tolerance** | Circuit Breakers + exponential backoff with jitter on all LLM calls |
 | **Hybrid Retrieval** | Dense (Pinecone) + BM25 sparse search fused via Reciprocal Rank Fusion |
@@ -42,6 +42,7 @@ A multi-document RAG system engineered to scale — ask hard questions across co
 - **Context-Aware Answers** — GPT-4o-mini with query rewriting, multi-query expansion, and inline `[Source: filename, Page: X]` citations
 - **Multi-User Workspaces** — isolated sessions via Supabase RLS and Pinecone namespaces
 - **Real-time Streaming** — SSE-powered token streaming with Brain thinking-step display
+- **Artifact Panel** — answers containing code, tables, or long markdown are auto-detected and opened in a slide-in panel with copy/download
 - **Semantic Cache** — two-tier Redis cache resolves repeated queries in <50ms
 - **Eval Gate** — multi-doc routing-recall eval harness with CI regression detection
 
@@ -219,10 +220,11 @@ DocQuery/
 │   │       └── chat/            # Chat pages (index + [id])
 │   ├── components/
 │   │   ├── landing/             # Landing page sections (Hero, Features, Metrics)
-│   │   ├── chat/                # ChatInput (Brain toggle), ChatMessage (citation chips), SourceCard
+│   │   ├── chat/                # ChatInput (Brain toggle), ChatMessage (citation chips), SourceCard, ArtifactPanel (slide-in code/table/markdown viewer)
 │   │   └── ui/                  # Shared primitives (GlassCard, ThinkingStream, TrustBar)
 │   ├── lib/                     # API client, Supabase client, SSE streaming (streamBrainQuery)
 │   ├── stores/                  # Zustand auth store
+│   ├── DESIGN.md                # Monochrome "precision instrument" design-system spec (motion, bans, copy rules)
 │   └── middleware.ts            # Route protection
 ├── src/
 │   ├── api/                     # FastAPI backend
@@ -277,6 +279,7 @@ DocQuery/
 ├── copilot/                     # AWS Copilot IaC manifests (Fargate, activated on demand)
 ├── scripts/                     # Dev launcher + deployment lifecycle scripts
 ├── requirements.txt             # Python dependencies
+├── PRODUCT.md                   # Product brief: target users (India legal/compliance), purpose, brand
 └── ARCHITECTURE.md              # Detailed system design document
 ```
 
@@ -329,6 +332,7 @@ The system picks the right path by query shape, without regressing the fast path
 - **ThinkingStream** — live step display during Brain queries (Routing → Reading docs → Verifying claims → Synthesising)
 - **TrustBar** — confidence score + coverage badge (e.g. "2/2 documents consulted")
 - **Citation chips** — `[1]` superscript links; clicking opens source panel showing the verbatim span in its surrounding sentence
+- **Artifact panel** — answers containing code, tables, or long markdown are auto-detected and opened in a right-side slide-in panel (`react-markdown` + GFM) with one-click copy and download
 
 ---
 

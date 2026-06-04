@@ -48,7 +48,7 @@ export function ThinkingStream({ steps, totalMs, collapsed = false }: ThinkingSt
         className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-[var(--bg-hover)] border border-[var(--border)] text-[10px] text-[var(--text-muted)]"
       >
         <Check size={9} className="text-[var(--step-done)]" strokeWidth={2.5} />
-        <span>
+        <span className="tabular-nums">
           Reasoned over {doneCount} step{doneCount !== 1 ? "s" : ""}
           {secs ? ` · ${secs}s` : ""}
         </span>
@@ -95,7 +95,7 @@ export function ThinkingStream({ steps, totalMs, collapsed = false }: ThinkingSt
               <p className="text-[10px] text-[var(--text-muted)] mt-0.5">{step.detail}</p>
             )}
             {step.status === "done" && step.durationMs != null && (
-              <span className="inline-flex items-center gap-1 text-[9px] text-[var(--text-muted)] mt-0.5">
+              <span className="inline-flex items-center gap-1 text-[9px] text-[var(--text-muted)] mt-0.5 tabular-nums">
                 <Clock size={8} />
                 {(step.durationMs / 1000).toFixed(1)}s
               </span>
