@@ -146,3 +146,11 @@ class Config:
     # Per-document retrieval timeout (seconds) for the Brain — fail fast on a network/
     # DNS blip instead of hanging on Pinecone retries for minutes.
     BRAIN_RETRIEVE_TIMEOUT_S: float = float(os.getenv("BRAIN_RETRIEVE_TIMEOUT_S", "20"))
+
+    # ── Stage-2 Table intelligence (Phase 4.3) ──
+    # Bounded parallelism for the per-table LLM summary generated at ingest (the
+    # discriminative caption that lets the Analyst pick the right grid among near-twins).
+    # These are network-bound OpenAI calls, not RAM/CPU work, so this does NOT re-arm the
+    # local PDF-pool OOM. Measured: sequential ≈79s/doc, max_workers=5 ≈14s/doc. Laptop
+    # default 5; raise via env on the cloud.
+    TABLE_SUMMARY_WORKERS: int = int(os.getenv("TABLE_SUMMARY_WORKERS", "5"))

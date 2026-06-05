@@ -91,9 +91,14 @@ def _reduce_messages(question: str, n_docs: int, extracts: str,
     # synthesis is unchanged.
     arithmetic_rule = (
         "6. Some figures have been COMPUTED for you (see the COMPUTED FIGURES block "
-        "at the top). State those numbers EXACTLY as given and reference their shown "
-        "formula; do NOT recompute or alter them. Do not perform any other arithmetic "
-        "yourself — if a needed number wasn't computed for you, say so rather than calculate.\n"
+        "at the top). These come from a deterministic calculator and are USUALLY right, "
+        "but it can pick the wrong source row. Before stating a computed figure, CHECK it "
+        "against the extracted claims: if the claims clearly support it, state it exactly "
+        "as given and reference its shown formula (do NOT recompute or alter it). If a "
+        "computed figure CONTRADICTS the claims or has no support in them, DISREGARD that "
+        "computed figure and answer from the claims instead (or say the figure is "
+        "uncertain) — never repeat a number that conflicts with the source documents. "
+        "Do not perform new arithmetic yourself; if a needed number isn't available, say so.\n"
         if has_computed else
         "6. When the claims contain the numbers needed for a calculation the question asks for, "
         "perform the arithmetic and show it.\n"

@@ -57,15 +57,27 @@ def has_numeric_intent(question: str) -> bool:
 def _relevance(question: str, grid_tj: Dict[str, Any], caption: str) -> float:
     """Cheap lexical relevance of a table to the question (no embeddings/LLM).
 
-    Scores overlap between question terms and the table's captions + row labels +
+    Scores overlap between question terms and the table's caption + row labels +
     periods. Used to keep only the most relevant tables so the Analyst's LLM picks
     among a SMALL, on-topic set (not all ~45 tables in a doc), which keeps the
     spec-write prompt small/fast and the table-selection accurate.
+
+    NOTE (2026-06-05): ranking is built PURELY from the grid's own structure
+    (row labels + sections + periods) and deliberately ignores the ``caption`` arg.
+    Reason: an eval (5/7 → 3/7) showed that folding the LLM table_summary into the
+    hay REGRESSED selection — generic summary words ("dollar amounts", "consolidated",
+    years) dilute the specific section/label signal. The deterministic caption that
+    baseline passed here was itself derived from sections+labels+periods, so dropping
+    the caption arg and scoring on structure is BASELINE-EQUIVALENT regardless of what
+    is now stored as the chunk's content/summary. (Lexical overlap still cannot rank a
+    COMPUTED-metric table — "operating margin" is not a word in a table that only has
+    operating income + net sales — which is why the real fix is semantic retrieval.)
+    The ``caption`` parameter is kept for signature compatibility but unused.
     """
     q = set(re.findall(r"[a-z0-9]+", question.lower()))
     if not q:
         return 0.0
-    hay_terms = set(re.findall(r"[a-z0-9]+", (caption or "").lower()))
+    hay_terms: set = set()
     for r in grid_tj.get("rows", []):
         hay_terms |= set(re.findall(r"[a-z0-9]+", (r.get("label", "") + " " + r.get("section", "")).lower()))
     hay_terms |= {str(p).lower() for p in grid_tj.get("periods", [])}

@@ -749,6 +749,38 @@ class DocumentProcessor:
             _logger.warning("[ingest] table extraction failed for %s: %s", pdf_path, exc)
             return []
 
+        # ── Discriminative LLM summary per table (the §4b selection fix) ──
+        # The deterministic caption can't tell a $ table from its growth-% twin (same
+        # sections/labels/periods), which is what makes the Analyst mis-pick. A one-line
+        # LLM summary naming the statement type + value-kind separates them, so retrieval
+        # ranks the right grid #1. Generated in a bounded pool (network-bound, not RAM —
+        # local-OOM-safe). Each call is independently try/excepted and returns "" on
+        # failure → that table falls back to its caption; a failure never drops a table,
+        # blocks the others, or breaks ingest.
+        if tables:
+            try:
+                from src.components.table_extraction import summarize_table
+                from langchain_openai import ChatOpenAI
+                from concurrent.futures import ThreadPoolExecutor
+
+                summary_llm = ChatOpenAI(
+                    model=self.config.LLM_MODEL_NAME,
+                    temperature=0.0,
+                    api_key=self.config.OPENAI_API_KEY,
+                    request_timeout=30,
+                )
+                workers = max(1, min(getattr(self.config, "TABLE_SUMMARY_WORKERS", 5), len(tables)))
+                with ThreadPoolExecutor(max_workers=workers) as ex:
+                    summaries = list(ex.map(lambda t: summarize_table(t, summary_llm), tables))
+                for t, summ in zip(tables, summaries):
+                    t.summary = summ or ""
+                _logger.info(
+                    "[ingest] generated %d/%d table summaries (workers=%d)",
+                    sum(1 for s in summaries if s), len(tables), workers,
+                )
+            except Exception as exc:  # whole summary step is best-effort
+                _logger.warning("[ingest] table summarization skipped: %s", exc)
+
         import json
         out: List[Document] = []
         for t in tables:
@@ -758,11 +790,13 @@ class DocumentProcessor:
             # (measured max ~2.8KB). The Analyst json.loads() it back.
             grid_json = json.dumps(t.to_metadata(), ensure_ascii=False)
 
-            # page_content drives content_hash → chunk_id in the embedding path,
-            # which dedupes by page_content. Captions can collide (≈1/60 on dense
-            # docs), so we PREFIX the unique table_id to guarantee a distinct id
-            # per table while keeping the human-readable caption for embedding.
-            embed_text = f"[{t.table_id}] {t.caption}"
+            # "Embed the summary, carry the grid": prefer the discriminative LLM summary
+            # for embedding (it separates near-identical twin tables); fall back to the
+            # deterministic caption when the summary is empty (LLM failure) — never worse
+            # than today. page_content drives content_hash → chunk_id, and we PREFIX the
+            # unique table_id so distinct tables never collide on a shared description.
+            embed_caption = t.summary or t.caption
+            embed_text = f"[{t.table_id}] {embed_caption}"
 
             metadata = {
                 "chunk_type": "table",
@@ -774,15 +808,16 @@ class DocumentProcessor:
                 "table_id": t.table_id,
                 "table_format": "structured_json",
                 "table_confidence": t.to_metadata()["confidence"],
-                "description": t.caption,
-                "table_json": grid_json,     # normalized grid for the Analyst
+                "description": embed_caption,
+                "table_summary": t.summary,  # the LLM summary, for the lexical ranker (table_intent)
+                "table_json": grid_json,     # normalized grid (carries summary too) for the Analyst
                 "table_markdown": t.markdown,
             }
             metadata["chunk_id"] = _stable_id(
                 file_path=pdf_path,
                 chunk_type="table",
                 index=t.page_number,
-                text=t.table_id + t.caption,
+                text=t.table_id + embed_caption,
             )
             out.append(Document(page_content=embed_text, metadata=metadata))
 

@@ -43,6 +43,23 @@ function parseCitations(text: string, sources: SourceInfo[]): {
   return { cleaned, citedIds };
 }
 
+// Recursively flatten a React node (string / number / element / array) to plain
+// text. Markdown table cells aren't always plain strings — a cell with bold, a
+// link, a citation, or nested formatting arrives as a React element (or array of
+// them), and String(<element>) yields the literal "[object Object]" (the bug seen
+// in computed-margin cells). This walks children to recover the real text.
+function nodeToText(node: unknown): string {
+  if (node == null || node === false) return "";
+  if (typeof node === "string") return node;
+  if (typeof node === "number") return String(node);
+  if (Array.isArray(node)) return node.map(nodeToText).join("");
+  if (typeof node === "object" && "props" in (node as Record<string, unknown>)) {
+    const props = (node as { props?: { children?: unknown } }).props;
+    return nodeToText(props?.children);
+  }
+  return "";
+}
+
 const mdComponents: Components = {
   table: ({ children }: { children?: React.ReactNode }) => {
     let headers: string[] = [];
@@ -53,7 +70,7 @@ const mdComponents: Components = {
       if (type === "thead") {
         const trChildren = (props.children as React.ReactElement)?.props?.children as React.ReactElement[];
         headers = (Array.isArray(trChildren) ? trChildren : [trChildren]).map(
-          (th: React.ReactElement) => String((th?.props as { children?: unknown })?.children ?? "")
+          (th: React.ReactElement) => nodeToText((th?.props as { children?: unknown })?.children)
         );
       }
       if (type === "tbody") {
@@ -62,7 +79,7 @@ const mdComponents: Components = {
           const tds = (tr?.props as { children?: React.ReactElement[] })?.children as React.ReactElement[];
           rows.push(
             (Array.isArray(tds) ? tds : [tds]).map(
-              (td: React.ReactElement) => String((td?.props as { children?: unknown })?.children ?? "")
+              (td: React.ReactElement) => nodeToText((td?.props as { children?: unknown })?.children)
             )
           );
         });

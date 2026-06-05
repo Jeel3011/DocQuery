@@ -1084,6 +1084,12 @@ async def brain_query_stream(
                                           # MAP+VERIFY handles precision; the 0.30
                                           # similarity threshold drops valid chunks
                                           # for cross-doc synthesis queries.
+                        False,            # use_reranker=False — the local CPU
+                                          # CrossEncoder (~18s/batch under concurrent
+                                          # load) caused per-doc retrieval TIMEOUTS
+                                          # that silently dropped whole docs (e.g. AWS
+                                          # net-sales never reaching MAP). MAP+VERIFY
+                                          # already handle precision.
                     ),
                     timeout=retrieve_timeout,
                 )

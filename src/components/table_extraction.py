@@ -66,10 +66,14 @@ class ExtractedTable:
     rows: List[Dict[str, Any]]          # [{"label": "AWS Net sales", "2021": "62,202", ...}]
     units: Optional[str]                # "$ in millions" if detectable, else None
     periods: List[str]                  # detected period/year columns, e.g. ["2021","2022","2023"]
-    caption: str                        # one-line summary — THIS is what gets embedded
+    caption: str                        # deterministic one-line summary (fallback for embedding)
     confidence: float                   # gate score [0,1]
     raw_grid: List[List[str]] = field(default_factory=list)  # cleaned 2-D cells, for the Analyst
     markdown: str = ""                  # GFM rendering for context/output
+    summary: str = ""                   # LLM discriminative summary — THIS is what gets embedded
+                                        # when present (separates near-identical twin tables); falls
+                                        # back to `caption` when empty. Added by the ingest caller,
+                                        # NOT by extract_tables_from_pdf (extraction stays LLM-free).
 
     def to_metadata(self) -> Dict[str, Any]:
         """The normalized JSON carried in chunk metadata for the Analyst (never embedded)."""
@@ -81,6 +85,7 @@ class ExtractedTable:
             "periods": self.periods,
             "confidence": round(self.confidence, 3),
             "grid": self.raw_grid,
+            "summary": self.summary,   # flows to Grid.summary for the LLM catalog (§4b selection)
         }
 
 
@@ -530,3 +535,69 @@ def extract_tables_from_pdf(
 
     logger.info("[table_extraction] %s → %d gated tables", file_path, len(results))
     return results
+
+
+# ── LLM discriminative summary (caller-invoked at ingest; extraction stays pure) ──
+#
+# The deterministic _caption is built from sections + labels + periods, which are
+# IDENTICAL across a table and its near-twins (a $ segment table, its growth-%
+# twin, a mix-% table all say "AWS / Net sales / 2021-2023"). That non-discriminative
+# caption is what makes the Analyst pick the wrong grid (~60-70% selection). A one-line
+# LLM summary that names the STATEMENT TYPE + VALUE KIND ("net sales in DOLLARS" vs
+# "year-over-year GROWTH PERCENTAGES") is what separates the twins — so retrieval ranks
+# the right statement #1 and the Analyst selects correctly. The number itself is never
+# touched here (no arithmetic, no value echo) — this only describes the table.
+
+_SUMMARY_SYSTEM = (
+    "You write a ONE-SENTENCE discriminative description of a financial table so it can be "
+    "told apart from near-identical sibling tables in the same filing. The description MUST "
+    "name explicitly, in this priority order:\n"
+    "1. the SEGMENTATION — if the table is broken out by business segments, geographies, or "
+    "entities (these are given to you as 'Sections/groups', e.g. AWS, North America, "
+    "International), SAY SO and name them. A segment table and the consolidated table look "
+    "identical by their line items — the segmentation is what separates them. If there are no "
+    "sections, say it is consolidated/total.\n"
+    "2. the VALUE KIND — say which one: dollar amounts, GROWTH PERCENTAGES (year-over-year %), "
+    "margins/ratios (%), share counts, or balances. A dollar table and its growth-% twin are "
+    "identical except for this — never omit it.\n"
+    "3. the STATEMENT TYPE (e.g. segment results, income statement, balance sheet, cash flow, "
+    "geographic revenue, share/RSU schedule, lease maturity).\n"
+    "4. the period span (the years/quarters), if any.\n"
+    "Trust the 'Sections/groups' line for segmentation even if the row labels resemble a "
+    "consolidated statement. Be factual and specific. Do NOT compute, restate, or invent any "
+    "number. Output ONLY the one-sentence description — no prose, no labels, no markdown."
+)
+
+
+def summarize_table(table: "ExtractedTable", llm) -> str:
+    """Ask the LLM for a one-sentence discriminative summary of a table. Never raises.
+
+    Caller-invoked at ingest (keeps ``extract_tables_from_pdf`` LLM-free and testable).
+    Uses a plain ``invoke([System, Human])`` — NO ChatPromptTemplate (its ``{}`` brace
+    handling mangles the table markdown; see Build Log Entry 4). Returns ``""`` on any
+    failure so the caller falls back to the deterministic ``caption`` — a summary failure
+    can never drop a table or break ingest.
+    """
+    from langchain_core.messages import SystemMessage, HumanMessage
+
+    try:
+        sections, seen = [], set()
+        for r in table.rows:
+            s = (r.get("section") or "").strip()
+            if s and s.lower() not in seen:
+                seen.add(s.lower())
+                sections.append(s)
+        user = (
+            f"Periods: {table.periods}\n"
+            f"Units: {table.units}\n"
+            f"Sections/groups: {', '.join(sections[:12]) or '(none)'}\n"
+            f"Table (markdown):\n{(table.markdown or '')[:2000]}"
+        )
+        resp = llm.invoke([SystemMessage(content=_SUMMARY_SYSTEM), HumanMessage(content=user)])
+        text = (resp.content or "").strip()
+        # one sentence only; strip any stray fencing/quoting the model may add
+        text = text.strip("`").strip().strip('"').strip()
+        return text[:500]
+    except Exception as exc:  # network/timeout/parse — degrade to deterministic caption
+        logger.debug("[table_extraction] summary failed for %s: %s", getattr(table, "table_id", "?"), exc)
+        return ""

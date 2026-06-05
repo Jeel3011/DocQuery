@@ -18,6 +18,15 @@ logger = get_logger(__name__)
 EMBED_BATCH = 256
 UPSERT_BATCH = 64
 
+# Per-batch upsert wait ceiling (seconds). Pinecone serverless can stall a write
+# under burst/throttle, and async_req's res.get() blocks FOREVER with no timeout —
+# which silently wedges the whole ingest worker (observed: a doc hung 5+ min on a
+# stalled batch with no error). We bound the wait and retry once; if it still fails
+# the batch raises loudly so the task fails fast and can be retried, instead of
+# hanging the worker. Env-overridable for the cloud.
+UPSERT_TIMEOUT_S = float(os.getenv("PINECONE_UPSERT_TIMEOUT_S", "60"))
+UPSERT_RETRIES = int(os.getenv("PINECONE_UPSERT_RETRIES", "2"))
+
 class EmbeddingManager:
     def __init__(self, config: Config):
         self.config = config
@@ -145,25 +154,54 @@ class EmbeddingManager:
             embeddings = [vec for batch in results for vec in batch]
         t_embed = time.perf_counter() - t0
 
-        # ── Upsert: async batches, drain ALL futures before returning ──
+        # ── Upsert: async batches, drain ALL futures with a BOUNDED wait ──
+        # Each async future is waited on with a timeout so a stalled Pinecone batch
+        # (serverless throttle, dropped connection) can NEVER hang the worker forever
+        # (the prior res.get() had no timeout — a single stuck batch wedged ingest for
+        # minutes with no error). A batch that times out or errors is retried
+        # synchronously; if it still fails we raise loudly so the task fails fast.
         t1 = time.perf_counter()
         index = vector_store.index
         namespace = self.config.PINECONE_NAMESPACE
         vectors = list(zip(ids, embeddings, metadatas))
-        async_results = []
-        for i in range(0, len(vectors), UPSERT_BATCH):
-            async_results.append(
-                index.upsert(vectors=vectors[i:i + UPSERT_BATCH], namespace=namespace, async_req=True)
-            )
-        errors = []
-        for res in async_results:
+        batches = [vectors[i:i + UPSERT_BATCH] for i in range(0, len(vectors), UPSERT_BATCH)]
+
+        # fire them all asynchronously, then drain each with a timeout
+        async_results = [
+            index.upsert(vectors=b, namespace=namespace, async_req=True) for b in batches
+        ]
+        timed_out = 0
+        for bi, res in enumerate(async_results):
             try:
-                res.get()
+                res.get(timeout=UPSERT_TIMEOUT_S)
+                continue
             except Exception as e:
-                errors.append(e)
-        if errors:
-            raise RuntimeError(f"Pinecone upsert failed ({len(errors)} batches): {errors[0]}")
+                self.logger.warning(
+                    "Pinecone upsert batch %d/%d stalled/failed (%s) — retrying synchronously",
+                    bi + 1, len(batches), type(e).__name__,
+                )
+                timed_out += 1
+            # synchronous retry path (blocking, no async_req) with bounded attempts
+            last_exc = None
+            for attempt in range(UPSERT_RETRIES):
+                try:
+                    index.upsert(vectors=batches[bi], namespace=namespace)
+                    last_exc = None
+                    break
+                except Exception as e:
+                    last_exc = e
+                    self.logger.warning(
+                        "Pinecone upsert batch %d retry %d/%d failed: %s",
+                        bi + 1, attempt + 1, UPSERT_RETRIES, e,
+                    )
+            if last_exc is not None:
+                raise RuntimeError(
+                    f"Pinecone upsert failed on batch {bi + 1}/{len(batches)} after "
+                    f"{UPSERT_RETRIES} retries: {last_exc}"
+                )
         t_upsert = time.perf_counter() - t1
+        if timed_out:
+            self.logger.info("Recovered %d stalled upsert batch(es) via sync retry", timed_out)
 
         self.logger.info(
             "A3 embed=%.2fs upsert=%.2fs (chunks=%d, embed_batches=%d)",

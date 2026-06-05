@@ -28,14 +28,53 @@ QUESTIONS = "eval/eval_questions_tablemath.json"
 
 _grids_cache = {}
 
+# When True, load the ACTUAL ingested grids (incl. the LLM table_summary) from the
+# DB — the real production path. When False, re-extract from PDF with the deterministic
+# caption only (the pre-summary baseline). Set by the --db / --baseline CLI flag so we
+# can measure before/after the summary fix on the same questions.
+USE_DB = "--baseline" not in sys.argv
+
+
+def _db_grids_for_doc(doc):
+    """Load the doc's ingested table grids from Supabase (carries the LLM summary).
+
+    Mirrors production: the grids the Analyst actually sees come from the stored
+    table chunks, whose table_json now includes the discriminative `summary`. Falls
+    back to PDF extraction (no summary) if the doc isn't found in the DB.
+    """
+    from src.components.db import get_supabase_client
+    import json as _json
+    db = get_supabase_client(use_service_role=True)
+    docrow = db.table("documents").select("id").eq("filename", doc).limit(1).execute().data
+    if not docrow:
+        return None
+    did = docrow[0]["id"]
+    rows = (
+        db.table("document_chunks").select("content,metadata")
+        .eq("document_id", did).eq("metadata->>chunk_type", "table").execute().data
+    )
+    out = []
+    for r in rows or []:
+        md = r.get("metadata") or {}
+        raw = md.get("table_json")
+        if not raw:
+            continue
+        tj = _json.loads(raw) if isinstance(raw, str) else raw
+        cap = md.get("table_summary") or md.get("description") or r.get("content", "")
+        out.append((Grid(tj, doc=doc, page=md.get("page_number")), tj, cap))
+    return out or None
+
 
 def all_grids_for_doc(doc):
     if doc not in _grids_cache:
-        tabs = extract_tables_from_pdf(f"{CORPUS}/{doc}")
-        _grids_cache[doc] = [
-            (Grid(t.to_metadata(), doc=doc, page=t.page_number), t.to_metadata(), t.caption)
-            for t in tabs
-        ]
+        grids = _db_grids_for_doc(doc) if USE_DB else None
+        if grids is None:
+            tabs = extract_tables_from_pdf(f"{CORPUS}/{doc}")
+            grids = [
+                (Grid(t.to_metadata(), doc=doc, page=t.page_number), t.to_metadata(), t.caption)
+                for t in tabs
+            ]
+        _grids_cache[doc] = grids
     return _grids_cache[doc]
 
 

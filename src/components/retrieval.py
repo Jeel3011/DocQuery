@@ -247,6 +247,7 @@ class RetrievalManager:
         filename_filters: list[str] = None,
         top_k: int = None,
         apply_threshold: bool = True,
+        use_reranker: bool = True,
     ) -> list[Document]:
         """Retrieve relevant docs with optional hybrid BM25+RRF fusion and/or reranking.
 
@@ -257,14 +258,27 @@ class RetrievalManager:
         The Brain endpoint passes False because its MAP+VERIFY pipeline handles
         precision — the similarity threshold is unnecessary and actively harmful for
         per-doc retrieval where the query is cross-document in nature.
+
+        use_reranker: when False, skip the local CrossEncoder rerank and return the
+        top_k by vector similarity directly. The Brain passes False: its MAP+VERIFY
+        already does the precision work, and the local CPU CrossEncoder (~18s/batch on
+        a laptop under concurrent load) was causing per-doc retrieval TIMEOUTS that
+        silently dropped whole documents from the answer (e.g. AWS net-sales never
+        reaching MAP). Skipping it removes the timeout source; on the cloud (GPU/hosted
+        rerank) it can be re-enabled via env.
         """
         # Collection scope spanning multiple files → guarantee each file is represented.
         if filename_filters and len(filename_filters) > 1:
             return self.retrieve_across_files(query, filename_filters, page_filter=page_filter)
 
+        rerank_on = use_reranker and self._reranker is not None
         # Widen the candidate pool when a large top_k is requested so rerank has enough
-        # to choose from (≈4× the final count, floored at the configured default).
-        fetch_override = max(top_k * 4, self.config.RERANK_INITIAL_K) if top_k else None
+        # to choose from (≈4× the final count). When the reranker is skipped we don't
+        # need the extra pool — fetch exactly top_k so we don't over-pull from Pinecone.
+        if top_k:
+            fetch_override = max(top_k * 4, self.config.RERANK_INITIAL_K) if rerank_on else top_k
+        else:
+            fetch_override = None
         docs = self._raw_retrieve(
             query, filename_filter, page_filter,
             filename_filters=filename_filters, fetch_k_override=fetch_override,
@@ -275,8 +289,8 @@ class RetrievalManager:
         if self._hybrid and docs:
             docs = self._hybrid.retrieve(query, docs)
 
-        # Step 2: Cross-encoder reranker
-        if self._reranker and docs:
+        # Step 2: Cross-encoder reranker (skippable — see use_reranker above)
+        if rerank_on and docs:
             docs = self._reranker.rerank(query, docs, top_k=top_k or self.config.RERANK_TOP_K)
         elif top_k:
             docs = docs[:top_k]

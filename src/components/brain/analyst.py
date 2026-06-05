@@ -138,6 +138,10 @@ class Grid:
         self.periods: List[str] = table_json.get("periods", [])
         self.units: Optional[str] = table_json.get("units")
         self.table_id: Optional[str] = table_json.get("table_id")
+        # LLM discriminative summary (statement type + value kind) — the strongest
+        # signal for the spec-writer to pick the right grid among near-twins. Empty
+        # for tables ingested before the summary fix; grid_catalog falls back then.
+        self.summary: str = table_json.get("summary", "") or ""
         self.doc = doc
         self.page = page
 
@@ -430,6 +434,11 @@ def grid_catalog(grids: List[Grid], max_rows: int = 40) -> str:
         lines.append(
             f"TABLE {i} (doc={g.doc} page={g.page} periods={cols}{unit} values={kind}{sec_line}):"
         )
+        # NOTE (2026-06-05): the LLM table summary was tried here as a "↳ {summary}"
+        # line but an eval showed it REGRESSED selection (5/7 → 3/7) — the extra prose
+        # confused the spec-writer rather than disambiguating. Reverted to baseline.
+        # The summary's value is in SEMANTIC retrieval (ranking which grids reach this
+        # catalog), not in the catalog text itself. Left unused pending that approach.
         for r in g.rows[:max_rows]:
             sec = f"[{r.get('section')}] " if r.get("section") else ""
             vals = " | ".join(f"{c}={r.get(c, '')}" for c in cols)
