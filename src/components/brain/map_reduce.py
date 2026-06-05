@@ -28,6 +28,7 @@ Non-regression guarantee:
 from __future__ import annotations
 
 import json
+import os
 import time
 import logging
 import traceback
@@ -47,7 +48,7 @@ logger = get_logger(__name__)
 
 
 # ── Default concurrency / quorum ──────────────────────────────────────────────
-MAP_CONCURRENCY = 8      # parallel MAP workers (OpenAI rate-limit safe)
+MAP_CONCURRENCY = int(os.environ.get("BRAIN_MAP_CONCURRENCY", "4"))  # parallel MAP workers
 MAP_QUORUM = 0.90        # proceed to REDUCE if ≥ 90% of docs MAP'd successfully
 
 # Confidence below this → Brain abstains rather than guessing
@@ -81,7 +82,22 @@ def _map_messages(question: str, doc_id: str, filename: str, context: str) -> tu
     return system, user
 
 
-def _reduce_messages(question: str, n_docs: int, extracts: str) -> tuple[str, str]:
+def _reduce_messages(question: str, n_docs: int, extracts: str,
+                     has_computed: bool = False) -> tuple[str, str]:
+    # Phase 4.3: when the Analyst has pre-computed figures, the LLM must NOT do
+    # arithmetic itself — it states the computed numbers verbatim. This is the
+    # §4b rule "LLMs must never do the arithmetic". Without computed figures we
+    # keep the prior behavior (the LLM may compute from claims) so non-table
+    # synthesis is unchanged.
+    arithmetic_rule = (
+        "6. Some figures have been COMPUTED for you (see the COMPUTED FIGURES block "
+        "at the top). State those numbers EXACTLY as given and reference their shown "
+        "formula; do NOT recompute or alter them. Do not perform any other arithmetic "
+        "yourself — if a needed number wasn't computed for you, say so rather than calculate.\n"
+        if has_computed else
+        "6. When the claims contain the numbers needed for a calculation the question asks for, "
+        "perform the arithmetic and show it.\n"
+    )
     system = (
         "You are a senior analyst synthesizing research findings into a comprehensive answer.\n\n"
         "You will receive extracted claims grouped by source document. Your task:\n"
@@ -91,8 +107,7 @@ def _reduce_messages(question: str, n_docs: int, extracts: str) -> tuple[str, st
         "3. Highlight contradictions or conflicts between documents explicitly.\n"
         "4. If evidence is thin or uncertain on a point, say so — do NOT guess.\n"
         "5. Do NOT add information not present in the claims below.\n"
-        "6. When the claims contain the numbers needed for a calculation the question asks for, "
-        "perform the arithmetic and show it.\n"
+        + arithmetic_rule +
         "7. When the answer compares items across two or more dimensions (e.g. metrics across "
         "documents, clauses across agreements, values vs thresholds), present that comparison as a "
         "GitHub-flavored Markdown table: a header row, a `|---|` separator row, then one row per "
@@ -351,8 +366,14 @@ class Brain:
         self,
         query: str,
         extracts: list[PerDocExtract],
+        analyst_block: Optional[str] = None,
     ) -> tuple[str, float, list[Claim]]:
         """Synthesize per-doc extracts into one answer.
+
+        When ``analyst_block`` is provided (Phase 4.3), it carries figures the
+        deterministic Analyst already COMPUTED from source table cells (with shown
+        formulas). It is prepended to the extracts as authoritative, so REDUCE
+        states those numbers verbatim instead of doing the arithmetic itself.
 
         Returns: (prose_answer, confidence, synthesized_claims)
         """
@@ -376,10 +397,19 @@ class Brain:
             )
         extracts_text = "\n\n".join(extracts_text_parts)
 
+        # Phase 4.3: prepend deterministically-computed figures as authoritative.
+        if analyst_block:
+            extracts_text = (
+                "[COMPUTED FIGURES — these were calculated deterministically from "
+                "source table cells; state them VERBATIM, do NOT recompute]\n"
+                f"{analyst_block}\n\n" + extracts_text
+            )
+
         try:
             from langchain_core.messages import SystemMessage, HumanMessage
 
-            system, user = _reduce_messages(query, len(relevant), extracts_text)
+            system, user = _reduce_messages(query, len(relevant), extracts_text,
+                                            has_computed=bool(analyst_block))
             raw_answer = self._get_reduce_llm().invoke(
                 [SystemMessage(content=system), HumanMessage(content=user)]
             ).content
@@ -623,6 +653,8 @@ class Brain:
         user_id: Optional[str] = None,
         collection_id: Optional[str] = None,
         conversation_id: Optional[str] = None,
+        analyst_block: Optional[str] = None,
+        analyst_count: int = 0,
     ) -> Iterator[str]:
         """Generator yielding SSE events as the Brain works.
 
@@ -630,8 +662,15 @@ class Brain:
         verified claims only).  MAP progress is streamed live, per document, as each
         finishes.
 
+        ``analyst_block`` (and its ``analyst_count``) are produced by the caller's
+        deterministic Analyst (§4b) BEFORE this generator runs — the compute already
+        happened. We surface it as a live ``brain_analyst`` step so the user can see
+        the Analyst woke up and computed N figures, instead of it folding silently
+        into the answer. The number is the count of OK (traced) computed figures.
+
         Events emitted (JSON, same wire format as the existing chat stream):
           {"type": "brain_start",    "docs_routed": N}
+          {"type": "brain_analyst",  "figures": N}        ← only when the Analyst computed ≥1 figure
           {"type": "brain_map",      "filename": ..., "claims": N, "relevant": bool, "progress": "k/N"}
           {"type": "brain_verify",   "claims_total": N, "claims_verified": N}
           {"type": "brain_reduce",   "docs_relevant": N}
@@ -645,6 +684,11 @@ class Brain:
         t0 = time.perf_counter()
         docs_routed = len(doc_chunks)
         yield f"data: {_json.dumps({'type': 'brain_start', 'docs_routed': docs_routed})}\n\n"
+
+        # The deterministic Analyst (§4b) ran in the caller before us; announce it as
+        # its own step so its work is visible (not just a backend log line).
+        if analyst_count > 0:
+            yield f"data: {_json.dumps({'type': 'brain_analyst', 'figures': analyst_count})}\n\n"
 
         # ── MAP with live per-doc progress (driven directly so we can yield) ────
         extracts: list[PerDocExtract] = []
@@ -686,7 +730,8 @@ class Brain:
             groundedness, n_unsupported = 1.0, 0
         else:
             answer, confidence, _ = self._reduce(
-                query, self._group_claims_by_doc(verified_claims, doc_chunks)
+                query, self._group_claims_by_doc(verified_claims, doc_chunks),
+                analyst_block=analyst_block,
             )
             # §4a.3 step 2: verify the synthesised prose against verified claims.
             groundedness, unsupported = verify_reduce_output(

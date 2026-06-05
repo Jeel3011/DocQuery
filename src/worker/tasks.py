@@ -125,7 +125,7 @@ def process_document_task(
 
         # -- Stage 2: Build LangChain documents (chunking) --
         logger.info("[%s] Stage 2/4: Building chunks", doc_id)
-        chunks = processor.build_langchain_documents(elements=elements)
+        chunks = processor.build_langchain_documents(elements=elements, pdf_path=tmp_path)
         sb.update_document_status(doc_id, "processing", progress_pct=50)
 
         # -- Stamp workspace/doc/collection IDs on every chunk so Stage-1 routing

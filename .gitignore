@@ -67,6 +67,11 @@ attention-is-all-you-need.pdf
 /test_pipeline.py
 pyproject.toml
 
+# Local test corpus (real 10-Ks for Phase 4.3 table-extraction validation) — never commit
+eval/test_corpus/
+test docs/
+*.pdf
+
 # ===============================
 # Eval — track the harness + question sets, ignore transient run output
 # ===============================
@@ -77,3 +82,4 @@ skills-lock.json
 SECURITY_AUDIT.md
 verified-good-requirements.lock.txt
 .next
+walkthrough.md

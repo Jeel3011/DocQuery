@@ -117,7 +117,7 @@ def verify_claims(
     claims: list[Claim],
     llm,
     abstain_threshold: float = ABSTAIN_THRESHOLD,
-    max_workers: int = 8,
+    max_workers: int = 3,
 ) -> tuple[list[Claim], list[Claim]]:
     """Verify a list of claims (in parallel, bounded concurrency).
 
@@ -254,7 +254,7 @@ def verify_reduce_output(
             logger.warning("REDUCE verifier failed for a sentence (non-fatal): %s", exc)
             return sentence, False
 
-    workers = max(1, min(8, len(sentences)))
+    workers = max(1, min(3, len(sentences)))
     with ThreadPoolExecutor(max_workers=workers) as pool:
         results = list(pool.map(_check, sentences))
 

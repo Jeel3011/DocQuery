@@ -32,6 +32,10 @@ kill_all() {
   pkill -9 -f "uvicorn src.api.server"            2>/dev/null
   pkill -9 -f "celery -A src.worker.celery_app"   2>/dev/null
   pkill -9 -f "next dev"                          2>/dev/null
+  # sweep orphaned multiprocessing children (semaphore/spawn leaks from torch +
+  # PDF parsing — these accumulate and OOM the laptop if left around)
+  pkill -9 -f "multiprocessing.spawn"             2>/dev/null
+  pkill -9 -f "multiprocessing.resource_tracker"  2>/dev/null
   # free the fixed ports no matter what holds them
   lsof -ti:$API_PORT 2>/dev/null | xargs kill -9 2>/dev/null
   lsof -ti:$WEB_PORT 2>/dev/null | xargs kill -9 2>/dev/null
@@ -54,9 +58,21 @@ ok "Redis up"
 kill_all
 
 # ── 1. API (port 8000) ───────────────────────────────────────────────
+# --reload is OPT-IN. On this RAM-constrained laptop the API loads heavy ML
+# (torch reranker + embeddings) into the process; with --reload, editing any
+# src/ file makes uvicorn tear down + RE-IMPORT that whole ML stack on every
+# save, leaking macOS semaphores + orphaned multiprocessing children that pile
+# up until the machine OOMs/hangs (happened 2026-06-05 while live-editing).
+# So reload is off unless you explicitly want it: API_RELOAD=1 ./scripts/dev.sh
+# (only safe if you are NOT editing src/ while the server runs).
+RELOAD_FLAG=""
+if [ "${API_RELOAD:-0}" = "1" ]; then
+  RELOAD_FLAG="--reload --reload-dir src"
+  say "API --reload ENABLED (avoid editing src/ while running, or it will thrash)"
+fi
 say "Starting API on :$API_PORT..."
 nohup python -m uvicorn src.api.server:app --host 0.0.0.0 --port $API_PORT \
-  --reload --reload-dir src > "$LOG_DIR/api.log" 2>&1 &
+  $RELOAD_FLAG > "$LOG_DIR/api.log" 2>&1 &
 for i in $(seq 1 20); do
   curl -sf "http://localhost:$API_PORT/api/v1/health" >/dev/null 2>&1 && break
   sleep 1

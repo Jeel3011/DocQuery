@@ -1065,29 +1065,35 @@ async def brain_query_stream(
     # Read many chunks per doc (BRAIN_CHUNKS_PER_DOC) so MAP can find needles in big
     # filings, and bound each retrieval with a timeout so a network/DNS blip fails fast
     # instead of hanging on Pinecone retries for minutes.
-    per_doc_k = getattr(user_config, "BRAIN_CHUNKS_PER_DOC", 15)
+    per_doc_k = getattr(user_config, "BRAIN_CHUNKS_PER_DOC", 8)
     retrieve_timeout = getattr(user_config, "BRAIN_RETRIEVE_TIMEOUT_S", 20)
+    _retrieve_sem = asyncio.Semaphore(3)  # bound parallel Pinecone to 3
 
     async def _retrieve_one(fname: str):
-        try:
-            chunks = await asyncio.wait_for(
-                asyncio.to_thread(
-                    retrieval_mgr.retrieve,
-                    body.question,
-                    fname,            # filename_filter = single file
-                    body.page_filter,
-                    None,             # filename_filters
-                    per_doc_k,        # top_k
-                ),
-                timeout=retrieve_timeout,
-            )
-            return fname, chunks
-        except asyncio.TimeoutError:
-            logger.warning("[brain] retrieval timed out for %s after %ss", fname, retrieve_timeout)
-            return fname, []
-        except Exception as exc:
-            logger.warning("[brain] retrieval failed for %s: %s", fname, exc)
-            return fname, []
+        async with _retrieve_sem:
+            try:
+                chunks = await asyncio.wait_for(
+                    asyncio.to_thread(
+                        retrieval_mgr.retrieve,
+                        body.question,
+                        fname,            # filename_filter = single file
+                        body.page_filter,
+                        None,             # filename_filters
+                        per_doc_k,        # top_k
+                        False,            # apply_threshold=False — the Brain's
+                                          # MAP+VERIFY handles precision; the 0.30
+                                          # similarity threshold drops valid chunks
+                                          # for cross-doc synthesis queries.
+                    ),
+                    timeout=retrieve_timeout,
+                )
+                return fname, chunks
+            except asyncio.TimeoutError:
+                logger.warning("[brain] retrieval timed out for %s after %ss", fname, retrieve_timeout)
+                return fname, []
+            except Exception as exc:
+                logger.warning("[brain] retrieval failed for %s: %s", fname, exc)
+                return fname, []
 
     retrieved = await asyncio.gather(*[_retrieve_one(fn) for fn in filename_filters])
 
@@ -1106,6 +1112,56 @@ async def brain_query_stream(
 
     brain = Brain(user_config)
 
+    # ── Phase 4.3: deterministic Analyst (§4b) — intent-gated so non-numeric
+    # questions pay ZERO added latency and the path is identical to before.
+    # Wrapped in asyncio.to_thread so the blocking Supabase queries + LLM call
+    # don't freeze the event loop (the Analyst is additive / non-critical).
+    analyst_block = None
+    analyst_count = 0
+
+    def _run_analyst_sync():
+        """Run the Analyst pipeline off the event loop (sync, in a worker thread)."""
+        _block = None
+        _count = 0
+        try:
+            from src.components.brain.table_intent import has_numeric_intent, load_grids_for_docs
+            if not has_numeric_intent(body.question):
+                return _block, _count
+            from src.components.brain.analyst import analyze, render_markdown
+            filename_by_doc = {did: fn for did, (fn, _ch) in doc_chunks.items()}
+            grids = load_grids_for_docs(
+                sb, list(doc_chunks.keys()),
+                question=body.question, filename_by_doc=filename_by_doc,
+            )
+            if not grids:
+                return _block, _count
+            from langchain_openai import ChatOpenAI
+            spec_llm = ChatOpenAI(
+                model=user_config.LLM_MODEL_NAME, temperature=0.0,
+                api_key=user_config.OPENAI_API_KEY, request_timeout=30,
+            )
+            results = analyze(body.question, grids, spec_llm)
+            from src.components.brain.analyst import corroborate_with_prose
+            prose = " ".join(
+                getattr(ch, "page_content", "")
+                for _fn, chunks in doc_chunks.values() for ch in chunks
+            )
+            results = corroborate_with_prose(results, prose)
+            ok = [r for r in results if r.ok]
+            if ok:
+                _block = render_markdown(ok)
+                _count = len(ok)
+                logger.info("[brain] Analyst computed %d figures for the question", _count)
+        except Exception as exc:
+            logger.warning("[brain] Analyst step skipped: %s", exc)
+        return _block, _count
+
+    try:
+        analyst_block, analyst_count = await asyncio.to_thread(_run_analyst_sync)
+    except Exception as exc:
+        logger.warning("[brain] Analyst thread failed: %s", exc)
+        analyst_block = None
+
     # Pass the sync generator straight to StreamingResponse — Starlette iterates it
     # in a worker thread, so the blocking MAP/REDUCE/VERIFY work stays off the event
     # loop (matches /query/stream and the other streaming endpoints in this file).
@@ -1120,6 +1176,8 @@ async def brain_query_stream(
                 user_id=sb.user_id,
                 collection_id=collection_id,
                 conversation_id=conversation_id,
+                analyst_block=analyst_block,
+                analyst_count=analyst_count,
             ),
             sb,
             conversation_id,

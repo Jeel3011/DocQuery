@@ -52,6 +52,43 @@ class RetrievalManager:
             )
             logger.info("HybridRetriever enabled (fetch_k=%d)", self.config.HYBRID_FETCH_K)
 
+    # ── Phase 4.3: semantic table-chunk retrieval (generic table selection) ──
+    def retrieve_table_chunks(
+        self,
+        query: str,
+        *,
+        collection_id: str = None,
+        filename_filters: list[str] = None,
+        doc_id: str = None,
+        k: int = 8,
+    ) -> list:
+        """Semantically retrieve TABLE chunks for a numeric/tabular query.
+
+        Filters Pinecone to ``chunk_type="table"`` and ranks by the embedded table
+        CAPTION (set at ingest), so "AWS operating margin" matches the segment
+        statement, not a same-keyword mix table — generically, by MEANING, for any
+        document the Brain encounters. Returns the table chunks (metadata carries
+        ``table_json`` for the Analyst). Never raises; returns [] on failure so the
+        Analyst path degrades to prose-only synthesis.
+        """
+        f: dict = {"chunk_type": "table"}
+        if doc_id:
+            f["doc_id"] = doc_id
+        elif collection_id:
+            f["collection_id"] = collection_id
+        elif filename_filters:
+            f["filename"] = {"$in": filename_filters}
+        try:
+            docs_and_scores = self.vectorstore.similarity_search_with_score(
+                query, k=k, filter=f,
+            )
+            docs = [doc for doc, _score in docs_and_scores]
+            self.logger.info("Retrieved %d table chunks for numeric query", len(docs))
+            return docs
+        except Exception as e:
+            self.logger.warning("table-chunk retrieval failed: %s", e)
+            return []
+
     # ── Private helper: raw vector search (shared by retrieve & retrieve_multi_query) ──
 
     @staticmethod
@@ -209,11 +246,17 @@ class RetrievalManager:
         page_filter: str = None,
         filename_filters: list[str] = None,
         top_k: int = None,
+        apply_threshold: bool = True,
     ) -> list[Document]:
         """Retrieve relevant docs with optional hybrid BM25+RRF fusion and/or reranking.
 
         top_k overrides the final number of chunks returned (and widens the candidate
         pool accordingly). Used by the Brain to read many chunks per document.
+
+        apply_threshold: when False, keeps top-k chunks regardless of absolute score.
+        The Brain endpoint passes False because its MAP+VERIFY pipeline handles
+        precision — the similarity threshold is unnecessary and actively harmful for
+        per-doc retrieval where the query is cross-document in nature.
         """
         # Collection scope spanning multiple files → guarantee each file is represented.
         if filename_filters and len(filename_filters) > 1:
@@ -225,6 +268,7 @@ class RetrievalManager:
         docs = self._raw_retrieve(
             query, filename_filter, page_filter,
             filename_filters=filename_filters, fetch_k_override=fetch_override,
+            apply_threshold=apply_threshold,
         )
 
         # Step 1: Hybrid BM25 + RRF fusion

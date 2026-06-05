@@ -1,0 +1,62 @@
+{
+  "_comment": "Phase 4.3 (§4b) table-math eval — questions with KNOWN, hand-verified numeric answers against the 'very big' corpus (10-Ks in `test docs/`). The Analyst must compute these deterministically; the bar is 100% correct (a wrong number in finance is a fireable error). Each item: a natural-language question, the doc it resolves in, the expected display value, and a tolerance. Run via eval/test_tablemath_eval.py.",
+  "tolerance_pct": 0.5,
+  "questions": [
+    {
+      "id": "aws_netsales_2023",
+      "question": "What were AWS net sales in 2023?",
+      "doc": "amzn-20231231.pdf",
+      "expected_value": 90757,
+      "expected_unit": "$M",
+      "note": "Amazon FY23 segment results, AWS Net sales 2023"
+    },
+    {
+      "id": "aws_opincome_2023",
+      "question": "What was AWS operating income in 2023?",
+      "doc": "amzn-20231231.pdf",
+      "expected_value": 24631,
+      "expected_unit": "$M",
+      "note": "Amazon FY23 segment results, AWS Operating income 2023"
+    },
+    {
+      "id": "aws_netsales_growth_22_23",
+      "question": "What was the growth rate of AWS net sales from 2022 to 2023?",
+      "doc": "amzn-20231231.pdf",
+      "expected_value": 13.3,
+      "expected_unit": "%",
+      "note": "(90757-80096)/80096*100"
+    },
+    {
+      "id": "aws_margin_2023",
+      "question": "What was AWS operating margin in 2023?",
+      "doc": "amzn-20231231.pdf",
+      "expected_value": 27.1,
+      "expected_unit": "%",
+      "note": "24631/90757*100"
+    },
+    {
+      "id": "goog_revenue_2023",
+      "question": "What were Google's total revenues in 2023?",
+      "doc": "goog-20231231.pdf",
+      "expected_value": 307394,
+      "expected_unit": "$M",
+      "note": "Google FY23 consolidated income statement, Revenues 2023"
+    },
+    {
+      "id": "goog_netincome_2023",
+      "question": "What was Google's net income in 2023?",
+      "doc": "goog-20231231.pdf",
+      "expected_value": 73795,
+      "expected_unit": "$M",
+      "note": "Google FY23 consolidated income statement, Net income 2023"
+    },
+    {
+      "id": "msft_revenue_total_2022",
+      "question": "What was Microsoft's total revenue in fiscal 2022?",
+      "doc": "msft-10k_20220630.htm.pdf",
+      "expected_value": 198270,
+      "expected_unit": "$M",
+      "note": "MSFT FY22 — DESCENDING period order; tests geometry period labelling"
+    }
+  ]
+}

@@ -12,7 +12,7 @@ export interface StreamEvent {
   type:
     | "sources" | "token" | "error" | "done" | "status" | "meta" | "sub_queries" | "web_search"
     // Brain (map-reduce) step events — emitted by /query/brain/stream
-    | "brain_start" | "brain_map" | "brain_verify" | "brain_reduce" | "brain_meta";
+    | "brain_start" | "brain_analyst" | "brain_map" | "brain_verify" | "brain_reduce" | "brain_meta";
   content?: string;        // for type='token'
   sources?: SourceInfo[];  // for type='sources'
   message?: string;        // for type='error'
@@ -23,6 +23,7 @@ export interface StreamEvent {
   results_count?: number;  // for type='web_search'
   // ── Brain event fields ──
   docs_routed?: number;       // brain_start
+  figures?: number;           // brain_analyst (count of deterministically computed figures)
   filename?: string;          // brain_map
   claims?: number;            // brain_map (claims extracted from this doc)
   relevant?: boolean;         // brain_map
@@ -294,6 +295,7 @@ export async function streamAgenticQuery(
 
 export interface BrainStreamCallbacks extends StreamCallbacks {
   onBrainStart?: (docsRouted: number) => void;
+  onBrainAnalyst?: (figures: number) => void;
   onBrainMap?: (ev: { filename?: string; claims?: number; relevant?: boolean; progress?: string }) => void;
   onBrainVerify?: (claimsTotal: number, claimsVerified: number) => void;
   onBrainReduce?: (docsRelevant: number, groundedness?: number, unsupported?: number) => void;
@@ -369,6 +371,9 @@ export async function streamBrainQuery(
           switch (event.type) {
             case "brain_start":
               callbacks.onBrainStart?.(event.docs_routed ?? 0);
+              break;
+            case "brain_analyst":
+              callbacks.onBrainAnalyst?.(event.figures ?? 0);
               break;
             case "brain_map":
               callbacks.onBrainMap?.({

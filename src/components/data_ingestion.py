@@ -528,9 +528,17 @@ class DocumentProcessor:
             return []
 
 
-    def build_langchain_documents(self, elements: List) -> List[Document]:
+    def build_langchain_documents(self, elements: List, pdf_path: Optional[str] = None) -> List[Document]:
+        """Build LangChain Document chunks from parsed elements.
 
-        
+        Phase 4.3: when ``pdf_path`` points to a PDF, a structured table pass
+        (pdfplumber, confidence-gated — see table_extraction.py) runs IN ADDITION
+        to the normal text/table/image element chunking and appends
+        ``chunk_type="table"`` chunks carrying a normalized grid. This is purely
+        additive — the existing text (prose) path is untouched, so the Brain's
+        proven fast path cannot regress. If ``pdf_path`` is None or extraction
+        finds nothing, behavior is identical to before.
+        """
         if not elements:
             return []
         
@@ -695,8 +703,92 @@ class DocumentProcessor:
 
             print(f"Created {len(image_elements)} IMAGE chunks.")
 
+        # ── Phase 4.3: structured table chunks (additive; never regresses text) ──
+        # Resolve the PDF path: explicit arg, else the filepath stamped on elements
+        # by process_documents. Only PDFs go through the pdfplumber table pass.
+        resolved_pdf = pdf_path
+        if resolved_pdf is None:
+            for el in elements:
+                fp = getattr(getattr(el, "metadata", None), "filepath", None)
+                if fp and str(fp).lower().endswith(".pdf"):
+                    resolved_pdf = str(fp)
+                    break
+        if resolved_pdf and str(resolved_pdf).lower().endswith(".pdf"):
+            docs.extend(self._build_table_chunks(resolved_pdf, elements))
+
         print(f"Total LangChain Documents created: {len(docs)}")
         return docs
+
+    def _build_table_chunks(self, pdf_path: str, elements: List) -> List[Document]:
+        """Extract confidence-gated tables and turn each into a chunk_type=table Document.
+
+        "Embed the summary, carry the grid": ``page_content`` is the table CAPTION
+        (so retrieval matches a natural-language numeric query, not a wall of
+        digits), while the normalized JSON grid + provenance live in ``metadata``
+        for the deterministic Analyst (§4b). Never raises — extraction failure
+        yields zero table chunks, identical to today's behavior.
+        """
+        try:
+            from src.components.table_extraction import extract_tables_from_pdf
+        except Exception as exc:
+            _logger.warning("[ingest] table extraction unavailable: %s", exc)
+            return []
+
+        # Carry the user-facing filename/filetype if the elements know them.
+        filename = None
+        filetype = None
+        for el in elements:
+            md = getattr(el, "metadata", None)
+            if md is not None:
+                filename = filename or getattr(md, "filename", None)
+                filetype = filetype or getattr(md, "filetype", None)
+
+        try:
+            tables = extract_tables_from_pdf(pdf_path)
+        except Exception as exc:
+            _logger.warning("[ingest] table extraction failed for %s: %s", pdf_path, exc)
+            return []
+
+        import json
+        out: List[Document] = []
+        for t in tables:
+            # The grid is stored as a JSON STRING (not a dict): it round-trips
+            # losslessly through the embedding path's clean_metadata() and into
+            # Supabase JSONB, and stays well under Pinecone's 40KB metadata cap
+            # (measured max ~2.8KB). The Analyst json.loads() it back.
+            grid_json = json.dumps(t.to_metadata(), ensure_ascii=False)
+
+            # page_content drives content_hash → chunk_id in the embedding path,
+            # which dedupes by page_content. Captions can collide (≈1/60 on dense
+            # docs), so we PREFIX the unique table_id to guarantee a distinct id
+            # per table while keeping the human-readable caption for embedding.
+            embed_text = f"[{t.table_id}] {t.caption}"
+
+            metadata = {
+                "chunk_type": "table",
+                "source": pdf_path,
+                "filename": filename,
+                "filetype": filetype,
+                "page_number": t.page_number,
+                "chunk_index": t.page_number,  # page-ordered; table_id disambiguates
+                "table_id": t.table_id,
+                "table_format": "structured_json",
+                "table_confidence": t.to_metadata()["confidence"],
+                "description": t.caption,
+                "table_json": grid_json,     # normalized grid for the Analyst
+                "table_markdown": t.markdown,
+            }
+            metadata["chunk_id"] = _stable_id(
+                file_path=pdf_path,
+                chunk_type="table",
+                index=t.page_number,
+                text=t.table_id + t.caption,
+            )
+            out.append(Document(page_content=embed_text, metadata=metadata))
+
+        if out:
+            print(f"Created {len(out)} structured TABLE chunks (Phase 4.3).")
+        return out
 
          
     def process_batch(self, directory: str) -> List:
@@ -747,7 +839,7 @@ class DocumentProcessor:
                 elements = self.process_documents(file_paths=file_path)
 
                 if elements:
-                    chunks = self.build_langchain_documents(elements=elements)
+                    chunks = self.build_langchain_documents(elements=elements, pdf_path=file_path)
                     # Save JSON cache so next run skips this file
                     cache_data = [
                         {"page_content": doc.page_content, "metadata": doc.metadata}

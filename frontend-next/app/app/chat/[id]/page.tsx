@@ -221,6 +221,29 @@ function ChatPageInner() {
               setStep("route", { status: "done", detail: `Selected ${docsRouted} document${docsRouted !== 1 ? "s" : ""}` });
               setStep("read", { status: "active", detail: `0 / ${docsRouted}` });
             },
+            onBrainAnalyst: (figures) => {
+              // The deterministic Analyst (§4b) already computed these figures from
+              // source table cells before synthesis. Surface it as its own done step
+              // (inserted after Routing) so the user sees the Analyst woke up and did
+              // real, traced arithmetic — not the LLM guessing numbers. Only fires
+              // when ≥1 figure was computed, so a non-numeric question never shows it.
+              if (figures <= 0) return;
+              if (!steps.some((s) => s.id === "analyst")) {
+                const routeIdx = steps.findIndex((s) => s.id === "route");
+                const analystStep: ThinkingStep = {
+                  id: "analyst",
+                  label: "Computing figures",
+                  detail: `Analyst computed ${figures} figure${figures !== 1 ? "s" : ""} from source tables`,
+                  status: "done",
+                };
+                steps = [
+                  ...steps.slice(0, routeIdx + 1),
+                  analystStep,
+                  ...steps.slice(routeIdx + 1),
+                ];
+                pushSteps();
+              }
+            },
             onBrainMap: (ev) => {
               if (ev.relevant) relevantCount += 1;
               setStep("read", { status: "active", detail: `${ev.progress ?? ""} · ${relevantCount} relevant` });

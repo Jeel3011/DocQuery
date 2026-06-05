@@ -6,10 +6,11 @@ Export conversations as Markdown or PDF.
 
 import io
 from datetime import datetime
-from typing import Literal
+from typing import Literal, Optional, List, Dict, Any
 
 from fastapi import APIRouter, HTTPException, Depends
 from fastapi.responses import StreamingResponse
+from pydantic import BaseModel
 
 from src.api.dependencies import get_current_user
 from src.api.routes.audit import log_audit
@@ -17,6 +18,64 @@ from src.logger import get_logger
 
 router = APIRouter()
 logger = get_logger(__name__)
+
+
+# ── Phase 4.3: XLSX export of Analyst tables (preserves computed columns) ──────
+
+class TableExportRequest(BaseModel):
+    """A table answer to export: an optional source grid + computed Analyst rows.
+
+    `grid` is the normalized table (headers + rows) the answer drew from; `computed`
+    is the list of Analyst results (operation/value/formula/sources). Both are kept
+    in the workbook so the export preserves the computed columns and their formulas.
+    """
+    title: Optional[str] = "DocQuery Table Export"
+    grid: Optional[Dict[str, Any]] = None        # {headers:[...], rows:[{...}]}
+    computed: Optional[List[Dict[str, Any]]] = None  # analyst.results_to_rows() output
+
+
+def _build_xlsx(req: "TableExportRequest") -> bytes:
+    """Build an .xlsx with two sheets: the source grid and the computed results.
+
+    Computed columns are clearly labelled and carry the shown formula + source-cell
+    trace, so a number in the workbook still traces to a source cell or a formula
+    (the §4b contract survives the export, not just the on-screen answer).
+    """
+    from openpyxl import Workbook
+    from openpyxl.styles import Font, PatternFill
+
+    wb = Workbook()
+    header_font = Font(bold=True)
+    computed_fill = PatternFill("solid", fgColor="FFF3E0")  # tint computed rows
+
+    # Sheet 1: the source table grid (raw cells, the authoritative numbers)
+    ws = wb.active
+    ws.title = "Source Table"
+    grid = req.grid or {}
+    headers = grid.get("headers", [])
+    if headers:
+        ws.append(headers)
+        for c in ws[1]:
+            c.font = header_font
+        for row in grid.get("rows", []):
+            ws.append([row.get(h, "") for h in headers])
+    else:
+        ws.append(["(no source grid provided)"])
+
+    # Sheet 2: the computed results (value + formula + provenance)
+    ws2 = wb.create_sheet("Computed")
+    cols = ["operation", "value", "unit", "formula", "sources", "error"]
+    ws2.append([c.title() for c in cols])
+    for c in ws2[1]:
+        c.font = header_font
+    for r in (req.computed or []):
+        ws2.append([r.get(c, "") for c in cols])
+        for cell in ws2[ws2.max_row]:
+            cell.fill = computed_fill
+
+    buf = io.BytesIO()
+    wb.save(buf)
+    return buf.getvalue()
 
 
 def _format_conversation_md(title: str, messages: list) -> str:
@@ -180,3 +239,30 @@ async def export_conversation(
 
     else:
         raise HTTPException(status_code=400, detail=f"Unsupported format: {format}")
+
+
+@router.post("/tables/export")
+async def export_table_xlsx(
+    req: TableExportRequest,
+    sb=Depends(get_current_user),
+):
+    """Export an Analyst table answer as an .xlsx workbook (Phase 4.3, §4b step 4).
+
+    Two sheets: the source table grid and the computed results (value + formula +
+    source-cell trace). Computed columns are preserved and labelled, so every
+    exported number still traces to a source cell or a shown formula.
+    """
+    try:
+        xlsx_bytes = _build_xlsx(req)
+    except Exception as exc:
+        logger.warning("XLSX export failed: %s", exc)
+        raise HTTPException(status_code=500, detail=f"XLSX export failed: {exc}")
+
+    safe_title = "".join(c for c in (req.title or "table") if c.isalnum() or c in " -_").strip()[:50]
+    filename = f"{safe_title or 'table'}.xlsx"
+    log_audit(sb, "export.table", "table", safe_title, {"format": "xlsx"})
+    return StreamingResponse(
+        io.BytesIO(xlsx_bytes),
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
