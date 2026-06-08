@@ -287,6 +287,48 @@ def _read_geometry_lines(page, y_tol: float = 3.0) -> List[Dict[str, Any]]:
     return lines
 
 
+def _assign_sections(lines: List[Dict[str, Any]], indent_tol: float = 2.0) -> List[Dict[str, Any]]:
+    """Scope each DATA row to its section by indentation (Layer 0 §1a — the fix).
+
+    Rule (universal to indented financial statements & legal sub-clauses):
+        a data row's section = the label of the nearest preceding LABEL-ONLY header
+        whose indent is STRICTLY less than the data row's own indent.
+    A header stack keyed by indent lets this nest correctly without materializing a
+    tree: a deeper header refines the scope; a header at the same-or-lesser indent
+    closes the ones it replaces. ``indent_tol`` absorbs sub-point x0 jitter.
+
+    Why "strictly less" is the crux: in the MSFT income statement, "Operating income"
+    and "Net income" sit at the SAME indent as the section headers "Revenue:" /
+    "Cost of revenue:", so they are NOT scoped under "Cost of revenue" — they get
+    section='' (statement-level), which is correct. In the Amazon segment table the
+    "Net sales" rows are indented UNDER "AWS" / "Consolidated", so they scope to the
+    right segment — which is exactly what disambiguates the otherwise-identical rows.
+
+    Input should already be bounded to one table's lines (page chrome / titles
+    removed by the caller); this function only assigns sections, it does not gate.
+    Returns the data-row dicts (label-only headers consumed), each gaining "section".
+    """
+    out: List[Dict[str, Any]] = []
+    header_stack: List[Tuple[float, str]] = []  # (indent, label), increasing indent
+    for ln in lines:
+        if ln["nval"] == 0:
+            # a label-only row opens/replaces a section: drop any open header at an
+            # indent >= this one (a sibling or shallower header ends their scope).
+            while header_stack and header_stack[-1][0] >= ln["x0"] - indent_tol:
+                header_stack.pop()
+            header_stack.append((ln["x0"], ln["label"]))
+            continue
+        section = ""
+        for x0, lab in reversed(header_stack):
+            if x0 < ln["x0"] - indent_tol:   # strictly shallower → the scoping header
+                section = lab
+                break
+        row = dict(ln)
+        row["section"] = section.rstrip(":")
+        out.append(row)
+    return out
+
+
 # ── Period / unit / caption derivation ────────────────────────────────────────
 
 _YEAR_TOKEN = re.compile(r"\b(?:19|20)\d{2}\b")

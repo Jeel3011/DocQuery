@@ -16,7 +16,7 @@ import sys, warnings
 warnings.filterwarnings("ignore")
 sys.path.insert(0, ".")
 
-from src.components.table_extraction import _read_geometry_lines
+from src.components.table_extraction import _read_geometry_lines, _assign_sections
 
 CORPUS = "test docs"
 _fail = 0
@@ -89,10 +89,67 @@ def test_noise_lines_not_clean_data():
     check(True, f"(info) {len(urls)} url-ish line(s) seen — caller's gate must drop these")
 
 
+def _section_of(rows, label_exact):
+    le = label_exact.lower()
+    for r in rows:
+        if r["label"].lower() == le:
+            return r.get("section")
+    return None
+
+
+def _bounded(lines, start_label, stop_labels):
+    """Slice lines to one table's span (mimics what Step 3's gate will hand us):
+    from the first line whose label contains start_label, until a stop label."""
+    sl, started, out = start_label.lower(), False, []
+    for ln in lines:
+        low = ln["label"].lower()
+        if not started:
+            if sl in low:
+                started = True
+            else:
+                continue
+        if started and any(s in low for s in stop_labels):
+            break
+        out.append(ln)
+    return out
+
+
+def test_msft_section_scoping():
+    print("MSFT section scoping (statement-level lines must NOT inherit 'Cost of revenue'):")
+    lines = _page("msft-10k_20220630.htm.pdf", 57)
+    # bound to the income statement body (Revenue: … just before 'Refer to accompanying notes')
+    body = _bounded(lines, "Revenue:", ["refer to accompanying"])
+    rows = _assign_sections(body)
+    # Operating income / Net income are at the section-header indent → statement-level (section '')
+    check(_section_of(rows, "Operating income") == "",
+          f"'Operating income' section is '' not 'Cost of revenue' (got {_section_of(rows, 'Operating income')!r})")
+    check(_section_of(rows, "Net income") == "",
+          f"'Net income' section is '' (got {_section_of(rows, 'Net income')!r})")
+    # Total revenue is indented under 'Revenue:' → scoped to it
+    check(_section_of(rows, "Total revenue") == "Revenue",
+          f"'Total revenue' scoped to 'Revenue' (got {_section_of(rows, 'Total revenue')!r})")
+
+
+def test_amzn_section_scoping():
+    print("AMZN section scoping (the AWS vs Consolidated disambiguation at the source):")
+    lines = _page("amzn-20231231.pdf", 113)
+    body = _bounded(lines, "North America", ["see accompanying", "year ended"])
+    rows = _assign_sections(body)
+    # the two 'Net sales' rows must carry DIFFERENT sections
+    aws_ns = [r for r in rows if r["label"].lower() == "net sales" and r.get("section") == "AWS"]
+    cons_ns = [r for r in rows if r["label"].lower() == "net sales" and r.get("section") == "Consolidated"]
+    check(bool(aws_ns) and "90,757" in aws_ns[0]["values"],
+          f"[AWS] Net sales 2023 = 90,757 ({aws_ns[0]['values'][:3] if aws_ns else 'MISSING'})")
+    check(bool(cons_ns) and "574,785" in cons_ns[0]["values"],
+          f"[Consolidated] Net sales 2023 = 574,785 ({cons_ns[0]['values'][:3] if cons_ns else 'MISSING'})")
+
+
 def main():
     test_msft_recovers_total_revenue()
     test_amzn_segment_hierarchy()
     test_noise_lines_not_clean_data()
+    test_msft_section_scoping()
+    test_amzn_section_scoping()
     print("=" * 60)
     if _fail:
         print(f"  {_fail} CHECK(S) FAILED")
