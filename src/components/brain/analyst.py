@@ -99,13 +99,25 @@ class CellRef:
 
 @dataclass
 class ComputeResult:
-    """The deterministic output of one spec: value + formula + the cells it used."""
+    """The deterministic output of one spec: value + formula + the cells it used.
+
+    For the arithmetic ops `value` is the computed number. For the SELECTION ops
+    (§3.3 — argmax/argmin/first_exceeds/last_below/rank/filter) the question is
+    "WHICH period/entity?", not "what number?": those set `binding` to the resolved
+    answer (a period like "2022" or an entity like "AWS") while `value` carries the
+    winning cell's number (so numeric grounding still works downstream). `binding`
+    is the pivot the executive layer (Layer 3) will bind a variable to; `candidates`
+    is every cell the op actually considered — the completeness trail the reasoning
+    verifier (Layer 4) checks ("did argmax see all 3 companies?").
+    """
     op: str
     value: Optional[float]
     formula: str                          # human-readable, e.g. "(90757 − 80096) / 80096 × 100"
     unit: str = ""                        # "%", "$M", "x", ""
     cells: List[CellRef] = field(default_factory=list)
     error: Optional[str] = None
+    binding: Optional[str] = None         # selection result: the resolved period/entity
+    candidates: List[CellRef] = field(default_factory=list)  # everything the op scanned
 
     @property
     def ok(self) -> bool:
@@ -114,6 +126,10 @@ class ComputeResult:
     def display(self) -> str:
         if not self.ok:
             return f"[compute error: {self.error}]"
+        # selection ops answer "which?" — show the resolved pivot, with its number.
+        if self.binding is not None:
+            num = f"{self.value:,.2f}".rstrip("0").rstrip(".") if self.value % 1 else f"{self.value:,.0f}"
+            return f"{self.binding} ({num})"
         v = self.value
         if self.unit == "%":
             return f"{v:,.1f}%"
@@ -245,6 +261,16 @@ WHITELISTED_OPS = {
     "margin_pct",     # a / b × 100 (a ratio expressed as a percentage)
     "average",        # mean of N cells
     "cagr_pct",       # compound annual growth rate across `periods` years
+    # ── Selection ops (Layer 1, §3.3): the executive layer's deterministic
+    # comparisons over a COMPLETE series. They answer "which period/entity?"
+    # (the pivot), not "what number?" — the wrong-year / wrong-company error
+    # class becomes COMPUTED, never guessed. Same spec-not-code security model.
+    "argmax",         # entity/period with the highest value over a series
+    "argmin",         # entity/period with the lowest value over a series
+    "first_exceeds",  # EARLIEST ordered period whose value crosses a threshold (>)
+    "last_below",     # LATEST ordered period whose value stays under a threshold (<)
+    "rank",           # ordered list (descending) of a series — top-N selection
+    "filter",         # the subset of a series satisfying a comparison predicate
 }
 
 
@@ -355,6 +381,77 @@ def compute(spec: Dict[str, Any], grids: List[Grid]) -> ComputeResult:
             f"{len(matches)} tables — specify a section/table; flagged for review"
         )
 
+    def build_series(spec: Dict[str, Any]) -> Tuple[List[Tuple[str, CellRef]], str]:
+        """Resolve a selection spec into an ordered series of (key, CellRef) pairs.
+
+        Two axes, exactly mirroring the two real grid shapes (§3.3):
+
+          • over periods — ONE row scanned across its period columns. The key is the
+            period (the pivot a `first_exceeds` answer binds, e.g. "2022"). Shape:
+              {"over":"period", "row":{"section","label"}, "periods":[...optional]}
+            If `periods` is omitted we use every value column of the resolving grid,
+            in the grid's column order (chronological) — the COMPLETE series, which
+            is the whole point: "first exceeded" needs every year, not a top-k.
+
+          • over rows/entities — a LIST of rows at a FIXED period. The key is the
+            entity (section or label — the "which company/segment" pivot). Shape:
+              {"over":"entity", "period":"2022", "rows":[{"section","label"}, ...]}
+
+        Returns (series, axis). Raises CellError if nothing resolves — the caller
+        turns that into a graceful abstain, never a guess. Cells that don't parse
+        (a dash, "NM") are skipped, not invented; the rest of the series stands.
+        """
+        over = spec.get("over")
+        # infer the axis when the model omits it: a `rows` list ⇒ entity, else period
+        if over not in ("period", "entity"):
+            over = "entity" if isinstance(spec.get("rows"), list) else "period"
+
+        series: List[Tuple[str, CellRef]] = []
+        if over == "entity":
+            period = spec.get("period")
+            if period is None:
+                raise CellError("selection over entities needs a `period`")
+            for ref in spec.get("rows", []):
+                row = ref.get("row", ref)
+                key = row.get("section") or row.get("label") or "?"
+                try:
+                    series.append((str(key), resolve(ref, period)))
+                except CellError:
+                    continue  # a missing/non-numeric entity drops out; others remain
+            if not series:
+                raise CellError("selection over entities resolved no numeric cells")
+            return series, "entity"
+
+        # over periods: resolve the single row, then read each period column it has.
+        ref = spec.get("row", spec)
+        row = ref.get("row", ref)
+        section, label = row.get("section", ""), row.get("label", "")
+        periods = spec.get("periods")
+        # find the grid that actually holds this row, to know its period columns.
+        host: Optional[Grid] = None
+        for g in candidate_grids():
+            r = g.find_row(label, section)
+            if r is not None and (not section or _norm_section_match(r, section)):
+                host = g
+                break
+        if host is None:
+            raise CellError(f"selection: row not found: section={section!r} label={label!r}")
+        cols = list(periods) if periods else host.value_columns()
+        for p in cols:
+            try:
+                series.append((str(p), host.cell(label, p, section)))
+            except CellError:
+                continue
+        if not series:
+            raise CellError(f"selection over periods resolved no numeric cells for {label!r}")
+        return series, "period"
+
+    def _num(spec: Dict[str, Any], *keys: str) -> float:
+        for k in keys:
+            if k in spec and spec[k] is not None:
+                return float(parse_cell(spec[k]))
+        raise CellError(f"selection: missing threshold (one of {keys})")
+
     try:
         if op == "value":
             c = resolve(spec, spec["period"])
@@ -434,6 +531,85 @@ def compute(spec: Dict[str, Any], grids: List[Grid]) -> ComputeResult:
             f = f"(({_fmt(end)} / {_fmt(begin)})^(1/{n}) − 1) × 100 = {val:.1f}%"
             return ComputeResult(op, val, f, unit="%", cells=cells)
 
+        # ── Selection ops (Layer 1, §3.3) ─────────────────────────────────────
+        # Each builds the COMPLETE series, then picks deterministically. The result
+        # sets `binding` (the resolved period/entity = the pivot) and `candidates`
+        # (everything scanned = the completeness trail). `value` is the winning
+        # cell's number so numeric grounding still applies downstream.
+        if op in ("argmax", "argmin"):
+            series, axis = build_series(spec)
+            pick = (max if op == "argmax" else min)(series, key=lambda kv: kv[1].value)
+            key, cell = pick
+            scanned = [c for _k, c in series]
+            arrow = "max" if op == "argmax" else "min"
+            f = (f"{arrow} over {{" +
+                 ", ".join(f"{k}={_fmt(c.value)}" for k, c in series) +
+                 f"}} = {key} ({_fmt(cell.value)})")
+            return ComputeResult(op, cell.value, f, unit="", cells=[cell],
+                                 binding=key, candidates=scanned)
+
+        if op in ("first_exceeds", "last_below"):
+            series, axis = build_series(spec)
+            if axis != "period":
+                # threshold-crossing is only meaningful over an ORDERED period series
+                return ComputeResult(op, None, "",
+                                     error=f"{op}: requires an ordered period series (over='period')")
+            thr = _num(spec, "threshold", "value")
+            scanned = [c for _k, c in series]
+            if op == "first_exceeds":
+                hit = next(((k, c) for k, c in series if c.value > thr), None)
+                rel = ">"
+            else:  # last_below — latest period still under the threshold
+                hit = next(((k, c) for k, c in reversed(series) if c.value < thr), None)
+                rel = "<"
+            if hit is None:
+                return ComputeResult(op, None, "",
+                                     error=f"{op}: no period {rel} {_fmt(thr)} in "
+                                           f"{[(k, c.value) for k, c in series]}",
+                                     candidates=scanned)
+            key, cell = hit
+            f = (f"first period {rel} {_fmt(thr)} over [" if op == "first_exceeds"
+                 else f"last period {rel} {_fmt(thr)} over [") + \
+                ", ".join(f"{k}={_fmt(c.value)}" for k, c in series) + f"] = {key}"
+            return ComputeResult(op, cell.value, f, unit="", cells=[cell],
+                                 binding=key, candidates=scanned)
+
+        if op == "rank":
+            series, axis = build_series(spec)
+            desc = spec.get("descending", True)
+            ordered = sorted(series, key=lambda kv: kv[1].value, reverse=bool(desc))
+            top = spec.get("top")
+            if isinstance(top, int) and top > 0:
+                ordered = ordered[:top]
+            scanned = [c for _k, c in series]
+            best_key, best_cell = ordered[0]
+            f = ("rank " + ("↓" if desc else "↑") + ": " +
+                 " > ".join(f"{k}({_fmt(c.value)})" for k, c in ordered))
+            return ComputeResult(op, best_cell.value, f, unit="", cells=[c for _k, c in ordered],
+                                 binding=best_key, candidates=scanned)
+
+        if op == "filter":
+            series, axis = build_series(spec)
+            cmp = (spec.get("cmp") or spec.get("predicate") or ">").strip()
+            thr = _num(spec, "threshold", "value")
+            ops_map = {
+                ">": lambda v: v > thr, ">=": lambda v: v >= thr,
+                "<": lambda v: v < thr, "<=": lambda v: v <= thr,
+                "==": lambda v: v == thr, "!=": lambda v: v != thr,
+            }
+            if cmp not in ops_map:
+                return ComputeResult(op, None, "", error=f"filter: bad comparator {cmp!r}")
+            kept = [(k, c) for k, c in series if ops_map[cmp](c.value)]
+            scanned = [c for _k, c in series]
+            if not kept:
+                return ComputeResult(op, None, "",
+                                     error=f"filter: no member {cmp} {_fmt(thr)}",
+                                     candidates=scanned)
+            keys = ", ".join(k for k, _c in kept)
+            f = f"{{" + ", ".join(f"{k}={_fmt(c.value)}" for k, c in series) + f"}} where x {cmp} {_fmt(thr)} → [{keys}]"
+            return ComputeResult(op, kept[0][1].value, f, unit="", cells=[c for _k, c in kept],
+                                 binding=keys, candidates=scanned)
+
     except CellError as e:
         return ComputeResult(op, None, "", error=str(e))
     except KeyError as e:
@@ -494,7 +670,8 @@ _SPEC_SYSTEM = (
     "compute SPECS that a deterministic engine will execute. You only SELECT which "
     "cells and which operation; the engine computes the numbers.\n\n"
     "Allowed operations (use ONLY these): "
-    "value, delta, growth_pct, sum, difference, ratio, margin_pct, average, cagr_pct.\n\n"
+    "value, delta, growth_pct, sum, difference, ratio, margin_pct, average, cagr_pct, "
+    "argmax, argmin, first_exceeds, last_below, rank, filter.\n\n"
     "Spec shapes:\n"
     '  {"op":"value","table":<i>,"row":{"section":"AWS","label":"Net sales"},"period":"2023"}\n'
     '  {"op":"growth_pct","table":<i>,"row":{...},"from_period":"2022","to_period":"2023"}\n'
@@ -502,8 +679,23 @@ _SPEC_SYSTEM = (
     '  {"op":"sum","table":<i>,"cells":[{"row":{...},"period":"2023"}, ...]}\n'
     '  {"op":"difference","table":<i>,"a":{"row":{...}},"b":{"row":{...}},"period":"2023"}\n'
     '  {"op":"ratio"|"margin_pct","table":<i>,"numerator":{"row":{...}},"denominator":{"row":{...}},"period":"2023"}\n'
-    '  {"op":"cagr_pct","table":<i>,"cells":[{"row":{...},"period":"2021"},{"row":{...},"period":"2023"}]}\n\n'
+    '  {"op":"cagr_pct","table":<i>,"cells":[{"row":{...},"period":"2021"},{"row":{...},"period":"2023"}]}\n'
+    "SELECTION ops (answer WHICH year/entity, not a number — never guess the pivot):\n"
+    '  over PERIODS (scan one row across years): use op=first_exceeds/last_below to find the\n'
+    '  earliest/latest YEAR crossing a threshold; omit "periods" to scan ALL years (preferred):\n'
+    '    {"op":"first_exceeds","over":"period","row":{"section":"AWS","label":"Operating income"},"threshold":20000}\n'
+    '    {"op":"last_below","over":"period","row":{...},"threshold":40000}\n'
+    '  over ENTITIES (compare rows at ONE year): use op=argmax/argmin/rank/filter; list EVERY\n'
+    '  candidate row so the comparison is complete:\n'
+    '    {"op":"argmax","over":"entity","period":"2023","rows":[{"row":{"section":"AWS","label":"Net sales"}},{"row":{...}}]}\n'
+    '    {"op":"argmin","over":"entity","period":"2022","rows":[...]}\n'
+    '    {"op":"rank","over":"entity","period":"2023","rows":[...],"top":3}\n'
+    '    {"op":"filter","over":"entity","period":"2022","rows":[...],"cmp":">","threshold":0}\n\n'
     "Rules:\n"
+    "- For 'the year X first exceeded $N' use first_exceeds with the threshold in the SAME units as\n"
+    "  the cells (e.g. $20B over a $-millions grid → threshold 20000). Do NOT pick a year yourself.\n"
+    "- For 'which company/segment has the highest/lowest …' use argmax/argmin and include EVERY\n"
+    "  candidate in `rows` (e.g. all three companies, or all segments) — completeness matters.\n"
     "- Use row labels/sections/periods EXACTLY as they appear in the catalog.\n"
     "- `table` is OPTIONAL: include it only if you are sure which table; if you "
     "omit it, the engine finds the row across all tables. When several tables share "
@@ -704,7 +896,11 @@ def render_markdown(results: List["ComputeResult"]) -> str:
         "| --- | --- | --- | --- |",
     ]
     for r in ok:
-        srcs = "; ".join(c.trace() for c in r.cells) or "—"
+        # for selection ops the audit trail is the FULL set scanned (completeness),
+        # not just the winning cell — show candidates so a reviewer can see the op
+        # considered every entity/year before resolving the pivot.
+        trace_cells = r.candidates or r.cells
+        srcs = "; ".join(c.trace() for c in trace_cells) or "—"
         # escape pipes so cell text can't break the table
         formula = (r.formula or "").replace("|", "\\|")
         srcs = srcs.replace("|", "\\|")
