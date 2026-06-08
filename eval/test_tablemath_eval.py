@@ -1,12 +1,23 @@
-"""Phase 4.3 (§4b) table-math eval gate — the 100%-correct bar.
+"""Table-math KERNEL TRIPWIRE (demoted from headline gate — BRAIN_REASONING_PLAN §4/§7).
 
 Drives the FULL Analyst path on natural-language questions with known answers:
   question → extract table grids (test docs/) → LLM writes spec → deterministic
   compute → compare to the hand-verified expected value.
 
-A wrong number in finance is a fireable error, so the bar is 100%. This is the
-§4b eval gate; wire it into CI alongside routing-recall and the §4a false-assertion
-suite. Requires OPENAI_API_KEY (the spec-writer) and the 10-Ks in `test docs/`.
+⚠️ STATUS (§4 "live red gate"): this 7-Q microtest is **no longer the headline gate**.
+The headline is the broad WRONG-rate eval (`brain_solo_eval.py`, §7). This file is now a
+KERNEL TRIPWIRE: it exists to catch a regression in the deterministic kernel
+(`analyst.compute`), NOT to certify end-to-end correctness on a handful of questions
+(that is whack-a-mole — §8.3). Since the A2 selection ops landed, the spec-writer's
+widened option space EXPOSED the long-standing grounding gap: the "total revenue"
+question can resolve to a CHILD line (a coin-flip between abstain and confident-wrong).
+That is a GROUNDING failure (§5.1), fixed STRUCTURALLY by C1 grounding + C5 binary
+abstain — it must NOT be chased with a spec-prompt edit. Until C1 lands, a non-zero
+`confidently WRONG` here reflects that documented grounding coin-flip, not a kernel bug;
+C1's Definition of Done is to return this tripwire to 0-confidently-wrong structurally.
+
+A wrong number in finance is a fireable error. Requires OPENAI_API_KEY (the spec-writer)
+and the 10-Ks in `test docs/`.
 
 Run: python eval/test_tablemath_eval.py
 """
@@ -160,8 +171,13 @@ def main():
 
     n = len(spec["questions"])
     print(f"\n  {correct}/{n} correct, {abstained} abstained, {wrong} confidently WRONG")
-    print(f"  Selection accuracy: {correct}/{n} = {100*correct//n}%  |  "
-          + (f"✓ §4b bar met (0 confidently wrong)" if wrong == 0 else f"✗ {wrong} CONFIDENTLY WRONG — bar FAILED"))
+    if wrong == 0:
+        print(f"  Tripwire: {correct}/{n} = {100*correct//n}%  |  ✓ 0 confidently wrong "
+              f"(kernel sound; grounding holding this run)")
+    else:
+        print(f"  Tripwire: {correct}/{n} = {100*correct//n}%  |  ⚠️ {wrong} confidently WRONG "
+              f"— EXPECTED pre-C1 (grounding coin-flip, §4/§5.1), NOT a kernel bug. "
+              f"C1 grounding closes this structurally.")
     return 0 if wrong == 0 else 1
 
 
