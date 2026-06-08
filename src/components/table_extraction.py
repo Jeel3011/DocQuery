@@ -206,6 +206,87 @@ def _score_grid(grid: List[List[str]]) -> Tuple[float, Dict[str, float]]:
     }
 
 
+# ── Geometry-based line reading (Layer 0 §1 — section fidelity from indentation) ──
+#
+# `page.extract_tables()` gives string grids with NO geometry, and on HTML-derived
+# PDFs it silently DROPS total/subtotal rows (e.g. MSFT "Total revenue 198,270"
+# lives only in the word layer). It also can't express row HIERARCHY, so a sticky
+# section label mislabels statement-level lines under the wrong sub-section.
+#
+# Indentation (a row's left edge, x0) is the UNIVERSAL hierarchy signal in financial
+# statements (and legal sub-clauses): section headers sit left, their line items are
+# indented under them, totals/subtotals deeper still. Reading rows directly from the
+# word layer recovers BOTH the dropped totals and the true indent of every row — the
+# raw material §1 needs. This is deterministic, LLM-free, and format-agnostic: it
+# reads structure (x-position), never content (no hardcoded labels). Every grid it
+# yields still goes through the SAME confidence gate, so a bad read is rejected, not
+# shipped (the module's "a wrong cell is worse than no cell" rule holds).
+
+# A bare footnote/reference marker pdfplumber sometimes splits off ("(1)", "(2)").
+_FOOTNOTE_TOK = re.compile(r"^\(\d{1,2}\)$")
+# A value token at the cell level: number, optionally $-prefixed, parens=negative, %.
+_VALUE_TOK = re.compile(r"^\(?\$?-?[\d,]+(?:\.\d+)?\)?%?$")
+
+
+def _read_geometry_lines(page, y_tol: float = 3.0) -> List[Dict[str, Any]]:
+    """Reconstruct logical rows from a page's words, carrying each row's indent.
+
+    Groups words into lines by their vertical position (a y-band of ``y_tol`` pts),
+    orders each line left→right, then splits it into a LABEL (the leading text run)
+    and its VALUE tokens (the trailing numbers). Returns one dict per line:
+        {"label": str, "x0": float, "values": [str], "ntext": int, "nval": int}
+    where ``x0`` is the label's left edge (the indent that encodes hierarchy).
+
+    Pure and deterministic — no thresholds beyond grouping tolerance, no hardcoded
+    labels. Noise filtering and table-boundary decisions happen in the caller; this
+    only faithfully reconstructs lines + geometry. Never raises (a page whose words
+    can't be read returns [])."""
+    try:
+        words = page.extract_words()
+    except Exception:
+        return []
+    from collections import defaultdict
+    bands: Dict[int, List[Dict[str, Any]]] = defaultdict(list)
+    for w in words:
+        try:
+            bands[round(w["top"] / y_tol)].append(w)
+        except Exception:
+            continue
+
+    lines: List[Dict[str, Any]] = []
+    for top in sorted(bands):
+        ws = sorted(bands[top], key=lambda w: w.get("x0", 0.0))
+        if not ws:
+            continue
+        label_toks: List[str] = []
+        values: List[str] = []
+        for w in ws:
+            tok = (w.get("text") or "").strip()
+            if not tok or tok == "$":
+                continue  # standalone currency symbol is not a value or a label word
+            stripped = tok.replace("$", "").strip()
+            is_value = bool(_VALUE_TOK.match(tok)) and not _FOOTNOTE_TOK.match(tok)
+            if is_value and stripped:
+                values.append(tok.replace("$", "").strip())
+            elif not values:
+                # text BEFORE the first number is part of the label; text AFTER the
+                # numbers (a trailing footnote marker, stray glyph) is ignored so it
+                # can't corrupt the label or be miscounted as a value.
+                if not _FOOTNOTE_TOK.match(tok):
+                    label_toks.append(tok)
+        label = _clean(" ".join(label_toks))
+        if not label:
+            continue
+        lines.append({
+            "label": label,
+            "x0": float(ws[0].get("x0", 0.0)),
+            "values": values,
+            "ntext": len(label_toks),
+            "nval": len(values),
+        })
+    return lines
+
+
 # ── Period / unit / caption derivation ────────────────────────────────────────
 
 _YEAR_TOKEN = re.compile(r"\b(?:19|20)\d{2}\b")
