@@ -287,6 +287,51 @@ def _read_geometry_lines(page, y_tol: float = 3.0) -> List[Dict[str, Any]]:
     return lines
 
 
+# A label-only line that is really a UNITS/scale annotation, not a section header.
+_UNITS_HINT = re.compile(
+    r"\b(in\s+(?:millions|thousands|billions)|per\s+share|except\s+per\s+share)\b",
+    re.IGNORECASE,
+)
+
+
+def _is_section_header(label: str) -> bool:
+    """Heuristic: is this label-only line a genuine SECTION HEADER vs. noise?
+
+    Structural and content-agnostic — NO hardcoded section names. A real section
+    header in a financial statement is a SHORT noun phrase ("Revenue:", "AWS",
+    "Cost of revenue:", "Current liabilities"). It is NOT:
+      - a units/scale annotation ("(In millions)", "in thousands", "per share"),
+      - a narrative lead-in sentence ("The following table presents…", "Our lease
+        liabilities were as follows (in millions)"),
+    both of which are label-only too but must not scope rows beneath them.
+
+    Rules (conservative — when unsure, accept, since a spurious-but-plausible
+    section is harmless; the real harm is scoping under a units/prose line):
+      - reject if it matches a units/scale annotation;
+      - reject if it is a long phrase (a sentence-like lead-in): many words, and
+        not the short colon-terminated or capitalized label a header uses.
+    """
+    s = (label or "").strip()
+    if not s:
+        return False
+    if _UNITS_HINT.search(s):
+        return False
+    # A dangling parenthesis fragment ("millions)", "(in") from a wrapped annotation
+    # line is not a header — unbalanced brackets mean it's a split-off piece of prose.
+    if s.count(")") != s.count("("):
+        return False
+    # Word count: section headers are short. A long phrase is narrative prose.
+    words = s.split()
+    if len(words) > 6:
+        return False
+    # A trailing sentence punctuation or a parenthetical-only line is annotation.
+    if s.endswith(".") and not s.endswith(":"):  # "Refer to accompanying notes."
+        return False
+    if s.startswith("(") and s.endswith(")"):
+        return False
+    return True
+
+
 def _assign_sections(lines: List[Dict[str, Any]], indent_tol: float = 2.0) -> List[Dict[str, Any]]:
     """Scope each DATA row to its section by indentation (Layer 0 §1a — the fix).
 
@@ -312,7 +357,15 @@ def _assign_sections(lines: List[Dict[str, Any]], indent_tol: float = 2.0) -> Li
     header_stack: List[Tuple[float, str]] = []  # (indent, label), increasing indent
     for ln in lines:
         if ln["nval"] == 0:
-            # a label-only row opens/replaces a section: drop any open header at an
+            # A label-only row is a section header ONLY if it looks like one. A units
+            # annotation ("(In millions)") or a narrative lead-in sentence ("The
+            # following table presents…") is label-only too but is NOT a section — and
+            # scoping rows under it produces a junk section the spec-writer can latch
+            # onto. Skip those: don't push them, and don't let them close open headers
+            # (they're noise interleaved in the table, not structural boundaries).
+            if not _is_section_header(ln["label"]):
+                continue
+            # a real header opens/replaces a section: drop any open header at an
             # indent >= this one (a sibling or shallower header ends their scope).
             while header_stack and header_stack[-1][0] >= ln["x0"] - indent_tol:
                 header_stack.pop()
@@ -326,6 +379,162 @@ def _assign_sections(lines: List[Dict[str, Any]], indent_tol: float = 2.0) -> Li
         row = dict(ln)
         row["section"] = section.rstrip(":")
         out.append(row)
+    return out
+
+
+def _segment_table_spans(lines: List[Dict[str, Any]]) -> List[List[Dict[str, Any]]]:
+    """Split a page's geometry lines into table-spans, dropping page chrome.
+
+    Structural, content-agnostic (NO hardcoded labels, NO url/keyword matching):
+    a real statement is a CONTIGUOUS run of data rows that share a dominant value
+    width and a consistent left-margin band. Page chrome — the filename header, a
+    centered title ("PART II", "INCOME STATEMENTS"), the sec.gov footer — is an
+    off-width singleton or sits far outside that left-margin band, so it falls out.
+
+    Algorithm:
+      1. Modal data width W = the most common value-count among value-bearing lines
+         on the page (the table's column count; chrome is incidental off-width noise).
+      2. The table's left-margin band = the min indent among the W-wide data rows
+         (their leftmost statement-level lines) up to the deepest header above them.
+      3. Walk the lines, accumulating a span of: W-wide data rows, AND label-only
+         header rows whose indent is within the band (section headers), AND we tolerate
+         a row one value short (a partially-split row) only between W-wide rows. A line
+         that is off-band (a centered title) or off-width-and-not-a-header BREAKS the
+         span. A span with >=2 W-wide data rows is kept.
+
+    The confidence gate downstream is the final arbiter — segmentation only needs to
+    be good enough that good tables survive and chrome is excluded; a marginal span
+    that slips through is still gate-scored and rejected, never shipped.
+    """
+    from collections import Counter
+    val_lines = [ln for ln in lines if ln["nval"] >= 1]
+    if len(val_lines) < 2:
+        return []
+    width_counts = Counter(ln["nval"] for ln in val_lines)
+    modal_w = width_counts.most_common(1)[0][0]
+    if modal_w < 1:
+        return []
+
+    # Left-margin band: the modal-width DATA rows anchor the table's column-0 region.
+    # Section HEADERS legitimately sit to the LEFT of data rows (that out-dent IS the
+    # hierarchy signal — e.g. "AWS" at x0=25 above "Net sales" at x0=45), so the band
+    # must extend leftward to include them WITHOUT swallowing far-left page furniture
+    # (a filename footer) or far-right centered titles ("PART II", "INCOME STATEMENTS").
+    wide_indents = [ln["x0"] for ln in lines if ln["nval"] == modal_w]
+    if not wide_indents:
+        return []
+    data_lo = min(wide_indents)
+    band_hi = max(ln["x0"] for ln in lines if ln["nval"] >= 1)
+    # how far left a section header may sit: bounded outdent from the data column-0.
+    # ~2.2x a typical indent step covers a one- or two-level outdent; beyond that it's
+    # page furniture, not a section header. Data rows themselves must be >= data_lo.
+    header_outdent = 28.0
+    slack = 6.0  # absorb sub-point x0 jitter / deeper subtotal indent
+
+    def in_band(ln) -> bool:
+        if ln["nval"] == 0:  # a header may out-dent left of the data column
+            return data_lo - header_outdent <= ln["x0"] <= band_hi + slack
+        return data_lo - slack <= ln["x0"] <= band_hi + slack
+
+    spans: List[List[Dict[str, Any]]] = []
+    cur: List[Dict[str, Any]] = []
+
+    def flush():
+        nonlocal cur
+        if sum(1 for l in cur if l["nval"] == modal_w) >= 2:
+            spans.append(cur)
+        cur = []
+
+    for ln in lines:
+        is_header = ln["nval"] == 0 and in_band(ln)
+        is_data = ln["nval"] == modal_w and in_band(ln)
+        # a row one value short, between data rows, is a partial split → keep it as data
+        is_partial = ln["nval"] == modal_w - 1 and modal_w >= 3 and in_band(ln) and bool(cur)
+        if is_header or is_data or is_partial:
+            cur.append(ln)
+        else:
+            flush()  # off-band title / off-width chrome ends the current table
+    flush()
+    return spans
+
+
+def _geometry_tables_for_page(
+    page,
+    page_idx: int,
+    header_years: List[str],
+    page_text: str,
+    confidence_threshold: float,
+) -> List[ExtractedTable]:
+    """Build gated ExtractedTables for one page from the WORD GEOMETRY (Layer 0 §1).
+
+    The primary row source: reads rows from the word layer (so dropped totals are
+    recovered), segments them into table-spans, scopes each row by indentation
+    (correct sections), right-aligns the pre-split values into period columns, and
+    runs each through the SAME confidence gate as the legacy path. Returns [] when
+    geometry finds no confident table on the page (the caller then falls back to
+    pdfplumber's extract_tables()). Never raises — a page that can't be read yields [].
+    """
+    try:
+        lines = _read_geometry_lines(page)
+    except Exception:
+        return []
+    if not lines:
+        return []
+
+    out: List[ExtractedTable] = []
+    for s_idx, span in enumerate(_segment_table_spans(lines)):
+        rows_geo = _assign_sections(span)  # data rows w/ section + pre-split values
+        if len(rows_geo) < MIN_ROWS:
+            continue
+        # width = modal count of pre-split values across the span's data rows
+        vcounts = [r["nval"] for r in rows_geo if r["nval"] >= 1]
+        if not vcounts:
+            continue
+        width = max(set(vcounts), key=vcounts.count)
+        if width < 1:
+            continue
+
+        # Build the raw string grid (label + right-justified value cells) so the
+        # existing gate/period/markdown machinery applies unchanged.
+        raw_grid: List[List[str]] = [[r["label"], *r["values"]] for r in rows_geo]
+        confidence, breakdown = _score_grid(raw_grid)
+        if confidence < confidence_threshold:
+            logger.debug("[table_extraction:geo] rejected p%d s%d conf=%.2f %s",
+                         page_idx + 1, s_idx, confidence, breakdown)
+            continue
+
+        periods = _detect_periods(raw_grid, header_years, width)
+        units = _detect_units(raw_grid, page_text)
+        col_names = list(periods) if len(periods) == width else [f"col_{i+1}" for i in range(width)]
+        headers = ["section", "label"] + col_names
+
+        rows: List[Dict[str, Any]] = []
+        for r in rows_geo:
+            vals = r["values"]
+            if not vals:
+                continue
+            slots = [""] * width
+            for i, v in enumerate(reversed(vals[:width])):  # right-align (latest period last)
+                slots[width - 1 - i] = v
+            rec: Dict[str, Any] = {"section": r.get("section", ""), "label": r["label"]}
+            for name, v in zip(col_names, slots):
+                rec[name] = v
+            rows.append(rec)
+        if len(rows) < MIN_ROWS:
+            continue
+
+        out.append(ExtractedTable(
+            page_number=page_idx + 1,
+            table_id=f"p{page_idx + 1}_g{s_idx}",   # 'g' marks a geometry-built table
+            headers=headers,
+            rows=rows,
+            units=units,
+            periods=periods,
+            caption=_caption(rows, periods, units, page_idx + 1),
+            confidence=confidence,
+            raw_grid=raw_grid,
+            markdown=_to_markdown(headers, rows),
+        ))
     return out
 
 
@@ -606,11 +815,23 @@ def extract_tables_from_pdf(
                     logger.debug("[table_extraction] page %d extract failed: %s", page_idx + 1, exc)
                     continue
 
-                # Clean each candidate, then STITCH fragments. HTML-derived PDFs
-                # (e.g. MSFT 10-Ks) make pdfplumber emit every table *row* as its
-                # own 1-row "table"; stitching reassembles them so the gate sees a
-                # real multi-row table. Native-render PDFs (Amazon/Google) already
-                # come as whole tables and pass through unchanged.
+                # PRIMARY: build tables from word GEOMETRY (Layer 0 §1) — recovers
+                # totals extract_tables() drops and scopes rows by indentation, so the
+                # grid is section-correct at the source. If geometry yields ≥1 gated
+                # table on this page, use it and SKIP the legacy path for this page (no
+                # double-counting). When geometry finds nothing confident (e.g. a page
+                # whose text layer lacks clean coordinates), fall back to the proven
+                # pdfplumber extract_tables() path below — never worse than today.
+                geo_tables = _geometry_tables_for_page(
+                    page, page_idx, header_years, page_text, confidence_threshold
+                )
+                if geo_tables:
+                    results.extend(geo_tables)
+                    continue
+
+                # FALLBACK: clean each candidate, then STITCH fragments. HTML-derived
+                # PDFs make pdfplumber emit every table *row* as its own 1-row "table";
+                # stitching reassembles them so the gate sees a real multi-row table.
                 cleaned = []
                 for raw in candidates:
                     if not raw:

@@ -151,8 +151,14 @@ class Grid:
     def find_row(self, label: str, section: str = "") -> Optional[Dict[str, Any]]:
         """Resolve a row by label (and optional section), case/space-insensitive.
 
-        Exact-ish match first (label equality), then a contains fallback. Section,
-        when given, must match the row's section. Returns the first match or None.
+        Section authority (Layer 0 §2): when a section IS requested it is BINDING —
+        we match the label only among rows that genuinely belong to that section, and
+        do NOT fall through to other sections of this grid. So asking for "AWS / Net
+        sales" never returns a "Consolidated / Net sales" (574,785 vs 90,757). This is
+        safe only because §1 now scopes rows correctly by indentation; before that the
+        loose fallthrough was masking a wrong-section match as a "harmless" abstain.
+        When NO section is requested, behaviour is the original label-only resolution
+        (exact, then contains). A value is never invented — we only relax WHICH row.
         """
         def norm(s: str) -> str:
             # lower, collapse whitespace, drop bracketing/quotes the LLM may add
@@ -163,26 +169,42 @@ class Grid:
 
         nlabel, nsec = norm(label), norm(section)
 
-        def sec_ok(r, require: bool) -> bool:
-            if not require or not nsec:
-                return True
-            rsec = norm(r.get("section", ""))
-            # match section against the row's section OR its label (the LLM often
-            # conflates the two, e.g. label/section both "Total net sales")
-            return nsec in rsec or nsec in norm(r.get("label", "")) or rsec in nsec
+        def label_match(r) -> bool:
+            rl = norm(r.get("label", ""))
+            return rl == nlabel or nlabel in rl or rl in nlabel
 
-        # Try progressively looser: (exact label + section) → (contains + section)
-        # → (exact label, ignore section) → (contains, ignore section). This makes
-        # resolution robust to the LLM's imperfect label/section guesses without
-        # ever inventing a value — we only relax WHICH row, never the cell's number.
-        for require_sec in (True, False):
-            for r in self.rows:
-                if norm(r.get("label", "")) == nlabel and sec_ok(r, require_sec):
+        def in_section(r) -> bool:
+            # The row belongs to the requested section. A row with an EMPTY section
+            # never matches a requested (non-empty) section — otherwise every
+            # section-less row would satisfy any request via "" being a substring of
+            # everything. The row's LABEL is also accepted because the LLM sometimes
+            # puts the segment name in the label (e.g. label "AWS net sales").
+            rsec = norm(r.get("section", ""))
+            sec_hit = bool(rsec) and (nsec in rsec or rsec in nsec)
+            label_hit = nsec in norm(r.get("label", ""))
+            return sec_hit or label_hit
+
+        # Section requested → section is AUTHORITATIVE: match label ONLY among rows in
+        # that section (exact label wins over contains). No cross-section fallthrough —
+        # if this grid has no such row, it simply has no answer (resolve() tries the
+        # next grid or abstains), never a wrong-section value.
+        if nsec:
+            in_sec = [r for r in self.rows if in_section(r)]
+            for r in in_sec:
+                if norm(r.get("label", "")) == nlabel:
                     return r
-            for r in self.rows:
-                rl = norm(r.get("label", ""))
-                if (nlabel in rl or rl in nlabel) and sec_ok(r, require_sec):
+            for r in in_sec:
+                if label_match(r):
                     return r
+            return None
+
+        # No section requested → original label-only resolution (exact, then contains).
+        for r in self.rows:
+            if norm(r.get("label", "")) == nlabel:
+                return r
+        for r in self.rows:
+            if label_match(r):
+                return r
         return None
 
     def cell(self, label: str, period: str, section: str = "") -> CellRef:
@@ -374,6 +396,24 @@ def compute(spec: Dict[str, Any], grids: List[Grid]) -> ComputeResult:
             den = resolve(spec["denominator"], spec["denominator"].get("period", spec.get("period")))
             if den.value == 0:
                 return ComputeResult(op, None, "", error=f"{op}: denominator is 0")
+            # Ratio operand-consistency guards (correct-or-abstain). A ratio/margin is
+            # only meaningful when both operands describe the SAME entity. Two ways it
+            # silently goes wrong after section-aware resolution — both abstain, never
+            # state a confident figure:
+            #   (a) same cell: numerator and denominator collapsed onto one row → a
+            #       meaningless 100% (e.g. an AWS margin whose net-sales denominator
+            #       mis-resolved to the AWS operating-income row).
+            #   (b) cross-segment: operands resolved to DIFFERENT non-empty sections
+            #       (e.g. AWS operating income ÷ Consolidated operating income = 66.8%
+            #       passed off as "AWS margin"). You cannot mix segments in one ratio.
+            nsec_, dsec_ = (num.section or "").strip().lower(), (den.section or "").strip().lower()
+            same_cell = (num.doc, num.page, num.table_id, num.section, num.label, num.period) == \
+                        (den.doc, den.page, den.table_id, den.section, den.label, den.period)
+            cross_segment = bool(nsec_) and bool(dsec_) and nsec_ != dsec_
+            if same_cell or cross_segment:
+                why = "same cell" if same_cell else f"different segments ({num.section!r} vs {den.section!r})"
+                return ComputeResult(op, None, "", error=(
+                    f"{op}: numerator and denominator are inconsistent — {why}; abstaining"))
             r = num.value / den.value
             if op == "ratio":
                 f = f"{_fmt(num.value)} / {_fmt(den.value)} = {r:.4f}"
