@@ -290,7 +290,10 @@ function ChatPageInner() {
       } else if (agenticModeRef.current) {
         await streamAgenticQuery(
           token,
-          { question, conversation_id: convId, collection_id: collId },
+          // Phase 4.5: the ⚡ agentic toggle now drives the sequential multi-hop loop
+          // (retrieve → reason → informed follow-up). multi_hop=true overrides the
+          // server default per-request; drop the flag to fall back to parallel decompose.
+          { question, conversation_id: convId, collection_id: collId, multi_hop: true },
           {
             ...callbacks,
             onSubQueries: (queries) => {

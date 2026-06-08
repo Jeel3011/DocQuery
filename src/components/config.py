@@ -154,3 +154,20 @@ class Config:
     # local PDF-pool OOM. Measured: sequential ≈79s/doc, max_workers=5 ≈14s/doc. Laptop
     # default 5; raise via env on the cloud.
     TABLE_SUMMARY_WORKERS: int = int(os.getenv("TABLE_SUMMARY_WORKERS", "5"))
+
+    # ── Multi-hop reasoning (Phase 4.5 / T1.5) ──
+    # Opt-in: when true the agent endpoints use the sequential ReAct/Self-RAG loop
+    # (MultiHopRetriever) instead of the independent-parallel-decompose AgenticRetriever.
+    # The loop retrieves → reasons over accumulated evidence → detects the missing link →
+    # issues ONE follow-up query informed by findings → repeats, bounded by the hop budget.
+    # This is "go back for one more file". Left off by default so the proven parallel path
+    # stays the baseline until the loop is eval-gated; flip per-workspace via env.
+    USE_MULTIHOP: bool = os.getenv("USE_MULTIHOP", "false").lower() == "true"
+    # Total retrieval rounds. Hop 1 always runs on the original question; each extra hop
+    # costs one gap-detector LLM call + one retrieval. 3 covers the common 2-step bridge
+    # ("find A, then use A to find B") with one round of slack; higher = deeper chains at
+    # more latency/cost. The loop stops early the moment the gap detector says SUFFICIENT.
+    MULTIHOP_MAX_HOPS: int = int(os.getenv("MULTIHOP_MAX_HOPS", "3"))
+    # Chunks pulled per hop. Kept modest so the running evidence set the gap detector reads
+    # stays small/fast; dedup across hops means later hops mostly add net-new chunks.
+    MULTIHOP_PER_HOP_K: int = int(os.getenv("MULTIHOP_PER_HOP_K", "5"))

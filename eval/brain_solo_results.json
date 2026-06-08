@@ -1,0 +1,36 @@
+{
+  "collection_id": "d1ef8357-5cf0-4f34-9f91-db5ba511f788",
+  "n": 5,
+  "buckets": {
+    "CORRECT": 2,
+    "ABSTAINED": 1,
+    "WRONG": 2
+  },
+  "rows": [
+    {
+      "q": "In the fiscal year that Microsoft's total revenue was closest to $200 billion, what total revenue did Alphabet (Google) report?",
+      "bucket": "CORRECT",
+      "answer_head": "In fiscal year 2022, Microsoft's total revenue was $198,270 million, which is the closest to $200 billion among the fiscal years reported [Source: 0000950170-23"
+    },
+    {
+      "q": "In the fiscal year Amazon's AWS segment operating income first exceeded $20 billion, what was Amazon's total consolidated net sales?",
+      "bucket": "WRONG",
+      "answer_head": "I can only partially answer this question based on the available documents. Here is what I found, but please treat it as preliminary:\n\nIn the fiscal year 2023, "
+    },
+    {
+      "q": "For the company among Google, Microsoft, and Amazon with the highest total revenue in fiscal 2023, what were that same company's fiscal 2023 research and development expenses?",
+      "bucket": "ABSTAINED",
+      "answer_head": "I can only partially answer this question based on the available documents. Here is what I found, but please treat it as preliminary:\n\nTo determine which compan"
+    },
+    {
+      "q": "Alphabet reports a 'Google Cloud' operating segment. In Alphabet's fiscal 2023 report, did Google Cloud reach profitability, and what was its fiscal 2023 operating income or loss?",
+      "bucket": "CORRECT",
+      "answer_head": "I can only partially answer this question based on the available documents. Here is what I found, but please treat it as preliminary:\n\nIn Alphabet's fiscal 2023"
+    },
+    {
+      "q": "Across these filings, in the fiscal year Microsoft acquired the largest company it discloses acquiring, what was Microsoft's total revenue that year?",
+      "bucket": "WRONG",
+      "answer_head": "To determine Microsoft's total revenue in the fiscal year it acquired the largest company disclosed, we need to identify the largest acquisition and the corresp"
+    }
+  ]
+}

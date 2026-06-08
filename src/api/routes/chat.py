@@ -551,6 +551,27 @@ async def query_stream(
 # AGENTIC QUERY (Phase 6)
 # -----------------------------------------
 
+def _make_agentic_retriever(user_config, retrieval_mgr, multi_hop_override=None):
+    """Pick the agentic retriever for this request.
+
+    Both retrievers expose the same ``retrieve_and_synthesize`` contract, so the agent
+    endpoints are agnostic. Selection: ``multi_hop_override`` (the per-request
+    ``body.multi_hop`` flag) wins when not None; otherwise the server default
+    ``Config.USE_MULTIHOP``. True = the sequential ReAct/Self-RAG loop (Phase 4.5);
+    False = the proven parallel-decompose path. Per-request override lets the UI A/B
+    the two on the same question without an env change or restart.
+    """
+    use_multihop = (
+        multi_hop_override if multi_hop_override is not None
+        else getattr(user_config, "USE_MULTIHOP", False)
+    )
+    if use_multihop:
+        from src.components.multi_hop import MultiHopRetriever
+        return MultiHopRetriever(config=user_config, retrieval_mgr=retrieval_mgr)
+    from src.components.agentic_retrieval import AgenticRetriever
+    return AgenticRetriever(config=user_config, retrieval_mgr=retrieval_mgr)
+
+
 @router.post("/query/agent", response_model=QueryResponse)
 @limiter.limit("10/minute")
 async def query_agent(
@@ -573,8 +594,6 @@ async def query_agent(
 
     Rate limit: 10/min (2x LLM calls per request vs standard 1x).
     """
-    from src.components.agentic_retrieval import AgenticRetriever
-
     # ── Cache check (agent queries can be expensive — cache hits are very valuable) ──
     t_cache = time.perf_counter()
     cached = None
@@ -610,8 +629,8 @@ async def query_agent(
     # Phase 1: Collection-scoped retrieval
     filename_filters = _resolve_collection_filters(sb, getattr(body, "collection_id", None), query=getattr(body, "question", None), query_embedding=query_embedding, user_config=user_config)
 
-    # ── Step 1+2+3: Agentic retrieval (parallel sub-queries) ──
-    agentic = AgenticRetriever(config=user_config, retrieval_mgr=retrieval_mgr)
+    # ── Step 1+2+3: Agentic retrieval (parallel sub-queries, or multi-hop loop) ──
+    agentic = _make_agentic_retriever(user_config, retrieval_mgr, getattr(body, "multi_hop", None))
     retrieval_result = await asyncio.to_thread(
         agentic.retrieve_and_synthesize,
         body.question,
@@ -686,8 +705,6 @@ async def agent_query_stream(
     but streams the answer token-by-token via SSE for better UX.
     Emits: sub_queries → sources → token* → done
     """
-    from src.components.agentic_retrieval import AgenticRetriever
-
     chat_history = []
     if body.conversation_id:
         existing_msgs = sb.get_messages(body.conversation_id)
@@ -700,8 +717,8 @@ async def agent_query_stream(
     # Phase 1: Collection-scoped retrieval
     filename_filters = _resolve_collection_filters(sb, getattr(body, "collection_id", None), query=getattr(body, "question", None), query_embedding=query_embedding, user_config=user_config)
 
-    # Agentic retrieval: decompose → parallel retrieve → deduplicate
-    agentic = AgenticRetriever(config=user_config, retrieval_mgr=retrieval_mgr)
+    # Agentic retrieval: decompose → parallel retrieve → dedup, or sequential multi-hop
+    agentic = _make_agentic_retriever(user_config, retrieval_mgr, getattr(body, "multi_hop", None))
     retrieval_result = await asyncio.to_thread(
         agentic.retrieve_and_synthesize,
         body.question,

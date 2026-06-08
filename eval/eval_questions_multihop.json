@@ -1,0 +1,52 @@
+[
+  {
+    "_comment": "Multi-hop (bridge) eval set for the live 'very big' collection (id d1ef8357-5cf0-4f34-9f91-db5ba511f788, 8 docs: GOOG FY21/22/23, MSFT FY21/22/23, AMZN FY22/23). Each question REQUIRES chaining a fact: find A in one filing, then use A to look up B (often in another filing). This is where the sequential multi-hop loop should beat the parallel-decompose retriever, which fires all sub-queries at once and can't condition hop 2 on hop 1's finding. 'gold_doc_filenames' = the docs that MUST be reached to answer. 'answer_must_include' = facts/strings the final answer must contain (LLM-judged, phrasing-robust). 'bridge_fact' = the intermediate fact hop 1 must surface for hop 2 to work (for diagnosis, not scored directly).",
+    "_collection_name": "very big",
+    "_collection_id": "d1ef8357-5cf0-4f34-9f91-db5ba511f788"
+  },
+  {
+    "question": "In the fiscal year that Microsoft's total revenue was closest to $200 billion, what total revenue did Alphabet (Google) report?",
+    "bridge_fact": "Microsoft total revenue was ~$198B in FY2022 (closest to $200B); the bridge year is fiscal 2022.",
+    "answer_must_include": ["2022", "282"],
+    "ground_truth": "Microsoft's FY2022 revenue was ~$198.3B (closest to $200B). In that same period Alphabet reported total revenue of ~$282.8B (2022). The bridge is identifying FY2022 from Microsoft, then reading Alphabet's 2022 revenue.",
+    "gold_doc_filenames": ["msft-10k_20220630.htm.pdf", "goog-20221231.pdf"],
+    "min_docs_required": 2,
+    "query_type": "bridge"
+  },
+  {
+    "question": "In the fiscal year Amazon's AWS segment operating income first exceeded $20 billion, what was Amazon's total consolidated net sales?",
+    "bridge_fact": "AWS operating income first exceeded $20B in FY2021 ($22.6B); bridge year is 2021. (AWS FY2021 data appears in the FY2022 10-K's comparatives.)",
+    "answer_must_include": ["2021", "469"],
+    "ground_truth": "AWS operating income first crossed $20B in 2021 (~$22.6B). Amazon's total consolidated net sales in 2021 were ~$469.8B. Bridge: find the AWS $20B year, then read total net sales for it.",
+    "gold_doc_filenames": ["amzn-20221231.pdf"],
+    "min_docs_required": 1,
+    "query_type": "bridge"
+  },
+  {
+    "question": "For the company among Google, Microsoft, and Amazon with the highest total revenue in fiscal 2023, what were that same company's fiscal 2023 research and development expenses?",
+    "bridge_fact": "Amazon had the highest FY2023 revenue (~$574.8B, vs Alphabet ~$307.4B, Microsoft ~$211.9B). Bridge: identify Amazon, then read Amazon's FY2023 R&D ('technology and infrastructure' ~$85.6B).",
+    "answer_must_include": ["Amazon"],
+    "ground_truth": "Amazon had the highest FY2023 revenue (~$574.8B). Amazon's FY2023 technology-and-infrastructure (R&D) expense was ~$85.6B. Bridge: rank revenue to pick Amazon, then read its R&D.",
+    "gold_doc_filenames": ["amzn-20231231.pdf"],
+    "min_docs_required": 1,
+    "query_type": "bridge"
+  },
+  {
+    "question": "Alphabet reports a 'Google Cloud' operating segment. In Alphabet's fiscal 2023 report, did Google Cloud reach profitability, and what was its fiscal 2023 operating income or loss?",
+    "bridge_fact": "Google Cloud turned profitable in FY2023 with operating income ~$1.7B (vs a loss in prior years). Single-doc but requires resolving the segment then its FY2023 figure.",
+    "answer_must_include": ["2023", "profit"],
+    "ground_truth": "Google Cloud reached profitability in FY2023, reporting operating income of ~$1.7B, reversing prior-year operating losses.",
+    "gold_doc_filenames": ["goog-20231231.pdf"],
+    "min_docs_required": 1,
+    "query_type": "bridge"
+  },
+  {
+    "question": "Across these filings, in the fiscal year Microsoft acquired the largest company it discloses acquiring, what was Microsoft's total revenue that year?",
+    "bridge_fact": "Microsoft's largest disclosed acquisition is Activision Blizzard (~$69B), closed in FY2023; bridge year FY2023, MSFT FY2023 revenue ~$211.9B.",
+    "answer_must_include": ["Activision", "2023"],
+    "ground_truth": "Microsoft's largest disclosed acquisition is Activision Blizzard (~$68.7B), completed in fiscal 2023. Microsoft's FY2023 total revenue was ~$211.9B. Bridge: identify the acquisition+year, then read that year's revenue.",
+    "gold_doc_filenames": ["0000950170-23-035122.pdf"],
+    "min_docs_required": 1,
+    "query_type": "bridge"
+  }
+]

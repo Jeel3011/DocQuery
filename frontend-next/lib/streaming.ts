@@ -59,6 +59,7 @@ export interface StreamQueryRequest {
   page_filter?: number | null;
   conversation_id?: string | null;
   collection_id?: string | null;  // Phase 1
+  multi_hop?: boolean | null;     // Phase 4.5: force the sequential multi-hop loop on the agent endpoint
 }
 
 // ─── Main streaming function ───────────────────────────────────────────────────

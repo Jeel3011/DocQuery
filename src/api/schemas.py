@@ -76,6 +76,11 @@ class QueryRequest(BaseModel):
     page_filter: Optional[int] = None
     conversation_id: Optional[str] = None
     collection_id: Optional[str] = None  # Phase 1: scope retrieval to a collection
+    # Phase 4.5: per-request override for the agent endpoints. None = use the server
+    # default (Config.USE_MULTIHOP); true/false = force the sequential multi-hop loop
+    # vs. the parallel-decompose retriever for THIS request. Lets the UI A/B the two
+    # without an env change or restart.
+    multi_hop: Optional[bool] = None
 
 
 class QueryResponse(BaseModel):
