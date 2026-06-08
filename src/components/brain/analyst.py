@@ -296,6 +296,119 @@ def _norm_section_match(row: Dict[str, Any], section: str) -> bool:
     return nsec in rsec or rsec in nsec
 
 
+# ── Totals-consistency (§5.4 remaining kernel work — used by grounding §5.1 + ──
+#    invariants §5.5). Deterministic, VALUE-based, NO label list.
+#
+# The §2.1 failure ("total revenue" resolves to a component line like "Gross
+# margin") is caught structurally: a row USED AS a total must approximately equal
+# the sum of its sibling component rows in the same section/period. We never decide
+# "is this a total?" from a hardcoded label — we ask the values: does this row equal
+# Σ of the other numeric rows that plausibly compose it? If a candidate row is a
+# strict SUBSET/child (its value is materially smaller than the section's largest
+# numeric row at that period), it fails the total check. This reads structure, not
+# content, so it generalizes to any indented statement (and to legal sub-clauses).
+
+_AGGREGATE_RE = re.compile(
+    r"\b(total|consolidated|grand total|net (sales|revenue|income))\b", re.I
+)
+
+
+def _is_aggregate_request(label: str) -> bool:
+    """Does this requested label SIGNAL that the caller wants an aggregate/total row?
+
+    Advisory only: it merely decides whether to APPLY the value-based aggregation
+    guard (`looks_like_total`) during resolution — it never picks a number. A label
+    like "total revenue" or "consolidated net sales" → True. This reads the request's
+    intent from its words; the GRID's values then decide what actually is a total.
+    """
+    return bool(_AGGREGATE_RE.search(label or ""))
+
+
+def is_lineitem_label(label: str, max_words: int = 6) -> bool:
+    """Is `label` a plausible financial LINE-ITEM, vs a prose/narrative fragment?
+
+    A grounding safety check (§5.1): when geometry over a NARRATIVE page produces a
+    pseudo-table, a row's "label" is a full sentence and its "value" is a number that
+    leaked out of the prose (e.g. "Microsoft Cloud revenue Revenue from Azure and other
+    cloud services, Office" with value 365 — the '365' of "Microsoft 365"). Binding a
+    figure from such a row is a confident-wrong. Real line-items are short noun
+    phrases ("Total revenue", "Net income"); narrative fragments are long sentences.
+
+    Structural (reads form, not content; same discipline as Layer 0 `_is_section_header`
+    rejecting >6-word headers): reject labels that exceed `max_words` OR read like a
+    sentence (a comma mid-label, or a trailing period). No keyword list.
+    """
+    s = (label or "").strip()
+    if not s:
+        return False
+    if len(s.split()) > max_words:
+        return False
+    if "," in s:                       # a comma signals an enumerated prose clause
+        return False
+    if s.endswith(".") and not s.endswith(".."):  # a sentence, not a label
+        return False
+    return True
+
+
+def _section_rows(grid: "Grid", section: str) -> List[Dict[str, Any]]:
+    """Rows of `grid` that genuinely belong to `section` (strict, value-bearing)."""
+    return [r for r in grid.rows if _norm_section_match(r, section or "")]
+
+
+def looks_like_total(grid: "Grid", row: Dict[str, Any], period: str,
+                     rel_tol: float = 0.02) -> Optional[bool]:
+    """Is `row` plausibly a TOTAL at `period` (vs a component child)? Structural.
+
+    Returns True  — the row equals (within rel_tol) the sum of the OTHER numeric
+                    rows in its section at this period (a genuine total/subtotal),
+                    OR it is the single largest numeric row by a clear margin
+                    (a lone total with components elsewhere).
+            False — the row is materially SMALLER than the section's largest numeric
+                    row at this period (it is a component/child, not the total).
+            None  — undecidable (period missing, too few numeric siblings) → the
+                    caller must not treat absence of evidence as a level failure.
+
+    No label list, no hardcoding — the values decide. `rel_tol` absorbs rounding
+    and the "≈" in "total ≈ Σ children".
+    """
+    try:
+        target = parse_cell(row.get(period, ""))
+    except CellError:
+        return None
+    section = row.get("section", "")
+    siblings = _section_rows(grid, section)
+    # numeric values of the OTHER rows at this period (the candidate components)
+    others: List[float] = []
+    for r in siblings:
+        if r is row:
+            continue
+        try:
+            others.append(parse_cell(r.get(period, "")))
+        except CellError:
+            continue
+    if len(others) < 1:
+        return None  # nothing to compare against — undecidable
+
+    # (a) does target ≈ Σ of a plausible component set? The simplest, strongest
+    #     signal: target equals the sum of ALL other numeric siblings. (Statements
+    #     often interleave non-additive lines, so we also accept being within tol of
+    #     that sum — a near-match still indicts a *component* answer being wrong.)
+    sib_sum = sum(others)
+    if sib_sum != 0 and abs(target - sib_sum) <= rel_tol * abs(sib_sum):
+        return True
+
+    # (b) magnitude test: a total is the LARGEST (or tied-largest) numeric line in
+    #     its section at this period. If a strictly larger sibling exists, `row` is
+    #     a component, not the total → False. If `target` dominates, → True.
+    biggest = max(others + [target], key=abs)
+    if abs(target) >= abs(biggest) - 1e-9:
+        return True
+    # there is a materially larger sibling ⇒ this row is a child line
+    if abs(target) < abs(biggest) * (1 - rel_tol):
+        return False
+    return None
+
+
 def compute(spec: Dict[str, Any], grids: List[Grid]) -> ComputeResult:
     """Interpret ONE validated spec against the available grids. Deterministic.
 
@@ -365,13 +478,48 @@ def compute(spec: Dict[str, Any], grids: List[Grid]) -> ComputeResult:
                 )
 
         # pass 2: section-agnostic. Collect ALL matches; abstain if they disagree.
-        matches, last_err = [], None
+        # Grounding delegation (§5.1): when the requested label signals an AGGREGATE
+        # ("total revenue", "consolidated net sales"), apply the value-based
+        # aggregation-level guard — drop any candidate that is structurally a
+        # COMPONENT (looks_like_total → False) before the disagreement check. This is
+        # the structural fix for the §2.1 "total revenue → Gross margin" confident-
+        # wrong: a total request can never bind a child line. Pure tightening — it can
+        # only turn a wrong/ambiguous bind into an abstain, never change a good bind
+        # (kernel gates that use precise component labels are unaffected). No label
+        # list decides the total; the values do.
+        want_total = _is_aggregate_request(label)
+        matches, last_err, dropped_prose = [], None, False
         for g in grids_list:
+            r = g.find_row(label, "")
+            if r is None:
+                continue
+            # Prose-fragment guard (§5.1): the RESOLVED row's own label must read like
+            # a financial line-item, not a narrative sentence — otherwise the figure
+            # leaked out of prose (geometry over a text page) and binding it is a
+            # confident-wrong. Drop it; let resolution fall to a real table or abstain.
+            if not is_lineitem_label(r.get("label", "")):
+                dropped_prose = True
+                continue
             try:
-                matches.append(g.cell(label, period, ""))
+                cell = g.cell(label, period, "")
             except CellError as e:
                 last_err = e
+                continue
+            if want_total and looks_like_total(g, r, period) is False:
+                continue  # asked for a total, this row is a component → disqualify
+            matches.append(cell)
         if not matches:
+            # nothing resolvable — distinguish the structural drops from "no row at all"
+            if want_total and last_err is None:
+                raise CellError(
+                    f"no aggregate/total row for {label!r}[{period}] "
+                    f"(matches were component lines — abstaining, not a child)"
+                )
+            if dropped_prose:
+                raise CellError(
+                    f"no line-item row for {label!r}[{period}] "
+                    f"(only prose-fragment matches — abstaining, not a narrative number)"
+                )
             raise CellError(str(last_err) if last_err else f"cell not resolvable: {label!r} [{period}]")
         vals = {round(c.value, 4) for c in matches}
         if len(vals) == 1:
