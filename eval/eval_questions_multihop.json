@@ -1,52 +1,272 @@
 [
   {
-    "_comment": "Multi-hop (bridge) eval set for the live 'very big' collection (id d1ef8357-5cf0-4f34-9f91-db5ba511f788, 8 docs: GOOG FY21/22/23, MSFT FY21/22/23, AMZN FY22/23). Each question REQUIRES chaining a fact: find A in one filing, then use A to look up B (often in another filing). This is where the sequential multi-hop loop should beat the parallel-decompose retriever, which fires all sub-queries at once and can't condition hop 2 on hop 1's finding. 'gold_doc_filenames' = the docs that MUST be reached to answer. 'answer_must_include' = facts/strings the final answer must contain (LLM-judged, phrasing-robust). 'bridge_fact' = the intermediate fact hop 1 must surface for hop 2 to work (for diagnosis, not scored directly).",
+    "_comment": "Phase 4.6 (§7) measurement set for the live 'very big' collection (8 docs: GOOG FY21/22/23, MSFT FY21/22/23, AMZN FY22/23). EXPANDED 2026-06-08 from 5 → 27 questions across the §7 distribution so WRONG-rate is measured over the real question mix, not just bridges. Every numeric ground_truth is VERIFIED against the live table grids (see eval/_dump_grids notes / aws-20b-gold-correction memory) — NOT free-recalled. 'query_type' tags the category for per-bucket WRONG-rate breakdown: extremum_pivot (argmax/argmin/first_exceeds — THE failure class Layer 1 selection ops target), lookup_pivot (resolve a stated pivot then read a value), qualitative (route to the claims+verifier path, NOT the deterministic kernel), single_hop_control (must NOT regress — guards the prime directive). 'answer_must_include' = facts the final answer must contain (LLM-judged, phrasing/rounding-robust). 'bridge_fact' = the intermediate fact the reasoning must surface (diagnosis only, not scored directly).",
     "_collection_name": "very big",
-    "_collection_id": "d1ef8357-5cf0-4f34-9f91-db5ba511f788"
+    "_collection_id": "d1ef8357-5cf0-4f34-9f91-db5ba511f788",
+    "_verified_figures": {
+      "_units": "USD millions unless noted",
+      "goog_total_revenue": {"2021": 257637, "2022": 282836, "2023": 307394},
+      "goog_rnd": {"2021": 31562, "2022": 39500, "2023": 45427},
+      "goog_net_income": {"2021": 76033, "2022": 59972, "2023": 73795},
+      "goog_cloud_revenue": {"2021": 19206, "2022": 26280, "2023": 33088},
+      "goog_cloud_op_income": {"2021": -2282, "2022": -1922, "2023": 1716},
+      "msft_op_income": {"2021": 69916, "2022": 83383, "2023": 88523},
+      "msft_net_income": {"2021": 61271, "2022": 72738, "2023": 72361},
+      "msft_total_revenue_known": {"2021": 168088, "2022": 198270, "2023": 211915},
+      "amzn_net_sales": {"2021": 469822, "2022": 513983, "2023": 574785},
+      "amzn_tech_infra_rnd": {"2021": 56052, "2022": 73213, "2023": 85622},
+      "amzn_net_income": {"2021": 33364, "2022": -2722, "2023": 30425},
+      "aws_op_income": {"2020": 13531, "2021": 18532, "2022": 22841, "2023": 24631},
+      "aws_net_sales": {"2020": 45370, "2021": 62202, "2022": 80096, "2023": 90757},
+      "msft_largest_acquisition": "Activision Blizzard ~$68.7B, closed fiscal 2023"
+    }
   },
+
   {
     "question": "In the fiscal year that Microsoft's total revenue was closest to $200 billion, what total revenue did Alphabet (Google) report?",
-    "bridge_fact": "Microsoft total revenue was ~$198B in FY2022 (closest to $200B); the bridge year is fiscal 2022.",
+    "bridge_fact": "Microsoft total revenue was ~$198.3B in FY2022 (closest to $200B); the bridge year is fiscal 2022.",
     "answer_must_include": ["2022", "282"],
     "ground_truth": "Microsoft's FY2022 revenue was ~$198.3B (closest to $200B). In that same period Alphabet reported total revenue of ~$282.8B (2022). The bridge is identifying FY2022 from Microsoft, then reading Alphabet's 2022 revenue.",
     "gold_doc_filenames": ["msft-10k_20220630.htm.pdf", "goog-20221231.pdf"],
     "min_docs_required": 2,
-    "query_type": "bridge"
+    "query_type": "lookup_pivot"
   },
   {
     "question": "In the fiscal year Amazon's AWS segment operating income first exceeded $20 billion, what was Amazon's total consolidated net sales?",
-    "bridge_fact": "AWS operating income first exceeded $20B in FY2021 ($22.6B); bridge year is 2021. (AWS FY2021 data appears in the FY2022 10-K's comparatives.)",
-    "answer_must_include": ["2021", "469"],
-    "ground_truth": "AWS operating income first crossed $20B in 2021 (~$22.6B). Amazon's total consolidated net sales in 2021 were ~$469.8B. Bridge: find the AWS $20B year, then read total net sales for it.",
+    "bridge_fact": "AWS operating income by year (verified amzn-20221231.pdf p42/p108): 2020=$13.5B, 2021=$18.5B (below $20B), 2022=$22.8B (FIRST above $20B), 2023=$24.6B. Bridge year is 2022, NOT 2021. The 2021-below-threshold trap is exactly the first_exceeds selection the executive layer must compute deterministically.",
+    "answer_must_include": ["2022", "513"],
+    "ground_truth": "AWS operating income first crossed $20B in 2022 ($22,841M); 2021 was $18,532M (below the threshold). Amazon's total consolidated net sales in 2022 were $513,983M (~$514B). Bridge: scan the AWS op-income series for the first year above $20B (2022), then read total net sales for that year.",
     "gold_doc_filenames": ["amzn-20221231.pdf"],
     "min_docs_required": 1,
-    "query_type": "bridge"
+    "query_type": "extremum_pivot"
   },
   {
     "question": "For the company among Google, Microsoft, and Amazon with the highest total revenue in fiscal 2023, what were that same company's fiscal 2023 research and development expenses?",
-    "bridge_fact": "Amazon had the highest FY2023 revenue (~$574.8B, vs Alphabet ~$307.4B, Microsoft ~$211.9B). Bridge: identify Amazon, then read Amazon's FY2023 R&D ('technology and infrastructure' ~$85.6B).",
-    "answer_must_include": ["Amazon"],
-    "ground_truth": "Amazon had the highest FY2023 revenue (~$574.8B). Amazon's FY2023 technology-and-infrastructure (R&D) expense was ~$85.6B. Bridge: rank revenue to pick Amazon, then read its R&D.",
+    "bridge_fact": "Amazon had the highest FY2023 revenue ($574.8B, vs Alphabet $307.4B, Microsoft ~$211.9B). Bridge: argmax → Amazon, then read Amazon's FY2023 R&D ('technology and infrastructure' $85.6B).",
+    "answer_must_include": ["Amazon", "85"],
+    "ground_truth": "Amazon had the highest FY2023 revenue ($574,785M). Amazon's FY2023 technology-and-infrastructure (R&D) expense was $85,622M (~$85.6B). Bridge: argmax over three revenues to pick Amazon, then read its R&D.",
     "gold_doc_filenames": ["amzn-20231231.pdf"],
     "min_docs_required": 1,
-    "query_type": "bridge"
+    "query_type": "extremum_pivot"
   },
   {
     "question": "Alphabet reports a 'Google Cloud' operating segment. In Alphabet's fiscal 2023 report, did Google Cloud reach profitability, and what was its fiscal 2023 operating income or loss?",
-    "bridge_fact": "Google Cloud turned profitable in FY2023 with operating income ~$1.7B (vs a loss in prior years). Single-doc but requires resolving the segment then its FY2023 figure.",
-    "answer_must_include": ["2023", "profit"],
-    "ground_truth": "Google Cloud reached profitability in FY2023, reporting operating income of ~$1.7B, reversing prior-year operating losses.",
+    "bridge_fact": "Google Cloud turned profitable in FY2023 with operating income $1,716M (vs operating losses in prior years: 2021 -$2,282M, 2022 -$1,922M). Single-doc but requires resolving the segment then its FY2023 figure.",
+    "answer_must_include": ["2023", "profit", "1,7"],
+    "ground_truth": "Google Cloud reached profitability in FY2023, reporting operating income of $1,716M (~$1.7B), reversing prior-year operating losses (-$1,922M in 2022).",
     "gold_doc_filenames": ["goog-20231231.pdf"],
     "min_docs_required": 1,
-    "query_type": "bridge"
+    "query_type": "qualitative"
   },
   {
     "question": "Across these filings, in the fiscal year Microsoft acquired the largest company it discloses acquiring, what was Microsoft's total revenue that year?",
-    "bridge_fact": "Microsoft's largest disclosed acquisition is Activision Blizzard (~$69B), closed in FY2023; bridge year FY2023, MSFT FY2023 revenue ~$211.9B.",
+    "bridge_fact": "Microsoft's largest disclosed acquisition is Activision Blizzard (~$68.7B), closed in FY2023; bridge year FY2023, MSFT FY2023 revenue ~$211.9B.",
     "answer_must_include": ["Activision", "2023"],
     "ground_truth": "Microsoft's largest disclosed acquisition is Activision Blizzard (~$68.7B), completed in fiscal 2023. Microsoft's FY2023 total revenue was ~$211.9B. Bridge: identify the acquisition+year, then read that year's revenue.",
     "gold_doc_filenames": ["0000950170-23-035122.pdf"],
     "min_docs_required": 1,
-    "query_type": "bridge"
+    "query_type": "extremum_pivot"
+  },
+
+  {
+    "question": "Among Google, Microsoft, and Amazon, which company reported the lowest net income in fiscal 2022, and what was that net income figure?",
+    "bridge_fact": "FY2022 net income: GOOG $59,972M, MSFT $72,738M, AMZN -$2,722M (a net LOSS). Amazon is the argmin (and the only loss). Trap: a model may skip the negative or pick Google's lower-than-MSFT figure.",
+    "answer_must_include": ["Amazon", "2,722"],
+    "ground_truth": "Amazon reported the lowest fiscal-2022 net income: a net LOSS of $2,722M (-$2.7B), vs Alphabet $59,972M and Microsoft $72,738M. argmin over the three.",
+    "gold_doc_filenames": ["amzn-20221231.pdf"],
+    "min_docs_required": 1,
+    "query_type": "extremum_pivot"
+  },
+  {
+    "question": "Looking at Amazon's AWS segment net sales over 2020-2023, in which fiscal year did AWS net sales first exceed $80 billion, and what was the figure that year?",
+    "bridge_fact": "AWS net sales: 2020 $45,370M, 2021 $62,202M, 2022 $80,096M (FIRST above $80B), 2023 $90,757M. first_exceeds($80B) = 2022. Trap: 2022 is only just over $80B; a model may pick 2023.",
+    "answer_must_include": ["2022", "80,096"],
+    "ground_truth": "AWS net sales first exceeded $80B in fiscal 2022, at $80,096M. (2021 was $62,202M, below the threshold.)",
+    "gold_doc_filenames": ["amzn-20221231.pdf", "amzn-20231231.pdf"],
+    "min_docs_required": 1,
+    "query_type": "extremum_pivot"
+  },
+  {
+    "question": "For the company among Google, Microsoft, and Amazon with the highest net income in fiscal 2021, what was that company's net income in fiscal 2022?",
+    "bridge_fact": "FY2021 net income: GOOG $76,033M (highest), MSFT $61,271M, AMZN $33,364M. argmax → Google. Then Google's FY2022 net income = $59,972M. Bridge: argmax on 2021, then look up 2022 for the winner.",
+    "answer_must_include": ["59,972"],
+    "ground_truth": "Alphabet (Google) had the highest fiscal-2021 net income ($76,033M). Alphabet's fiscal-2022 net income was $59,972M (~$60.0B). Bridge: argmax over 2021 net income → Google, then read Google's 2022 net income.",
+    "gold_doc_filenames": ["goog-20221231.pdf"],
+    "min_docs_required": 1,
+    "query_type": "extremum_pivot"
+  },
+  {
+    "question": "In the fiscal year Alphabet's R&D expense first exceeded $40 billion, what was Alphabet's total revenue that year?",
+    "bridge_fact": "Alphabet R&D: 2021 $31,562M, 2022 $39,500M (just below $40B), 2023 $45,427M (FIRST above $40B). first_exceeds($40B) = 2023 → total revenue $307,394M. Trap: 2022's $39.5B is deceptively close to $40B; a model may wrongly pick 2022.",
+    "answer_must_include": ["2023", "307"],
+    "ground_truth": "Alphabet's R&D first exceeded $40B in fiscal 2023 ($45,427M); 2022 was $39,500M (just below). Alphabet's total revenue in 2023 was $307,394M (~$307.4B).",
+    "gold_doc_filenames": ["goog-20231231.pdf"],
+    "min_docs_required": 1,
+    "query_type": "extremum_pivot"
+  },
+  {
+    "question": "Among Amazon's three reportable segments (North America, International, AWS), which had the highest operating income in fiscal 2022, and what was it?",
+    "bridge_fact": "FY2022 segment operating income (amzn-20221231.pdf p108): North America -$2,847M (loss), International -$7,746M (loss), AWS $22,841M. argmax → AWS. Trap: NA and International were both losses in 2022, so AWS is the only profitable segment.",
+    "answer_must_include": ["AWS", "22,841"],
+    "ground_truth": "AWS had the highest fiscal-2022 operating income among Amazon's segments: $22,841M. North America (-$2,847M) and International (-$7,746M) both posted operating losses that year. argmax over the three.",
+    "gold_doc_filenames": ["amzn-20221231.pdf"],
+    "min_docs_required": 1,
+    "query_type": "extremum_pivot"
+  },
+  {
+    "question": "Over fiscal 2021 to 2023, in which year did Amazon's total net sales grow the most in absolute dollar terms year-over-year, and by how much?",
+    "bridge_fact": "Amazon net sales: 2021 $469,822M, 2022 $513,983M (+$44,161M), 2023 $574,785M (+$60,802M). Largest YoY absolute jump = 2022→2023 (+$60.8B). Requires computing two deltas then argmax over them.",
+    "answer_must_include": ["2023", "60"],
+    "ground_truth": "Amazon's largest absolute year-over-year net-sales growth was from 2022 to 2023: +$60,802M (~$60.8B), reaching $574,785M. (The 2021→2022 increase was smaller at +$44,161M.)",
+    "gold_doc_filenames": ["amzn-20231231.pdf"],
+    "min_docs_required": 1,
+    "query_type": "extremum_pivot"
+  },
+
+  {
+    "question": "Amazon's AWS segment operating income was $24,631 million in fiscal 2023. What was Amazon's total consolidated net sales in that same fiscal year?",
+    "bridge_fact": "The pivot year (2023) is STATED, not computed. Just resolve 2023 → total net sales $574,785M. A lookup_pivot control: the executive layer should NOT over-think this into an extremum scan.",
+    "answer_must_include": ["574"],
+    "ground_truth": "In fiscal 2023 Amazon's total consolidated net sales were $574,785M (~$574.8B), the same year AWS operating income was $24,631M.",
+    "gold_doc_filenames": ["amzn-20231231.pdf"],
+    "min_docs_required": 1,
+    "query_type": "lookup_pivot"
+  },
+  {
+    "question": "In the fiscal year that Alphabet reported total revenue of about $282.8 billion, what was Alphabet's research and development expense?",
+    "bridge_fact": "$282.8B total revenue identifies FY2022 (a stated-value pivot). Then Alphabet's FY2022 R&D = $39,500M. Bridge: match the revenue to the year, then read R&D for it.",
+    "answer_must_include": ["39,500"],
+    "ground_truth": "Alphabet's total revenue of ~$282.8B was fiscal 2022. Alphabet's fiscal-2022 R&D expense was $39,500M (~$39.5B).",
+    "gold_doc_filenames": ["goog-20221231.pdf"],
+    "min_docs_required": 1,
+    "query_type": "lookup_pivot"
+  },
+  {
+    "question": "Microsoft's fiscal 2023 operating income was $88,523 million. In that same fiscal year, what total net sales did Amazon report?",
+    "bridge_fact": "MSFT op income $88,523M is the FY2023 figure → pivot year 2023. Then Amazon FY2023 net sales = $574,785M. Cross-company lookup_pivot on a stated value.",
+    "answer_must_include": ["2023", "574"],
+    "ground_truth": "Microsoft's operating income of $88,523M was fiscal 2023. In fiscal 2023 Amazon reported total net sales of $574,785M (~$574.8B).",
+    "gold_doc_filenames": ["0000950170-23-035122.pdf", "amzn-20231231.pdf"],
+    "min_docs_required": 2,
+    "query_type": "lookup_pivot"
+  },
+  {
+    "question": "In the fiscal year Amazon posted a net loss, what was Amazon's total net sales, and what was AWS's operating income that year?",
+    "bridge_fact": "Amazon's only net loss in-range was fiscal 2022 (-$2,722M). Pivot → 2022: total net sales $513,983M, AWS operating income $22,841M. Bridge: find the loss year (a qualitative/selection pivot), then read two values for it.",
+    "answer_must_include": ["2022", "513", "22,841"],
+    "ground_truth": "Amazon posted a net loss in fiscal 2022 (-$2,722M). That year total net sales were $513,983M and AWS operating income was $22,841M.",
+    "gold_doc_filenames": ["amzn-20221231.pdf"],
+    "min_docs_required": 1,
+    "query_type": "lookup_pivot"
+  },
+  {
+    "question": "Google Cloud first became profitable on an operating basis in fiscal 2023. What was Alphabet's total company R&D expense in that same year?",
+    "bridge_fact": "The pivot (Google Cloud's first profitable year = 2023) is stated in the question. Resolve 2023 → Alphabet total R&D $45,427M. lookup_pivot, single doc.",
+    "answer_must_include": ["45,427"],
+    "ground_truth": "In fiscal 2023 (Google Cloud's first operating-profitable year), Alphabet's total R&D expense was $45,427M (~$45.4B).",
+    "gold_doc_filenames": ["goog-20231231.pdf"],
+    "min_docs_required": 1,
+    "query_type": "lookup_pivot"
+  },
+  {
+    "question": "In the fiscal year Microsoft completed its largest disclosed acquisition, what was Amazon's total net sales?",
+    "bridge_fact": "Microsoft's largest acquisition (Activision Blizzard) closed in fiscal 2023 → cross-company bridge to Amazon FY2023 net sales $574,785M.",
+    "answer_must_include": ["2023", "574"],
+    "ground_truth": "Microsoft's largest acquisition, Activision Blizzard, closed in fiscal 2023. In fiscal 2023 Amazon's total net sales were $574,785M (~$574.8B). Bridge: resolve the acquisition year from Microsoft, then read Amazon's net sales for it.",
+    "gold_doc_filenames": ["0000950170-23-035122.pdf", "amzn-20231231.pdf"],
+    "min_docs_required": 2,
+    "query_type": "lookup_pivot"
+  },
+  {
+    "question": "AWS net sales were $90,757 million in one of these fiscal years. In that year, what was Amazon's consolidated operating income?",
+    "bridge_fact": "AWS net sales $90,757M = fiscal 2023 → Amazon consolidated operating income 2023 = $36,852M. lookup_pivot on a stated AWS figure, then read the consolidated line for the same year.",
+    "answer_must_include": ["36,852"],
+    "ground_truth": "AWS net sales of $90,757M were fiscal 2023. In fiscal 2023 Amazon's consolidated operating income was $36,852M (~$36.9B).",
+    "gold_doc_filenames": ["amzn-20231231.pdf"],
+    "min_docs_required": 1,
+    "query_type": "lookup_pivot"
+  },
+
+  {
+    "question": "Did Amazon's International segment operate at a profit or a loss in fiscal 2022?",
+    "bridge_fact": "Amazon International segment operating income fiscal 2022 = -$7,746M (a loss). Qualitative — route to claims+verifier, not the arithmetic kernel. Trap: the model must not confuse with the profitable North America/AWS segments.",
+    "answer_must_include": ["loss"],
+    "ground_truth": "Amazon's International segment operated at a LOSS in fiscal 2022: an operating loss of $7,746M (-$7.7B).",
+    "gold_doc_filenames": ["amzn-20221231.pdf"],
+    "min_docs_required": 1,
+    "query_type": "qualitative"
+  },
+  {
+    "question": "Across fiscal 2021 to 2023, was Google Cloud's operating result a profit or a loss in fiscal 2022?",
+    "bridge_fact": "Google Cloud operating income (loss): 2021 -$2,282M, 2022 -$1,922M (a loss), 2023 +$1,716M. In 2022 it was still a LOSS. Qualitative; the trap is 2023's profit bleeding into a 2022 answer.",
+    "answer_must_include": ["loss"],
+    "ground_truth": "In fiscal 2022 Google Cloud was still operating at a LOSS: an operating loss of $1,922M (-$1.9B). It did not turn profitable until fiscal 2023.",
+    "gold_doc_filenames": ["goog-20221231.pdf", "goog-20231231.pdf"],
+    "min_docs_required": 1,
+    "query_type": "qualitative"
+  },
+  {
+    "question": "Based on these filings, did Amazon's total net sales increase every fiscal year from 2021 through 2023?",
+    "bridge_fact": "Amazon net sales: 2021 $469,822M → 2022 $513,983M → 2023 $574,785M — monotonically increasing. Answer: YES. Qualitative trend judgement over a complete series. (Note net INCOME fell in 2022; the question is about net SALES — a trap if the model conflates the two.)",
+    "answer_must_include": ["yes"],
+    "ground_truth": "Yes — Amazon's total net sales rose every year: $469,822M (2021) → $513,983M (2022) → $574,785M (2023). (Net income fell in 2022, but net sales still grew.)",
+    "gold_doc_filenames": ["amzn-20221231.pdf", "amzn-20231231.pdf"],
+    "min_docs_required": 1,
+    "query_type": "qualitative"
+  },
+  {
+    "question": "According to these filings, which had a larger fiscal 2023 operating loss for Alphabet: Google Cloud, or no segment (i.e., was Google Cloud profitable in 2023)?",
+    "bridge_fact": "Google Cloud was PROFITABLE in fiscal 2023 (+$1,716M operating income) — it had NO operating loss that year. The correct answer is that Google Cloud was profitable / had no 2023 loss. Qualitative; a poorly-grounded model may assert a phantom loss.",
+    "answer_must_include": ["profit"],
+    "ground_truth": "Google Cloud had NO operating loss in fiscal 2023 — it was profitable, with operating income of $1,716M. The premise of a 2023 Google Cloud loss is false.",
+    "gold_doc_filenames": ["goog-20231231.pdf"],
+    "min_docs_required": 1,
+    "query_type": "qualitative"
+  },
+
+  {
+    "question": "What was Amazon's total net sales in fiscal 2023?",
+    "bridge_fact": "Single-hop control — one stated value, no pivot. Amazon FY2023 total net sales = $574,785M. Must NOT regress; the executive layer should route this to the fast path.",
+    "answer_must_include": ["574"],
+    "ground_truth": "Amazon's total net sales in fiscal 2023 were $574,785M (~$574.8B).",
+    "gold_doc_filenames": ["amzn-20231231.pdf"],
+    "min_docs_required": 1,
+    "query_type": "single_hop_control"
+  },
+  {
+    "question": "What was Alphabet's total revenue in fiscal 2022?",
+    "bridge_fact": "Single-hop control. Alphabet FY2022 total revenue = $282,836M. No reasoning required beyond a direct lookup.",
+    "answer_must_include": ["282"],
+    "ground_truth": "Alphabet's total revenue in fiscal 2022 was $282,836M (~$282.8B).",
+    "gold_doc_filenames": ["goog-20221231.pdf"],
+    "min_docs_required": 1,
+    "query_type": "single_hop_control"
+  },
+  {
+    "question": "What was Microsoft's operating income in fiscal 2023?",
+    "bridge_fact": "Single-hop control. MSFT FY2023 operating income = $88,523M. Direct lookup.",
+    "answer_must_include": ["88,523"],
+    "ground_truth": "Microsoft's operating income in fiscal 2023 was $88,523M (~$88.5B).",
+    "gold_doc_filenames": ["0000950170-23-035122.pdf"],
+    "min_docs_required": 1,
+    "query_type": "single_hop_control"
+  },
+  {
+    "question": "What was Amazon's AWS segment operating income in fiscal 2023?",
+    "bridge_fact": "Single-hop control. AWS FY2023 operating income = $24,631M. Direct segment lookup — no series scan, no pivot.",
+    "answer_must_include": ["24,631"],
+    "ground_truth": "Amazon's AWS segment operating income in fiscal 2023 was $24,631M (~$24.6B).",
+    "gold_doc_filenames": ["amzn-20231231.pdf"],
+    "min_docs_required": 1,
+    "query_type": "single_hop_control"
+  },
+  {
+    "question": "What was Alphabet's research and development expense in fiscal 2021?",
+    "bridge_fact": "Single-hop control. Alphabet FY2021 R&D = $31,562M. Direct lookup; guards against regressions on the simplest path.",
+    "answer_must_include": ["31,562"],
+    "ground_truth": "Alphabet's research and development expense in fiscal 2021 was $31,562M (~$31.6B).",
+    "gold_doc_filenames": ["goog-20211231.pdf"],
+    "min_docs_required": 1,
+    "query_type": "single_hop_control"
   }
 ]

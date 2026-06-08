@@ -116,10 +116,16 @@ def main():
     judge_llm = ChatOpenAI(model="gpt-4o", temperature=0.0, api_key=config.OPENAI_API_KEY, request_timeout=30)
 
     buckets = {"CORRECT": 0, "ABSTAINED": 0, "WRONG": 0}
+    # Per-category breakdown — the §7 headline view. WRONG-rate is expected to
+    # concentrate in extremum_pivot (the failure class Phase 4.6 Layer 1 targets);
+    # single_hop_control WRONG must stay ~0 (the prime-directive regression guard).
+    from collections import defaultdict
+    by_type = defaultdict(lambda: {"CORRECT": 0, "ABSTAINED": 0, "WRONG": 0})
     rows = []
     for qi, item in enumerate(questions, 1):
         q = item["question"]
         required = item.get("answer_must_include", [])
+        qtype = item.get("query_type", "untyped")
         doc_chunks = _brain_retrieve(retrieval_mgr, q, filenames, per_doc_k)
         try:
             result = brain.run(query=q, doc_chunks=doc_chunks)
@@ -129,20 +135,34 @@ def main():
             print(f"[{qi}] Brain.run ERROR: {e}")
         bucket = _classify(q, required, answer, judge_llm)
         buckets[bucket] += 1
-        rows.append({"q": q, "bucket": bucket, "answer_head": answer[:160]})
-        print(f"[{qi}/{len(questions)}] {bucket:<9} {q[:70]}")
+        by_type[qtype][bucket] += 1
+        rows.append({"q": q, "query_type": qtype, "bucket": bucket, "answer_head": answer[:160]})
+        print(f"[{qi}/{len(questions)}] {bucket:<9} [{qtype:<18}] {q[:55]}")
         print(f"       → {answer[:160].strip() or '(empty)'}\n")
 
     n = len(questions)
-    print("=" * 60)
+    print("=" * 68)
     print(f"  CORRECT   : {buckets['CORRECT']}/{n}")
     print(f"  ABSTAINED : {buckets['ABSTAINED']}/{n}   (safe — 'I can't verify this')")
     print(f"  WRONG     : {buckets['WRONG']}/{n}   (DANGEROUS — confident & false)")
-    print("=" * 60)
-    print(f"  Dangerous-wrong rate: {buckets['WRONG']/n:.0%}")
+    print("=" * 68)
+    print(f"  Dangerous-wrong rate (headline): {buckets['WRONG']/n:.0%}\n")
+
+    # Per-category WRONG-rate — where the danger lives, and the regression guard.
+    print("  By query_type (CORRECT / ABSTAINED / WRONG → WRONG-rate):")
+    for qtype in sorted(by_type):
+        b = by_type[qtype]
+        tn = b["CORRECT"] + b["ABSTAINED"] + b["WRONG"]
+        flag = "  ⚠️ REGRESSION" if (qtype == "single_hop_control" and b["WRONG"]) else ""
+        print(f"    {qtype:<20} {b['CORRECT']:>2} / {b['ABSTAINED']:>2} / {b['WRONG']:>2}"
+              f"   → {b['WRONG']/tn:.0%} wrong{flag}")
+    print("=" * 68)
 
     with open("eval/brain_solo_results.json", "w") as f:
-        json.dump({"collection_id": collection_id, "n": n, "buckets": buckets, "rows": rows}, f, indent=2)
+        json.dump({
+            "collection_id": collection_id, "n": n,
+            "buckets": buckets, "by_type": dict(by_type), "rows": rows,
+        }, f, indent=2)
     print("Wrote eval/brain_solo_results.json")
 
 
