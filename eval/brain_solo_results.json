@@ -1,195 +1,114 @@
 {
   "collection_id": "d1ef8357-5cf0-4f34-9f91-db5ba511f788",
-  "n": 27,
+  "n": 5,
   "buckets": {
-    "CORRECT": 13,
-    "ABSTAINED": 9,
-    "WRONG": 5
+    "CORRECT": 2,
+    "ABSTAINED": 2,
+    "WRONG": 1
   },
   "by_type": {
     "lookup_pivot": {
-      "CORRECT": 3,
-      "ABSTAINED": 3,
-      "WRONG": 2
-    },
-    "extremum_pivot": {
-      "CORRECT": 4,
-      "ABSTAINED": 2,
-      "WRONG": 3
-    },
-    "qualitative": {
-      "CORRECT": 5,
+      "CORRECT": 1,
       "ABSTAINED": 0,
       "WRONG": 0
     },
-    "single_hop_control": {
+    "extremum_pivot": {
+      "CORRECT": 0,
+      "ABSTAINED": 2,
+      "WRONG": 1
+    },
+    "qualitative": {
       "CORRECT": 1,
-      "ABSTAINED": 4,
+      "ABSTAINED": 0,
       "WRONG": 0
     }
+  },
+  "coverage": {
+    "covered": 5,
+    "measurable": 5,
+    "rate": 1.0,
+    "wrong_with_full_coverage": 1,
+    "wrong_with_missing_coverage": 0
+  },
+  "abstention_usefulness": {
+    "total": 2,
+    "useful": 2,
+    "wasteful_single_hop": 0,
+    "other": 0,
+    "useful_rate": 1.0
   },
   "rows": [
     {
       "q": "In the fiscal year that Microsoft's total revenue was closest to $200 billion, what total revenue did Alphabet (Google) report?",
       "query_type": "lookup_pivot",
       "bucket": "CORRECT",
-      "answer_head": "In the fiscal year 2022, Microsoft's total revenue was $198,270 million, which is the closest to $200 billion among the fiscal years reported [Source: msft-10k_"
+      "answer_head": "In the fiscal year 2022, Microsoft's total revenue was $198,270 million, which is the closest to $200 billion among the years reported [Source: msft-10k_2022063",
+      "gold_docs": [
+        "msft-10k_20220630.htm.pdf",
+        "goog-20221231.pdf"
+      ],
+      "gold_hit": [
+        "goog-20221231.pdf",
+        "msft-10k_20220630.htm.pdf"
+      ],
+      "min_docs": 2,
+      "covered": true
     },
     {
       "q": "In the fiscal year Amazon's AWS segment operating income first exceeded $20 billion, what was Amazon's total consolidated net sales?",
       "query_type": "extremum_pivot",
       "bucket": "WRONG",
-      "answer_head": "In the fiscal year 2023, Amazon's AWS segment operating income first exceeded $20 billion, reaching $24,631 million [Source: amzn-20231231.pdf; Source: goog-202"
+      "answer_head": "In the fiscal year when Amazon's AWS segment operating income first exceeded $20 billion, Amazon's total consolidated net sales were $574,785 million [Source: a",
+      "gold_docs": [
+        "amzn-20221231.pdf"
+      ],
+      "gold_hit": [
+        "amzn-20221231.pdf"
+      ],
+      "min_docs": 1,
+      "covered": true
     },
     {
       "q": "For the company among Google, Microsoft, and Amazon with the highest total revenue in fiscal 2023, what were that same company's fiscal 2023 research and development expenses?",
       "query_type": "extremum_pivot",
       "bucket": "ABSTAINED",
-      "answer_head": "I can only partially answer this question based on the available documents. Here is what I found, but please treat it as preliminary:\n\nTo determine the company "
+      "answer_head": "I can only partially answer this question based on the available documents. Here is what I found, but please treat it as preliminary:\n\nTo determine which compan",
+      "gold_docs": [
+        "amzn-20231231.pdf"
+      ],
+      "gold_hit": [
+        "amzn-20231231.pdf"
+      ],
+      "min_docs": 1,
+      "covered": true
     },
     {
       "q": "Alphabet reports a 'Google Cloud' operating segment. In Alphabet's fiscal 2023 report, did Google Cloud reach profitability, and what was its fiscal 2023 operating income or loss?",
       "query_type": "qualitative",
       "bucket": "CORRECT",
-      "answer_head": "In Alphabet's fiscal 2023 report, Google Cloud reached profitability with an operating income of $1.7 billion. This marks a significant improvement from the pre"
+      "answer_head": "In Alphabet's fiscal 2023 report, Google Cloud reached profitability, reporting an operating income of $1.7 billion. This marks a significant turnaround from pr",
+      "gold_docs": [
+        "goog-20231231.pdf"
+      ],
+      "gold_hit": [
+        "goog-20231231.pdf"
+      ],
+      "min_docs": 1,
+      "covered": true
     },
     {
       "q": "Across these filings, in the fiscal year Microsoft acquired the largest company it discloses acquiring, what was Microsoft's total revenue that year?",
       "query_type": "extremum_pivot",
-      "bucket": "CORRECT",
-      "answer_head": "I can only partially answer this question based on the available documents. Here is what I found, but please treat it as preliminary:\n\nTo determine Microsoft's "
-    },
-    {
-      "q": "Among Google, Microsoft, and Amazon, which company reported the lowest net income in fiscal 2022, and what was that net income figure?",
-      "query_type": "extremum_pivot",
-      "bucket": "WRONG",
-      "answer_head": "To determine which company among Google, Microsoft, and Amazon reported the lowest net income in fiscal 2022, we need to examine the reported figures from the a"
-    },
-    {
-      "q": "Looking at Amazon's AWS segment net sales over 2020-2023, in which fiscal year did AWS net sales first exceed $80 billion, and what was the figure that year?",
-      "query_type": "extremum_pivot",
-      "bucket": "CORRECT",
-      "answer_head": "AWS net sales first exceeded $80 billion in the fiscal year 2022. The figure for AWS net sales in that year was $80,096 million. This is supported by two source"
-    },
-    {
-      "q": "For the company among Google, Microsoft, and Amazon with the highest net income in fiscal 2021, what was that company's net income in fiscal 2022?",
-      "query_type": "extremum_pivot",
-      "bucket": "WRONG",
-      "answer_head": "To determine which company among Google, Microsoft, and Amazon had the highest net income in fiscal 2021, we compare their reported net incomes for that year:\n\n"
-    },
-    {
-      "q": "In the fiscal year Alphabet's R&D expense first exceeded $40 billion, what was Alphabet's total revenue that year?",
-      "query_type": "extremum_pivot",
       "bucket": "ABSTAINED",
-      "answer_head": "In the fiscal year 2023, there is a discrepancy in the reported total revenue for Alphabet. According to one source, the total revenue was $211,915 million [Sou"
-    },
-    {
-      "q": "Among Amazon's three reportable segments (North America, International, AWS), which had the highest operating income in fiscal 2022, and what was it?",
-      "query_type": "extremum_pivot",
-      "bucket": "CORRECT",
-      "answer_head": "I can only partially answer this question based on the available documents. Here is what I found, but please treat it as preliminary:\n\nIn fiscal 2022, among Ama"
-    },
-    {
-      "q": "Over fiscal 2021 to 2023, in which year did Amazon's total net sales grow the most in absolute dollar terms year-over-year, and by how much?",
-      "query_type": "extremum_pivot",
-      "bucket": "CORRECT",
-      "answer_head": "I can only partially answer this question based on the available documents. Here is what I found, but please treat it as preliminary:\n\nTo determine the year in "
-    },
-    {
-      "q": "Amazon's AWS segment operating income was $24,631 million in fiscal 2023. What was Amazon's total consolidated net sales in that same fiscal year?",
-      "query_type": "lookup_pivot",
-      "bucket": "ABSTAINED",
-      "answer_head": "I can only partially answer this question based on the available documents. Here is what I found, but please treat it as preliminary:\n\nThe total consolidated ne"
-    },
-    {
-      "q": "In the fiscal year that Alphabet reported total revenue of about $282.8 billion, what was Alphabet's research and development expense?",
-      "query_type": "lookup_pivot",
-      "bucket": "WRONG",
-      "answer_head": "In the fiscal year that Alphabet reported total revenue of approximately $282.8 billion, its research and development expense was $31,562 million [Source: goog-"
-    },
-    {
-      "q": "Microsoft's fiscal 2023 operating income was $88,523 million. In that same fiscal year, what total net sales did Amazon report?",
-      "query_type": "lookup_pivot",
-      "bucket": "CORRECT",
-      "answer_head": "I can only partially answer this question based on the available documents. Here is what I found, but please treat it as preliminary:\n\nAmazon reported total net"
-    },
-    {
-      "q": "In the fiscal year Amazon posted a net loss, what was Amazon's total net sales, and what was AWS's operating income that year?",
-      "query_type": "lookup_pivot",
-      "bucket": "CORRECT",
-      "answer_head": "I can only partially answer this question based on the available documents. Here is what I found, but please treat it as preliminary:\n\nIn the fiscal year 2022, "
-    },
-    {
-      "q": "Google Cloud first became profitable on an operating basis in fiscal 2023. What was Alphabet's total company R&D expense in that same year?",
-      "query_type": "lookup_pivot",
-      "bucket": "ABSTAINED",
-      "answer_head": "I can only partially answer this question based on the available documents. Here is what I found, but please treat it as preliminary:\n\nIn fiscal 2023, there is "
-    },
-    {
-      "q": "In the fiscal year Microsoft completed its largest disclosed acquisition, what was Amazon's total net sales?",
-      "query_type": "lookup_pivot",
-      "bucket": "WRONG",
-      "answer_head": "In the fiscal year 2022, Microsoft completed its largest disclosed acquisition of Nuance Communications, Inc. for a total purchase price of $18.8 billion [Sourc"
-    },
-    {
-      "q": "AWS net sales were $90,757 million in one of these fiscal years. In that year, what was Amazon's consolidated operating income?",
-      "query_type": "lookup_pivot",
-      "bucket": "ABSTAINED",
-      "answer_head": "I can only partially answer this question based on the available documents. Here is what I found, but please treat it as preliminary:\n\nTo determine Amazon's con"
-    },
-    {
-      "q": "Did Amazon's International segment operate at a profit or a loss in fiscal 2022?",
-      "query_type": "qualitative",
-      "bucket": "CORRECT",
-      "answer_head": "Amazon's International segment operated at a loss in fiscal 2022. The operating loss for this segment was $7,746 million. This information is consistently repor"
-    },
-    {
-      "q": "Across fiscal 2021 to 2023, was Google Cloud's operating result a profit or a loss in fiscal 2022?",
-      "query_type": "qualitative",
-      "bucket": "CORRECT",
-      "answer_head": "In fiscal year 2022, Google Cloud's operating result was a loss. According to [Source: goog-20231231.pdf], Google Cloud experienced an operating loss of $1.9 bi"
-    },
-    {
-      "q": "Based on these filings, did Amazon's total net sales increase every fiscal year from 2021 through 2023?",
-      "query_type": "qualitative",
-      "bucket": "CORRECT",
-      "answer_head": "I can only partially answer this question based on the available documents. Here is what I found, but please treat it as preliminary:\n\nBased on the extracted cl"
-    },
-    {
-      "q": "According to these filings, which had a larger fiscal 2023 operating loss for Alphabet: Google Cloud, or no segment (i.e., was Google Cloud profitable in 2023)?",
-      "query_type": "qualitative",
-      "bucket": "CORRECT",
-      "answer_head": "In fiscal 2023, Google Cloud was profitable, with an operating income of $1.7 billion [Source: goog-20231231.pdf]. This indicates that Google Cloud did not have"
-    },
-    {
-      "q": "What was Amazon's total net sales in fiscal 2023?",
-      "query_type": "single_hop_control",
-      "bucket": "ABSTAINED",
-      "answer_head": "I can only partially answer this question based on the available documents. Here is what I found, but please treat it as preliminary:\n\nThe information regarding"
-    },
-    {
-      "q": "What was Alphabet's total revenue in fiscal 2022?",
-      "query_type": "single_hop_control",
-      "bucket": "CORRECT",
-      "answer_head": "I can only partially answer this question based on the available documents. Here is what I found, but please treat it as preliminary:\n\nThe total revenue for Alp"
-    },
-    {
-      "q": "What was Microsoft's operating income in fiscal 2023?",
-      "query_type": "single_hop_control",
-      "bucket": "ABSTAINED",
-      "answer_head": "Microsoft's operating income for fiscal 2023 is reported with conflicting figures in the documents. According to one source, Microsoft's operating income was $8"
-    },
-    {
-      "q": "What was Amazon's AWS segment operating income in fiscal 2023?",
-      "query_type": "single_hop_control",
-      "bucket": "ABSTAINED",
-      "answer_head": "I can only partially answer this question based on the available documents. Here is what I found, but please treat it as preliminary:\n\nThe reported operating in"
-    },
-    {
-      "q": "What was Alphabet's research and development expense in fiscal 2021?",
-      "query_type": "single_hop_control",
-      "bucket": "ABSTAINED",
-      "answer_head": "I can only partially answer this question based on the available documents. Here is what I found, but please treat it as preliminary:\n\nThe research and developm"
+      "answer_head": "To determine Microsoft's total revenue in the fiscal year it acquired the largest company it discloses acquiring, we need to identify the fiscal year and the co",
+      "gold_docs": [
+        "0000950170-23-035122.pdf"
+      ],
+      "gold_hit": [
+        "0000950170-23-035122.pdf"
+      ],
+      "min_docs": 1,
+      "covered": true
     }
   ]
 }

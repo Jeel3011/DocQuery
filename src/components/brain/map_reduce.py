@@ -516,6 +516,7 @@ class Brain:
         user_id: Optional[str] = None,
         collection_id: Optional[str] = None,
         conversation_id: Optional[str] = None,
+        analyst_block: Optional[str] = None,
     ) -> BrainResult:
         """Run the full MAP → VERIFY → REDUCE pipeline.
 
@@ -526,6 +527,12 @@ class Brain:
         Args:
             query:      User query.
             doc_chunks: {doc_id: (filename, [Document chunks])} from the retrieval layer.
+            analyst_block: Optional deterministically-computed figures (Phase 4.3 Analyst
+                        or the Phase 4.6 executive spine, §5.6) to prepend to REDUCE as
+                        authoritative. Mirrors ``run_stream``; ``None`` → byte-identical to
+                        the pre-existing behavior (the streaming path already threaded this;
+                        ``run`` gains it so non-streaming callers — the eval — exercise the
+                        same spine the live endpoint does).
 
         Returns:
             BrainResult with answer, claims, confidence, coverage ledger.
@@ -568,7 +575,7 @@ class Brain:
         else:
             logger.info("[Brain] REDUCE start: %d verified claims", len(verified_claims))
             verified_extracts = self._group_claims_by_doc(verified_claims, doc_chunks)
-            answer, confidence, _ = self._reduce(query, verified_extracts)
+            answer, confidence, _ = self._reduce(query, verified_extracts, analyst_block=analyst_block)
 
             # ── VERIFY REDUCE output (§4a.3 step 2) ────────────────────────────
             # The claim-level verify above checked the MAP extracts; REDUCE then

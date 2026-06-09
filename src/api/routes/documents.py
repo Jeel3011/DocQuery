@@ -11,6 +11,7 @@ import os
 import logging
 import tempfile
 from pathlib import Path
+from typing import List
 
 import aiofiles
 from fastapi import APIRouter, HTTPException, Depends, UploadFile, File, Request
@@ -234,12 +235,37 @@ async def delete_document(
         filename = doc["filename"]
         storage_path = doc["storage_path"]
 
-        retrieval_mgr = RetrievalManager(user_config)
-        retrieval_mgr.delete_document_by_filename(filename)
+        # Each backend cleanup is independent and best-effort: a transient flake on
+        # one store (e.g. a Supabase Storage HTTP/2 ConnectionTerminated when many
+        # deletes fire at once) must NOT abort the others or leave the doc half-gone.
+        # We track failures and only fail the request if the AUTHORITATIVE record
+        # deletion (the row the UI lists from) did not succeed. The storage blob and
+        # vector/chunk rows are reconcilable orphans, not user-visible state.
+        errors: List[str] = []
 
-        sb.delete_file(storage_path)
-        sb.delete_document_chunks(doc_id)
-        sb.delete_document_record(doc_id)
+        retrieval_mgr = RetrievalManager(user_config)
+        try:
+            retrieval_mgr.delete_document_by_filename(filename)
+        except Exception:
+            logger.exception("delete: vector cleanup failed for %s", doc_id)
+            errors.append("vectors")
+
+        for step, fn in (
+            ("storage", lambda: sb.delete_file(storage_path)),
+            ("chunks", lambda: sb.delete_document_chunks(doc_id)),
+            ("record", lambda: sb.delete_document_record(doc_id)),
+        ):
+            try:
+                fn()
+            except Exception:
+                logger.exception("delete: %s cleanup failed for %s", step, doc_id)
+                errors.append(step)
+
+        if "record" in errors:
+            # the document is still listed → this is a genuine failure the user must retry
+            raise HTTPException(status_code=500, detail="Failed to delete document.")
+        if errors:
+            logger.warning("delete: doc %s removed with orphaned %s", doc_id, errors)
 
         # Phase 2: Invalidate semantic cache — deleted doc makes old answers stale
         try:

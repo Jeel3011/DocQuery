@@ -38,6 +38,9 @@ from typing import List, Dict, Any, Optional, Tuple
 # "1,234"  "(1,234)"=negative  "$1,234.5"  "45.2%"  "—"/"-"=missing
 _PAREN = re.compile(r"^\((.*)\)$")
 _STRIP = re.compile(r"[,$%\s]")
+# a value-column header that denotes a real period (a year / FY / quarter), used to tell a
+# properly-extracted grid from one still on positional col_1/col_2 placeholders.
+_YEARISH_COL = re.compile(r"(?:19|20)\d{2}|FY\s?\d{2,4}|Q[1-4]\b", re.I)
 
 
 class CellError(ValueError):
@@ -162,7 +165,16 @@ class Grid:
         self.page = page
 
     def value_columns(self) -> List[str]:
-        return [h for h in self.headers if h not in ("section", "label")]
+        cols = [h for h in self.headers if h not in ("section", "label")]
+        # When a period axis is known, restrict to it so derived columns (e.g.
+        # "pct_change" printed alongside the year columns) are never scanned as a
+        # period. Backward-compatible: a well-formed grid has periods == its value
+        # columns (no change); a fully-unlabelled grid has periods == [] → all cols.
+        if self.periods:
+            kept = [h for h in cols if h in self.periods]
+            if kept:
+                return kept
+        return cols
 
     def find_row(self, label: str, section: str = "") -> Optional[Dict[str, Any]]:
         """Resolve a row by label (and optional section), case/space-insensitive.
@@ -576,18 +588,63 @@ def compute(spec: Dict[str, Any], grids: List[Grid]) -> ComputeResult:
         section, label = row.get("section", ""), row.get("label", "")
         periods = spec.get("periods")
         # find the grid that actually holds this row, to know its period columns.
-        host: Optional[Grid] = None
-        for g in candidate_grids():
-            r = g.find_row(label, section)
-            if r is not None and (not section or _norm_section_match(r, section)):
-                host = g
-                break
+        # Skip a row whose label is PROSE, not a line-item (geometry over a text page
+        # leaks numbers — e.g. a sentence "...AWS operating income in 2022..." whose
+        # "2022" column parses to the literal 2022). Same prose guard grounding applies
+        # for lookups (§5.1); without it a threshold scan can land on a narrative row and
+        # return a year-as-value. Falls back to ANY match only if no line-item row exists.
+        #
+        # Two passes on the section (mirrors resolve()): pass 1 honors the requested
+        # section strictly; pass 2 (if nothing matched) is section-AGNOSTIC — so an
+        # over-scoped section from comprehension (e.g. the parent company "amazon" when the
+        # row lives under the segment "AWS") still resolves by label instead of hard-
+        # failing. The pivot is still value-checked by the monitor (§5.5), so a wrong
+        # section-agnostic match can't pass silently.
+        # A period scan needs a grid whose axis is REAL years — a grid still labelled
+        # col_1/col_2 (extraction failed to recover its header) cannot answer "which year",
+        # and scanning it binds a garbage pivot like "col_1". So a host must have a real
+        # period axis; we only fall back to a col_N grid if NO real-period grid matches.
+        def _real_periods(g: Grid) -> bool:
+            return any(_YEARISH_COL.search(str(c)) for c in g.value_columns())
+
+        def _find_host(require_section: bool, require_periods: bool) -> Optional[Grid]:
+            line_host: Optional[Grid] = None
+            text_host: Optional[Grid] = None
+            for g in candidate_grids():
+                if require_periods and not _real_periods(g):
+                    continue
+                r = g.find_row(label, section if require_section else "")
+                if r is None:
+                    continue
+                if require_section and section and not _norm_section_match(r, section):
+                    continue
+                if is_lineitem_label(r.get("label", "")):
+                    return g                    # first real line-item host wins
+                if text_host is None:
+                    text_host = g
+            return line_host or text_host
+
+        # preference order (real-period grids always win): (periods+section) →
+        # (periods, any section) → (any grid + section) → (any grid). `eff_section` is the
+        # section to READ cells with: the requested section when it matched, else "" (the
+        # row sat under a different/over-scoped section label, e.g. parent "amazon").
+        host = _find_host(require_section=True, require_periods=True)
+        eff_section = section
+        if host is None and section:
+            host = _find_host(require_section=False, require_periods=True)
+            eff_section = ""
+        if host is None:                              # no real-period grid — degrade
+            host = _find_host(require_section=True, require_periods=False)
+            eff_section = section
+        if host is None and section:
+            host = _find_host(require_section=False, require_periods=False)
+            eff_section = ""
         if host is None:
             raise CellError(f"selection: row not found: section={section!r} label={label!r}")
         cols = list(periods) if periods else host.value_columns()
         for p in cols:
             try:
-                series.append((str(p), host.cell(label, p, section)))
+                series.append((str(p), host.cell(label, p, eff_section)))
             except CellError:
                 continue
         if not series:

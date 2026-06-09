@@ -253,7 +253,7 @@ def _read_geometry_lines(page, y_tol: float = 3.0) -> List[Dict[str, Any]]:
         except Exception:
             continue
 
-    lines: List[Dict[str, Any]] = []
+    raw: List[Dict[str, Any]] = []
     for top in sorted(bands):
         ws = sorted(bands[top], key=lambda w: w.get("x0", 0.0))
         if not ws:
@@ -275,15 +275,36 @@ def _read_geometry_lines(page, y_tol: float = 3.0) -> List[Dict[str, Any]]:
                 if not _FOOTNOTE_TOK.match(tok):
                     label_toks.append(tok)
         label = _clean(" ".join(label_toks))
-        if not label:
+        if not label and not values:
             continue
-        lines.append({
+        raw.append({
             "label": label,
             "x0": float(ws[0].get("x0", 0.0)),
             "values": values,
             "ntext": len(label_toks),
             "nval": len(values),
+            "top": min(float(w.get("top", 0.0)) for w in ws),
         })
+
+    # Reunite a subtotal row split across two adjacent y-bands: a label-only line
+    # (e.g. "Total assets", nval=0) whose value tokens ("365,264", "402,392")
+    # landed in the very next band as a LABEL-LESS line because their baselines
+    # straddled a round(top/y_tol) bucket boundary (gap < y_tol). Only fires when
+    # the value line carries no label of its own, so it can't merge two real rows.
+    lines: List[Dict[str, Any]] = []
+    for ln in raw:
+        if (lines and ln["label"] == "" and ln["values"]
+                and lines[-1]["nval"] == 0 and lines[-1]["label"]
+                and abs(ln["top"] - lines[-1]["top"]) <= y_tol):
+            prev = lines[-1]
+            prev["values"] = ln["values"]
+            prev["nval"] = len(ln["values"])
+            continue
+        if not ln["label"]:
+            continue  # a label-less value line with no subtotal to attach to is noise
+        lines.append(ln)
+    for ln in lines:
+        ln.pop("top", None)
     return lines
 
 
@@ -506,6 +527,9 @@ def _geometry_tables_for_page(
         periods = _detect_periods(raw_grid, header_years, width)
         units = _detect_units(raw_grid, page_text)
         col_names = list(periods) if len(periods) == width else [f"col_{i+1}" for i in range(width)]
+        # the period AXIS excludes derived (pct_change) columns — only real year columns
+        # are periods, so the kernel never scans a %-change column as a year.
+        period_labels = [c for c in col_names if _YEAR_TOKEN.search(c)]
         headers = ["section", "label"] + col_names
 
         rows: List[Dict[str, Any]] = []
@@ -529,8 +553,8 @@ def _geometry_tables_for_page(
             headers=headers,
             rows=rows,
             units=units,
-            periods=periods,
-            caption=_caption(rows, periods, units, page_idx + 1),
+            periods=period_labels,
+            caption=_caption(rows, period_labels, units, page_idx + 1),
             confidence=confidence,
             raw_grid=raw_grid,
             markdown=_to_markdown(headers, rows),
@@ -584,6 +608,28 @@ def _header_year_order(page) -> List[str]:
     return best
 
 
+def _percent_columns(grid: List[List[str]], width: int) -> List[int]:
+    """Indices (0-based over the WIDTH value columns) that are derived %-change columns:
+    a column whose non-empty data values are mostly percentages ("7%", "(1)%"). These are
+    NOT periods — they're a computed delta printed alongside the year columns, and they're
+    exactly what makes ``len(years) != width`` for an otherwise-clean financial table.
+    Data rows only (skip the first row, which may be a header).
+    """
+    pct: List[int] = []
+    for c in range(width):
+        vals: List[str] = []
+        for row in grid[1:]:
+            # value columns are everything after the label (column 0); right-aligned
+            cells = row[1:]
+            if c < len(cells):
+                v = _clean(cells[c])
+                if v:
+                    vals.append(v)
+        if vals and sum(1 for v in vals if v.rstrip(")").endswith("%")) >= 0.6 * len(vals):
+            pct.append(c)
+    return pct
+
+
 def _detect_periods(grid: List[List[str]], header_years: List[str], width: int) -> List[str]:
     """Resolve the period label for each value column, using geometry first.
 
@@ -593,9 +639,13 @@ def _detect_periods(grid: List[List[str]], header_years: List[str], width: int) 
         authoritative and order-correct (handles ascending AND descending).
     (2) GRID — years found inside this grid's own header rows, if they number
         exactly ``width`` (kept in their printed order).
-    Otherwise return [] → the builder uses col_1..col_N (unlabeled but correctly
-    right-aligned). We never emit a year label we can't place with confidence — a
-    wrong period label is the confidently-wrong failure §4b forbids.
+    (3) DERIVED-COLUMN RECONCILE — a financial table is routinely [YYYY, YYYY, % Change]:
+        the years number ``width − (# %-change columns)``. Map the years to the period
+        (non-%) columns in printed order and label each %-column ``pct_change`` (a
+        non-period label the period axis excludes). This is the single biggest cause of
+        the col_N fallback on real 10-K statements, and it is fully deterministic.
+    Otherwise return [] → the builder uses col_1..col_N. We never emit a year label we
+    can't place with confidence — a wrong period label is the §4b confidently-wrong error.
     """
     if width >= 2 and len(header_years) == width:
         return list(header_years)
@@ -608,6 +658,21 @@ def _detect_periods(grid: List[List[str]], header_years: List[str], width: int) 
                     in_grid.append(tok)
     if width and len(in_grid) == width:
         return in_grid
+
+    # (3) reconcile years against derived %-change columns
+    years = list(header_years) if len(header_years) >= 2 else in_grid
+    if width >= 2 and 2 <= len(years) < width:
+        pct = _percent_columns(grid, width)
+        if pct and len(years) == width - len(pct):
+            labels: List[str] = []
+            yi = 0
+            for c in range(width):
+                if c in pct:
+                    labels.append("pct_change")
+                else:
+                    labels.append(years[yi])
+                    yi += 1
+            return labels
     return []
 
 
@@ -859,6 +924,9 @@ def extract_tables_from_pdf(
                     headers, rows = _build_rows(grid, periods, width)
                     if not rows:
                         continue
+                    # period axis = real year columns only (derived pct_change excluded)
+                    period_labels = ([c for c in periods if _YEAR_TOKEN.search(c)]
+                                     if len(periods) == width else [])
 
                     table = ExtractedTable(
                         page_number=page_idx + 1,
@@ -866,8 +934,8 @@ def extract_tables_from_pdf(
                         headers=headers,
                         rows=rows,
                         units=units,
-                        periods=periods,
-                        caption=_caption(rows, periods, units, page_idx + 1),
+                        periods=period_labels,
+                        caption=_caption(rows, period_labels, units, page_idx + 1),
                         confidence=confidence,
                         raw_grid=grid,
                         markdown=_to_markdown(headers, rows),

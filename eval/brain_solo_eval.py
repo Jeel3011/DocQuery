@@ -28,7 +28,7 @@ no threshold, no reranker) → group by doc → Brain.run().
 
 Run:  python eval/brain_solo_eval.py
 """
-import sys, json, warnings
+import os, sys, json, warnings
 warnings.filterwarnings("ignore")
 sys.path.insert(0, ".")
 
@@ -41,7 +41,8 @@ QUESTIONS = "eval/eval_questions_multihop.json"
 
 
 def _scope_to_collection(config, collection_id):
-    """Namespace = collection owner; return the collection's filenames (mirrors routing_recall)."""
+    """Namespace = collection owner; return (filenames, db_client). The db_client (svc) is
+    returned so the spine step can load table grids exactly as chat.py does."""
     from src.components.db import SupabaseManager
     svc = SupabaseManager(use_service_role=True)
     owner = (
@@ -51,7 +52,67 @@ def _scope_to_collection(config, collection_id):
     if owner and owner.get("user_id"):
         config.PINECONE_NAMESPACE = owner["user_id"]
         svc._user = type("User", (), {"id": owner["user_id"]})()
-    return [d["filename"] for d in svc.get_collection_documents(collection_id)]
+    return [d["filename"] for d in svc.get_collection_documents(collection_id)], svc
+
+
+_LOCAL_GRID_CACHE: dict = {}
+
+
+def _local_grids_for_docs(filenames):
+    """Re-extract grids from the local PDFs (in 'test docs/') with the CURRENT extractor —
+    the corrected period-recovery. Cached per file. Used by the SPINE_LOCAL_GRIDS test path
+    to validate the spine on clean grids without re-ingesting Supabase."""
+    from src.components.table_extraction import extract_tables_from_pdf
+    from src.components.brain.analyst import Grid
+    out = []
+    for fn in set(filenames):
+        if fn not in _LOCAL_GRID_CACHE:
+            path = os.path.join("test docs", fn)
+            try:
+                _LOCAL_GRID_CACHE[fn] = [
+                    Grid(t.to_metadata(), doc=fn, page=t.page_number)
+                    for t in extract_tables_from_pdf(path)
+                ] if os.path.exists(path) else []
+            except Exception:
+                _LOCAL_GRID_CACHE[fn] = []
+        out.extend(_LOCAL_GRID_CACHE[fn])
+    return out
+
+
+def _spine_block_for(config, sb, question, doc_chunks, spec_llm):
+    """Build the executive-spine block for a question, EXACTLY as chat.py's Brain endpoint
+    does — gated by USE_EXEC_SPINE. Returns (block_or_None, tag). This is what makes the
+    eval actually test C2→C6: brain.run() consumes the block in REDUCE. When the flag is
+    off, returns (None, 'off') and brain.run is byte-identical to the pre-spine path.
+
+    Mirrors chat.py: has_numeric_intent gate → load_grids_for_docs → run_executive_spine.
+    """
+    if not getattr(config, "USE_EXEC_SPINE", False):
+        return None, "off"
+    try:
+        from src.components.brain.table_intent import has_numeric_intent, load_grids_for_docs
+        if not has_numeric_intent(question):
+            return None, "non-numeric"
+        filename_by_doc = {did: fn for did, (fn, _ch) in doc_chunks.items()}
+        if os.getenv("SPINE_LOCAL_GRIDS") == "1":
+            # TEST PATH: feed the spine grids freshly RE-EXTRACTED from the local PDFs (the
+            # CORRECTED extraction), instead of the stale Supabase table_json. This isolates
+            # "does the spine work on CLEAN grids?" without re-ingesting the collection.
+            grids = _local_grids_for_docs(filename_by_doc.values())
+        else:
+            grids = load_grids_for_docs(
+                sb, list(doc_chunks.keys()), question=question, filename_by_doc=filename_by_doc,
+            )
+        if not grids:
+            return None, "no-grids"
+        from src.components.brain.meta_reasoner import run_executive_spine
+        outcome = run_executive_spine(question, grids, spec_llm)
+        if outcome.applied and outcome.block:
+            tag = f"ABSTAIN(pivot={outcome.binding})" if outcome.abstained else f"applied(pivot={outcome.binding})"
+            return outcome.block, tag
+        return None, f"fall-through({outcome.reason[:30]})"
+    except Exception as exc:
+        return None, f"error: {exc}"
 
 
 def _brain_retrieve(retrieval_mgr, question, filenames, per_doc_k):
@@ -113,16 +174,29 @@ def _classify(question, required, answer, judge_llm):
 
 
 def main():
+    # --limit N runs only the first N questions (cheap smoke test before the full 27).
+    limit = None
+    for a in sys.argv[1:]:
+        if a.startswith("--limit"):
+            try:
+                limit = int(a.split("=", 1)[1]) if "=" in a else int(sys.argv[sys.argv.index(a) + 1])
+            except Exception:
+                limit = None
+
     with open(QUESTIONS) as f:
         raw = json.load(f)
     meta = next((q for q in raw if "_collection_id" in q), {})
     questions = [q for q in raw if "question" in q]
+    if limit:
+        questions = questions[:limit]
     collection_id = meta.get("_collection_id")
     if not collection_id:
         sys.exit("No _collection_id in questions file.")
 
     config = Config()
-    filenames = _scope_to_collection(config, collection_id)
+    filenames, sb = _scope_to_collection(config, collection_id)
+    spine_on = getattr(config, "USE_EXEC_SPINE", False)
+    print(f"USE_EXEC_SPINE = {spine_on}" + ("  ← executive spine C2→C6 ACTIVE" if spine_on else "  (spine off — old single-pass path)"))
     per_doc_k = getattr(config, "BRAIN_CHUNKS_PER_DOC", 8)
     print(f"Collection {collection_id} → {len(filenames)} docs, k/doc={per_doc_k}")
     print(f"Brain-ALONE on {len(questions)} tough questions\n")
@@ -134,6 +208,10 @@ def main():
     retrieval_mgr = RetrievalManager(config)
     brain = Brain(config)
     judge_llm = ChatOpenAI(model="gpt-4o", temperature=0.0, api_key=config.OPENAI_API_KEY, request_timeout=30)
+    # the spine's comprehend call uses the cheap model, same as chat.py's Analyst thread
+    spec_llm = ChatOpenAI(model=config.LLM_MODEL_NAME, temperature=0.0,
+                          api_key=config.OPENAI_API_KEY, request_timeout=20, max_retries=1)
+    spine_tags = []   # per-question spine outcome, for the summary
 
     buckets = {"CORRECT": 0, "ABSTAINED": 0, "WRONG": 0}
     # Per-category breakdown — the §7 headline view. WRONG-rate is expected to
@@ -161,8 +239,12 @@ def main():
         if gold_docs:
             coverage_measurable += 1
             covered_count += int(covered)
+        # Phase 4.6: build the executive-spine block (gated by USE_EXEC_SPINE), exactly as
+        # chat.py does, and feed it to brain.run so REDUCE states the monitored figure.
+        spine_block, spine_tag = _spine_block_for(config, sb, q, doc_chunks, spec_llm)
+        spine_tags.append(spine_tag)
         try:
-            result = brain.run(query=q, doc_chunks=doc_chunks)
+            result = brain.run(query=q, doc_chunks=doc_chunks, analyst_block=spine_block)
             answer = getattr(result, "answer", "") or ""
         except Exception as e:
             answer = ""
@@ -178,7 +260,8 @@ def main():
         })
         cov_tag = ("" if not gold_docs
                    else f"  cov={len(gold_hit)}/{len(gold_docs)}{'' if covered else ' ✗MISS'}")
-        print(f"[{qi}/{len(questions)}] {bucket:<9} [{qtype:<18}] {q[:55]}{cov_tag}")
+        spine_disp = "" if spine_tag in ("off",) else f"  spine={spine_tag}"
+        print(f"[{qi}/{len(questions)}] {bucket:<9} [{qtype:<18}] {q[:55]}{cov_tag}{spine_disp}")
         print(f"       → {answer[:160].strip() or '(empty)'}\n")
 
     n = len(questions)
@@ -188,6 +271,18 @@ def main():
     print(f"  WRONG     : {buckets['WRONG']}/{n}   (DANGEROUS — confident & false)")
     print("=" * 68)
     print(f"  Dangerous-wrong rate (headline): {buckets['WRONG']/n:.0%}\n")
+
+    # ── spine activity: how often the executive spine actually ran (only meaningful with
+    #    USE_EXEC_SPINE=true). 'applied' = the spine produced a verified figure block;
+    #    'ABSTAIN' = the monitor withheld; the rest fell through to the old path.
+    if spine_on:
+        from collections import Counter
+        sc = Counter("applied" if t.startswith("applied")
+                     else "abstain" if t.startswith("ABSTAIN")
+                     else "fallthrough" for t in spine_tags)
+        print(f"  SPINE ACTIVITY: applied={sc['applied']}  abstain={sc['abstain']}  "
+              f"fell-through={sc['fallthrough']}  (of {n})")
+        print("=" * 68)
 
     # Per-category WRONG-rate — where the danger lives, and the regression guard.
     print("  By query_type (CORRECT / ABSTAINED / WRONG → WRONG-rate):")

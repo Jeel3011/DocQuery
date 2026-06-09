@@ -143,6 +143,15 @@ class Config:
     # How many chunks the Brain reads per document in MAP. Higher = better recall on
     # large filings (a 5-chunk read misses needles in a 300-chunk 10-K), at more cost.
     BRAIN_CHUNKS_PER_DOC: int = int(os.getenv("BRAIN_CHUNKS_PER_DOC", "15"))
+
+    # ── Phase 4.6 executive spine (§5.6 coordinator) ──
+    # Opt-in: set USE_EXEC_SPINE=true to route a numeric/pivot/bridge question through the
+    # deterministic executive spine (comprehend → plan → execute → self-monitor) BEFORE the
+    # Analyst step inside the Brain endpoint. Off by default; when off OR when the spine
+    # doesn't apply (non-pivot / degraded / abstained), the path is byte-identical to
+    # today's Brain path. The spine NEVER emits a number itself — the kernel reads cells
+    # and the monitor converts a wrong-reasoning result to a clean abstain (§4a).
+    USE_EXEC_SPINE: bool = os.getenv("USE_EXEC_SPINE", "false").lower() == "true"
     # Per-document retrieval timeout (seconds) for the Brain — fail fast on a network/
     # DNS blip instead of hanging on Pinecone retries for minutes.
     BRAIN_RETRIEVE_TIMEOUT_S: float = float(os.getenv("BRAIN_RETRIEVE_TIMEOUT_S", "20"))

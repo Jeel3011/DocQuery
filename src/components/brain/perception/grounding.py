@@ -193,6 +193,22 @@ def ground_metric(intent: MetricIntent, grids: List[Grid]) -> Grounding:
         second = cands[1]
         same_value = abs(top.cell.value - second.cell.value) <= 1e-6 * max(abs(top.cell.value), 1.0)
         if (top.score - second.score) <= _CLOSE_MARGIN and not same_value:
+            # A TOTAL request can break this structurally rather than abstain: a
+            # CONSOLIDATED total dominates its segment components by magnitude (total ≈ Σ
+            # children ⇒ a parent total ≥ any one segment, the §5.4 invariant). So among the
+            # near-tied candidates we take the largest-|value| one — e.g. live "total net
+            # sales" picks the Consolidated 513,983 over a North-America segment 315,880,
+            # and offline picks 513,983 over a −3,217 segment subtotal. For any OTHER level a
+            # value disagreement is a genuine ambiguity → abstain (the original behavior).
+            if intent.aggregation_level == "total":
+                tied = [c for c in cands if (top.score - c.score) <= _CLOSE_MARGIN]
+                best_c = max(tied, key=lambda c: abs(c.cell.value))
+                return Grounding(
+                    best=best_c.cell, candidates=cands, confidence=best_c.score,
+                    abstained=False,
+                    reason=f"{best_c.why} · consolidated total picked over "
+                           f"{len(tied) - 1} near-tied segment line(s) by magnitude",
+                )
             return Grounding(
                 best=None, candidates=cands, confidence=top.score, abstained=True,
                 reason=f"ambiguous: {intent.metric!r}[{intent.period}] resolves to "

@@ -1163,6 +1163,25 @@ async def brain_query_stream(
                 model=user_config.LLM_MODEL_NAME, temperature=0.0,
                 api_key=user_config.OPENAI_API_KEY, request_timeout=30,
             )
+
+            # ── Phase 4.6 executive spine (§5.6), opt-in behind USE_EXEC_SPINE ──
+            # For a pivot/bridge/compare question the coordinator binds the pivot and
+            # self-monitors the read (WRONG→ABSTAIN). Its block leads the Analyst output
+            # (higher authority for bridges); a monitor abstain surfaces a clean refusal.
+            # When the flag is off OR the question isn't a spine shape, this is a no-op and
+            # the Analyst path below is byte-identical to today.
+            _spine_block = None
+            if getattr(user_config, "USE_EXEC_SPINE", False):
+                try:
+                    from src.components.brain.meta_reasoner import run_executive_spine
+                    outcome = run_executive_spine(body.question, grids, spec_llm)
+                    if outcome.applied and outcome.block:
+                        _spine_block = outcome.block
+                        logger.info("[brain] executive spine applied (abstained=%s, pivot=%s)",
+                                    outcome.abstained, outcome.binding)
+                except Exception as exc:
+                    logger.warning("[brain] executive spine skipped: %s", exc)
+
             results = analyze(body.question, grids, spec_llm)
             from src.components.brain.analyst import corroborate_with_prose
             prose = " ".join(
@@ -1175,6 +1194,11 @@ async def brain_query_stream(
                 _block = render_markdown(ok)
                 _count = len(ok)
                 logger.info("[brain] Analyst computed %d figures for the question", _count)
+            # the spine block LEADS (it bound the pivot + self-monitored the bridge); the
+            # Analyst table, if any, follows as corroborating detail. Either alone is fine.
+            if _spine_block:
+                _block = _spine_block + ("\n\n" + _block if _block else "")
+                _count = max(_count, 1)
         except Exception as exc:
             logger.warning("[brain] Analyst step skipped: %s", exc)
         return _block, _count

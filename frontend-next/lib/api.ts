@@ -132,6 +132,13 @@ export async function deleteDocument(
   try {
     await makeClient(token).delete(`/documents/${docId}`);
   } catch (err) {
+    // Delete is idempotent: a 404 means the document is already gone, which is
+    // exactly the goal state — treat it as success, not a failure. (Otherwise the
+    // optimistic UI removal gets reverted and the row reappears even though it was
+    // deleted by an earlier successful call.)
+    if (axios.isAxiosError(err) && err.response?.status === 404) {
+      return;
+    }
     handleAxiosError(err);
   }
 }

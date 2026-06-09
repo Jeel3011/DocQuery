@@ -1,0 +1,350 @@
+{
+  "schema_version": 1,
+  "note": "Hand-labeled extraction ground truth, transcribed VISUALLY from rendered PDF pages (non-circular: independent of the pdfplumber grid pipeline under test). Covers the 3 core financial statements across the corpus. Schema is document-type-agnostic (periods/sections/cells) so non-finance docs (e.g. law) can be added later. period_order is the L->R order of period columns as printed. Negatives are kept as printed '(x)'; the harness normalizes sign/format. Values are 'in millions'.",
+  "docs": [
+    {
+      "doc": "amzn-20231231.pdf",
+      "issuer": "Amazon.com, Inc.",
+      "fiscal_year": "2023",
+      "units": "millions",
+      "tables": [
+        {
+          "name": "Consolidated Statements of Operations",
+          "kind": "income_statement",
+          "page": 62,
+          "expected_periods": ["2021", "2022", "2023"],
+          "period_order": "ascending",
+          "expected_sections": ["Operating expenses:"],
+          "cells": [
+            {"section": "", "label": "Total net sales", "values": {"2021": "469,822", "2022": "513,983", "2023": "574,785"}},
+            {"section": "", "label": "Net income (loss)", "values": {"2021": "33,364", "2022": "(2,722)", "2023": "30,425"}}
+          ]
+        },
+        {
+          "name": "Consolidated Balance Sheets",
+          "kind": "balance_sheet",
+          "page": 64,
+          "expected_periods": ["2022", "2023"],
+          "period_order": "ascending",
+          "expected_sections": ["Current assets:", "Current liabilities:", "Stockholders' equity:"],
+          "cells": [
+            {"section": "", "label": "Total assets", "values": {"2022": "462,675", "2023": "527,854"}}
+          ]
+        },
+        {
+          "name": "Consolidated Statements of Cash Flows",
+          "kind": "cash_flow",
+          "page": 61,
+          "expected_periods": ["2021", "2022", "2023"],
+          "period_order": "ascending",
+          "expected_sections": ["OPERATING ACTIVITIES:", "INVESTING ACTIVITIES:", "FINANCING ACTIVITIES:"],
+          "cells": [
+            {"section": "", "label": "Net cash provided by (used in) operating activities", "values": {"2021": "46,327", "2022": "46,752", "2023": "84,946"}},
+            {"section": "", "label": "Net cash provided by (used in) investing activities", "values": {"2021": "(58,154)", "2022": "(37,601)", "2023": "(49,833)"}}
+          ]
+        }
+      ]
+    },
+    {
+      "doc": "amzn-20221231.pdf",
+      "issuer": "Amazon.com, Inc.",
+      "fiscal_year": "2022",
+      "units": "millions",
+      "tables": [
+        {
+          "name": "Consolidated Statements of Operations",
+          "kind": "income_statement",
+          "page": 59,
+          "expected_periods": ["2020", "2021", "2022"],
+          "period_order": "ascending",
+          "expected_sections": ["Operating expenses:"],
+          "cells": [
+            {"section": "", "label": "Total net sales", "values": {"2020": "386,064", "2021": "469,822", "2022": "513,983"}},
+            {"section": "", "label": "Net income (loss)", "values": {"2020": "21,331", "2021": "33,364", "2022": "(2,722)"}}
+          ]
+        },
+        {
+          "name": "Consolidated Balance Sheets",
+          "kind": "balance_sheet",
+          "page": 61,
+          "expected_periods": ["2021", "2022"],
+          "period_order": "ascending",
+          "expected_sections": ["Current assets:", "Current liabilities:", "Stockholders' equity:"],
+          "cells": [
+            {"section": "", "label": "Total assets", "values": {"2021": "420,549", "2022": "462,675"}}
+          ]
+        },
+        {
+          "name": "Consolidated Statements of Cash Flows",
+          "kind": "cash_flow",
+          "page": 58,
+          "expected_periods": ["2020", "2021", "2022"],
+          "period_order": "ascending",
+          "expected_sections": ["OPERATING ACTIVITIES:", "INVESTING ACTIVITIES:", "FINANCING ACTIVITIES:"],
+          "cells": [
+            {"section": "", "label": "Net cash provided by (used in) operating activities", "values": {"2020": "66,064", "2021": "46,327", "2022": "46,752"}},
+            {"section": "", "label": "Net cash provided by (used in) investing activities", "values": {"2020": "(59,611)", "2021": "(58,154)", "2022": "(37,601)"}}
+          ]
+        }
+      ]
+    },
+    {
+      "doc": "goog-20231231.pdf",
+      "issuer": "Alphabet Inc.",
+      "fiscal_year": "2023",
+      "units": "millions",
+      "tables": [
+        {
+          "name": "Consolidated Statements of Income",
+          "kind": "income_statement",
+          "page": 53,
+          "expected_periods": ["2021", "2022", "2023"],
+          "period_order": "ascending",
+          "expected_sections": ["Costs and expenses:"],
+          "cells": [
+            {"section": "", "label": "Revenues", "values": {"2021": "257,637", "2022": "282,836", "2023": "307,394"}},
+            {"section": "", "label": "Net income", "values": {"2021": "76,033", "2022": "59,972", "2023": "73,795"}}
+          ]
+        },
+        {
+          "name": "Consolidated Balance Sheets",
+          "kind": "balance_sheet",
+          "page": 52,
+          "expected_periods": ["2022", "2023"],
+          "period_order": "ascending",
+          "expected_sections": ["Current assets:", "Current liabilities:", "Stockholders' equity:"],
+          "cells": [
+            {"section": "", "label": "Total assets", "values": {"2022": "365,264", "2023": "402,392"}}
+          ]
+        },
+        {
+          "name": "Consolidated Statements of Cash Flows",
+          "kind": "cash_flow",
+          "page": 56,
+          "expected_periods": ["2021", "2022", "2023"],
+          "period_order": "ascending",
+          "expected_sections": ["Operating activities", "Investing activities", "Financing activities"],
+          "cells": [
+            {"section": "", "label": "Net cash provided by operating activities", "values": {"2021": "91,652", "2022": "91,495", "2023": "101,746"}},
+            {"section": "", "label": "Net cash used in investing activities", "values": {"2021": "(35,523)", "2022": "(20,298)", "2023": "(27,063)"}}
+          ]
+        }
+      ]
+    },
+    {
+      "doc": "goog-20221231.pdf",
+      "issuer": "Alphabet Inc.",
+      "fiscal_year": "2022",
+      "units": "millions",
+      "tables": [
+        {
+          "name": "Consolidated Statements of Income",
+          "kind": "income_statement",
+          "page": 88,
+          "expected_periods": ["2020", "2021", "2022"],
+          "period_order": "ascending",
+          "expected_sections": ["Costs and expenses:"],
+          "cells": [
+            {"section": "", "label": "Revenues", "values": {"2020": "182,527", "2021": "257,637", "2022": "282,836"}},
+            {"section": "", "label": "Net income", "values": {"2020": "40,269", "2021": "76,033", "2022": "59,972"}}
+          ]
+        },
+        {
+          "name": "Consolidated Balance Sheets",
+          "kind": "balance_sheet",
+          "page": 87,
+          "expected_periods": ["2021", "2022"],
+          "period_order": "ascending",
+          "expected_sections": ["Current assets:", "Current liabilities:", "Stockholders' equity:"],
+          "cells": [
+            {"section": "", "label": "Total assets", "values": {"2021": "359,268", "2022": "365,264"}}
+          ]
+        },
+        {
+          "name": "Consolidated Statements of Cash Flows",
+          "kind": "cash_flow",
+          "page": 91,
+          "expected_periods": ["2020", "2021", "2022"],
+          "period_order": "ascending",
+          "expected_sections": ["Operating activities", "Investing activities", "Financing activities"],
+          "cells": [
+            {"section": "", "label": "Net cash provided by operating activities", "values": {"2020": "65,124", "2021": "91,652", "2022": "91,495"}},
+            {"section": "", "label": "Net cash used in investing activities", "values": {"2020": "(32,773)", "2021": "(35,523)", "2022": "(20,298)"}}
+          ]
+        }
+      ]
+    },
+    {
+      "doc": "goog-20211231.pdf",
+      "issuer": "Alphabet Inc.",
+      "fiscal_year": "2021",
+      "units": "millions",
+      "tables": [
+        {
+          "name": "Consolidated Statements of Income",
+          "kind": "income_statement",
+          "page": 90,
+          "expected_periods": ["2019", "2020", "2021"],
+          "period_order": "ascending",
+          "expected_sections": ["Costs and expenses:"],
+          "cells": [
+            {"section": "", "label": "Revenues", "values": {"2019": "161,857", "2020": "182,527", "2021": "257,637"}},
+            {"section": "", "label": "Net income", "values": {"2019": "34,343", "2020": "40,269", "2021": "76,033"}}
+          ]
+        },
+        {
+          "name": "Consolidated Balance Sheets",
+          "kind": "balance_sheet",
+          "page": 88,
+          "expected_periods": ["2020", "2021"],
+          "period_order": "ascending",
+          "expected_sections": ["Current assets:", "Current liabilities:", "Stockholders' equity:"],
+          "cells": [
+            {"section": "", "label": "Total assets", "values": {"2020": "319,616", "2021": "359,268"}}
+          ]
+        },
+        {
+          "name": "Consolidated Statements of Cash Flows",
+          "kind": "cash_flow",
+          "page": 93,
+          "expected_periods": ["2019", "2020", "2021"],
+          "period_order": "ascending",
+          "expected_sections": ["Operating activities", "Investing activities", "Financing activities"],
+          "cells": [
+            {"section": "", "label": "Net cash provided by operating activities", "values": {"2019": "54,520", "2020": "65,124", "2021": "91,652"}},
+            {"section": "", "label": "Net cash used in investing activities", "values": {"2019": "(29,491)", "2020": "(32,773)", "2021": "(35,523)"}}
+          ]
+        }
+      ]
+    },
+    {
+      "doc": "msft-10k_20220630.htm.pdf",
+      "issuer": "Microsoft Corporation",
+      "fiscal_year": "2022",
+      "units": "millions",
+      "tables": [
+        {
+          "name": "Income Statements",
+          "kind": "income_statement",
+          "page": 57,
+          "expected_periods": ["2022", "2021", "2020"],
+          "period_order": "descending",
+          "expected_sections": ["Revenue:", "Cost of revenue:"],
+          "cells": [
+            {"section": "", "label": "Total revenue", "values": {"2022": "198,270", "2021": "168,088", "2020": "143,015"}},
+            {"section": "", "label": "Net income", "values": {"2022": "72,738", "2021": "61,271", "2020": "44,281"}}
+          ]
+        },
+        {
+          "name": "Balance Sheets",
+          "kind": "balance_sheet",
+          "page": 59,
+          "expected_periods": ["2022", "2021"],
+          "period_order": "descending",
+          "expected_sections": ["Current assets:", "Current liabilities:", "Stockholders' equity:"],
+          "cells": [
+            {"section": "", "label": "Total assets", "values": {"2022": "364,840", "2021": "333,779"}}
+          ]
+        },
+        {
+          "name": "Cash Flows Statements",
+          "kind": "cash_flow",
+          "page": 60,
+          "expected_periods": ["2022", "2021", "2020"],
+          "period_order": "descending",
+          "expected_sections": ["Operations", "Financing", "Investing"],
+          "cells": [
+            {"section": "", "label": "Net cash from operations", "values": {"2022": "89,035", "2021": "76,740", "2020": "60,675"}},
+            {"section": "", "label": "Net cash used in investing", "values": {"2022": "(30,311)", "2021": "(27,577)", "2020": "(12,223)"}}
+          ]
+        }
+      ]
+    },
+    {
+      "doc": "msft-10k_20210630.htm.pdf",
+      "issuer": "Microsoft Corporation",
+      "fiscal_year": "2021",
+      "units": "millions",
+      "tables": [
+        {
+          "name": "Income Statements",
+          "kind": "income_statement",
+          "page": 57,
+          "expected_periods": ["2021", "2020", "2019"],
+          "period_order": "descending",
+          "expected_sections": ["Revenue:", "Cost of revenue:"],
+          "cells": [
+            {"section": "", "label": "Total revenue", "values": {"2021": "168,088", "2020": "143,015", "2019": "125,843"}},
+            {"section": "", "label": "Net income", "values": {"2021": "61,271", "2020": "44,281", "2019": "39,240"}}
+          ]
+        },
+        {
+          "name": "Balance Sheets",
+          "kind": "balance_sheet",
+          "page": 59,
+          "expected_periods": ["2021", "2020"],
+          "period_order": "descending",
+          "expected_sections": ["Current assets:", "Current liabilities:", "Stockholders' equity:"],
+          "cells": [
+            {"section": "", "label": "Total assets", "values": {"2021": "333,779", "2020": "301,311"}}
+          ]
+        },
+        {
+          "name": "Cash Flows Statements",
+          "kind": "cash_flow",
+          "page": 60,
+          "expected_periods": ["2021", "2020", "2019"],
+          "period_order": "descending",
+          "expected_sections": ["Operations", "Financing", "Investing"],
+          "cells": [
+            {"section": "", "label": "Net cash from operations", "values": {"2021": "76,740", "2020": "60,675", "2019": "52,185"}},
+            {"section": "", "label": "Net cash used in investing", "values": {"2021": "(27,577)", "2020": "(12,223)", "2019": "(15,773)"}}
+          ]
+        }
+      ]
+    },
+    {
+      "doc": "0000950170-23-035122.pdf",
+      "issuer": "Microsoft Corporation",
+      "fiscal_year": "2023",
+      "units": "millions",
+      "tables": [
+        {
+          "name": "Income Statements",
+          "kind": "income_statement",
+          "page": 58,
+          "expected_periods": ["2023", "2022", "2021"],
+          "period_order": "descending",
+          "expected_sections": ["Revenue:", "Cost of revenue:"],
+          "cells": [
+            {"section": "", "label": "Total revenue", "values": {"2023": "211,915", "2022": "198,270", "2021": "168,088"}},
+            {"section": "", "label": "Net income", "values": {"2023": "72,361", "2022": "72,738", "2021": "61,271"}}
+          ]
+        },
+        {
+          "name": "Balance Sheets",
+          "kind": "balance_sheet",
+          "page": 60,
+          "expected_periods": ["2023", "2022"],
+          "period_order": "descending",
+          "expected_sections": ["Current assets:", "Current liabilities:", "Stockholders' equity:"],
+          "cells": [
+            {"section": "", "label": "Total assets", "values": {"2023": "411,976", "2022": "364,840"}}
+          ]
+        },
+        {
+          "name": "Cash Flows Statements",
+          "kind": "cash_flow",
+          "page": 61,
+          "expected_periods": ["2023", "2022", "2021"],
+          "period_order": "descending",
+          "expected_sections": ["Operations", "Financing", "Investing"],
+          "cells": [
+            {"section": "", "label": "Net cash from operations", "values": {"2023": "87,582", "2022": "89,035", "2021": "76,740"}},
+            {"section": "", "label": "Net cash used in investing", "values": {"2023": "(22,680)", "2022": "(30,311)", "2021": "(27,577)"}}
+          ]
+        }
+      ]
+    }
+  ]
+}

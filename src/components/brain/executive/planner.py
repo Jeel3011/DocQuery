@@ -29,6 +29,7 @@ from dataclasses import dataclass, field
 from typing import Optional, List, Dict, Any
 
 from ..comprehension import QueryIR
+from ..analyst import _is_aggregate_request
 
 
 # The sub-goal basis (§1, §5.3). A small set that RECOMBINES into thousands of question
@@ -129,18 +130,75 @@ def _is_entity_extremum(ir: QueryIR) -> bool:
     return pred in ("argmax", "argmin") and len(ir.entities) >= 2
 
 
+def _agg_level(ir: QueryIR, metric: str) -> str:
+    """The aggregation level a lookup of `metric` should bind at (§5.1 grounding). The IR's
+    `constraints.aggregation` ("total"/"component") wins if present; else the metric phrase
+    decides (an aggregate/total wording → "total"); else "any". A "total"/"consolidated"
+    follow-on must bind the PARENT total, not a same-named component — without this a
+    'total net sales' read can tie a segment subtotal against the consolidated line and
+    abstain (or, worse, pick wrong)."""
+    agg = ir.constraints.get("aggregation")
+    if agg in ("total", "component"):
+        return agg
+    if _is_aggregate_request(metric):
+        return "total"
+    return "any"
+
+
+def _lookup_selector(metric: str, section: str, agg: str) -> Dict[str, Any]:
+    """A grounding-ready lookup selector: the row ref + the aggregation level the executor
+    passes to ground_metric (so a 'total' request can't bind a component)."""
+    sel: Dict[str, Any] = {"row": _row_ref(metric, section)}
+    if agg in ("total", "component"):
+        sel["aggregation_level"] = agg
+    return sel
+
+
+def _metric_section(metric: str, entities: List[str]) -> str:
+    """The section a DIRECT read of `metric` should scope to. An aggregate/total metric
+    (e.g. "total net sales", "consolidated revenue") is a parent/company-level line that
+    lives OUTSIDE any segment → NO section, so grounding finds the consolidated row rather
+    than failing to match a segment-scoped one (the §2.1 fix for plain lookups too). A
+    non-aggregate metric scopes to the named entity/segment."""
+    if not entities:
+        return ""
+    if _is_aggregate_request(metric):
+        return ""
+    return entities[0]
+
+
+def _follow_section(follow_metric: str, entities: List[str], pivot_section: str) -> str:
+    """Which section the FOLLOW-ON read should scope to — structurally, not by guessing.
+
+    The pivot is often a SEGMENT (e.g. "AWS"), but the follow-on metric is frequently a
+    CONSOLIDATED/parent figure (e.g. "total consolidated net sales") that lives at the
+    company level, NOT inside the segment. So:
+      • an aggregate/total follow metric → NO section (consolidated/parent line). This is
+        the §2.1 fix in the executive layer: a 'total' follow-read must not inherit the
+        pivot segment and silently return the segment's number.
+      • otherwise → prefer a DIFFERENT named entity over the pivot's own section (the
+        parent company named alongside the segment), else fall back to the pivot section.
+    """
+    if _is_aggregate_request(follow_metric):
+        return ""                                  # consolidated — no segment scope
+    others = [e for e in entities if e and e != pivot_section]
+    if others:
+        return others[-1]                          # the parent/other entity, not the pivot
+    return pivot_section
+
+
 # ── plan builders per IR question_type ──────────────────────────────────────────────
 
 def _plan_lookup(ir: QueryIR) -> QueryPlan:
     """One stated value, no pivot. A single grounding read."""
     metric = ir.metrics[0] if ir.metrics else ir.raw
-    section = ir.entities[0] if ir.entities else ""
+    section = _metric_section(metric, ir.entities)
     inputs: Dict[str, Any] = {}
     if ir.periods:
         inputs["period"] = ir.periods[0]
     g = SubGoal(id="A", type="lookup", description=f"read {metric}",
                 binds="answer", inputs=inputs,
-                selector={"row": _row_ref(metric, section)})
+                selector=_lookup_selector(metric, section, _agg_level(ir, metric)))
     return QueryPlan(goals=[g], final="A", raw=ir.raw)
 
 
@@ -175,12 +233,13 @@ def _plan_extremum_pivot(ir: QueryIR) -> QueryPlan:
 
     pivot_var = "$" + binds
     inputs = {"period": pivot_var} if not over_entity else {"section": pivot_var}
-    follow_section = ir.entities[0] if (not over_entity and ir.entities) else ""
+    pivot_section = section if not over_entity else ""
+    follow_section = _follow_section(follow_metric, ir.entities, pivot_section)
     goalB = SubGoal(
         id="B", type="lookup",
         description=f"read {follow_metric} for {binds}",
         binds="answer", inputs=inputs, depends_on=["A"],
-        selector={"row": _row_ref(follow_metric, follow_section)},
+        selector=_lookup_selector(follow_metric, follow_section, _agg_level(ir, follow_metric)),
     )
     return QueryPlan(goals=[goalA, goalB], final="B", raw=ir.raw)
 
@@ -202,12 +261,12 @@ def _plan_lookup_pivot(ir: QueryIR) -> QueryPlan:
         selector={"over": "period", "row": _row_ref(pivot_metric, section)},
     )
     follow_metric = ir.metrics[1] if len(ir.metrics) > 1 else pivot_metric
-    follow_section = ir.entities[-1] if ir.entities else ""
+    follow_section = _follow_section(follow_metric, ir.entities, section)
     goalB = SubGoal(
         id="B", type="lookup",
         description=f"read {follow_metric} for the pivot year",
         binds="answer", inputs={"period": "$pivot_year"}, depends_on=["A"],
-        selector={"row": _row_ref(follow_metric, follow_section)},
+        selector=_lookup_selector(follow_metric, follow_section, _agg_level(ir, follow_metric)),
     )
     return QueryPlan(goals=[goalA, goalB], final="B", raw=ir.raw)
 
@@ -229,7 +288,7 @@ def _plan_exists(ir: QueryIR) -> QueryPlan:
     """A yes/no predicate (profit-or-loss, increased-every-year, reached-profitability).
     Routes to claims+verifier in C4 — NEVER the kernel as a number (§5.2)."""
     metric = ir.metrics[0] if ir.metrics else ir.raw
-    section = ir.entities[0] if ir.entities else ""
+    section = _metric_section(metric, ir.entities)
     inputs: Dict[str, Any] = {}
     if ir.periods:
         inputs["period"] = ir.periods[0]
