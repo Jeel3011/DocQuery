@@ -1,0 +1,25 @@
+{
+  "n": 27,
+  "plan_accuracy": 1.0,
+  "hits": 27,
+  "skipped": 0,
+  "mode": "IR-fixture (planner-isolated)",
+  "by_type": {
+    "lookup_pivot": {
+      "hit": 8,
+      "n": 8
+    },
+    "extremum_pivot": {
+      "hit": 9,
+      "n": 9
+    },
+    "qualitative": {
+      "hit": 5,
+      "n": 5
+    },
+    "single_hop_control": {
+      "hit": 5,
+      "n": 5
+    }
+  }
+}
