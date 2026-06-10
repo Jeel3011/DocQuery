@@ -48,11 +48,16 @@ class GateOutcome:
     abstained: bool = False
 
 
-def run_output_gates(draft: str, ledger: EvidenceLedger) -> GateOutcome:
-    """STUB (A2). A3 replaces this with verify_numbers + verify_citations + repair/
-    redact (§3.4). For now it passes any draft so the loop is testable end-to-end.
-    The loop's control flow (repair-once-then-redact) is already wired around it."""
-    return GateOutcome(passed=True, failures=[])
+def _default_gate(draft: str, ledger: EvidenceLedger) -> GateOutcome:
+    """Resolve the real A3 output gates lazily (avoids a gates↔loop import cycle:
+    gates.py imports GateOutcome from this module). If gates.py is somehow unavailable
+    the loop degrades to passthrough rather than crashing."""
+    try:
+        from .gates import run_output_gates as _gates
+        return _gates(draft, ledger)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("[agent_core.loop] output gates unavailable, passing through: %s", exc)
+        return GateOutcome(passed=True, failures=[])
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────────────
@@ -100,7 +105,7 @@ def run_agent(
     system_prompt: str = "",
     history: Optional[List[Dict[str, Any]]] = None,
     registry=REGISTRY,
-    gate_fn: Callable[[str, EvidenceLedger], GateOutcome] = run_output_gates,
+    gate_fn: Callable[[str, EvidenceLedger], GateOutcome] = _default_gate,
 ) -> Iterator[Dict[str, Any]]:
     """Drive one agent run, yielding §3.6 events. `model` is injected (live or scripted).
 

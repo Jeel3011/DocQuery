@@ -93,6 +93,18 @@ def compute(spec: Dict[str, Any], grids: List[Any]) -> Dict[str, Any]:
             summary=f"compute {result.op}: {result.error or 'failed'}",
         )
 
+    # A selection op's threshold (e.g. first_exceeds > 500000) is a legitimate figure the
+    # answer may restate, and it originated from this VERIFIED spec — so it belongs in
+    # provenance as a `param` (distinct from a read cell). The output gate (verify_numbers)
+    # traces a stated figure against cells OR params, so "$500B" no longer reads as
+    # free-floating — while the model still can't launder an arbitrary number, because the
+    # param is only ledgered when the kernel actually executed the op with it.
+    extra_prov = []
+    threshold = spec.get("threshold")
+    if isinstance(threshold, (int, float)):
+        extra_prov.append({"kind": "param", "label": "threshold",
+                           "value": float(threshold), "op": result.op})
+
     data = {
         "value": result.value,
         "formula": result.formula,
@@ -105,5 +117,5 @@ def compute(spec: Dict[str, Any], grids: List[Any]) -> Dict[str, Any]:
     return ok_result(
         summary=f"compute {result.op} = {result.display()}",
         data=data,
-        provenance=cells_prov,
+        provenance=cells_prov + extra_prov,
     )
