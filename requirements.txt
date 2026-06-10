@@ -70,3 +70,7 @@ redis>=5.0.0
 sentry-sdk[fastapi]>=2.0.0
 tavily-python>=0.5.0    #  Web search
 fpdf2>=2.8.0            #  PDF export
+
+# Agent Core (AGENT_CORE_PLAN Phase A) — frontier orchestrator, Anthropic SDK primary.
+# The loop calls Claude (Opus 4.8) natively; OpenAI stays available behind an adapter.
+anthropic>=0.109.0

@@ -1,0 +1,211 @@
+"""The agent loop (AGENT_CORE_PLAN §3.2).
+
+`run_agent(...)` is a generator of SSE-shaped events (§3.6). The model IS the
+orchestrator: it decides which tools to call; there is NO question-type routing
+anywhere (Harvey's lesson, verbatim). What this file owns is the hard part no
+framework ships: the evidence ledger, budget enforcement, graceful degradation, and
+the hook where the non-bypassable output gates (A3) bind the final answer to the
+ledger.
+
+Event shapes (yielded dicts), per §3.6:
+    {"type": "agent_step", "n": int}
+    {"type": "agent_thought", "text": str}
+    {"type": "tool_call", "name": str, "args_summary": str}
+    {"type": "tool_result", "name": str, "ok": bool, "summary": str, "n_provenance": int}
+    {"type": "gate", "name": str, "pass": bool, "detail": str}
+    {"type": "sources", "sources": [...]}              # ledger payloads
+    {"type": "token", "text": str}                     # final answer (whole, in A2)
+    {"type": "meta", "mode": str, "steps": int, "tokens": int, "abstained": bool, ...}
+
+A2 wires everything EXCEPT the real gate logic, which A3 fills into
+`run_output_gates`. The stub here passes any draft through (clearly marked) so the
+loop is end-to-end testable now; turning the stub into the real gate is A3's whole job
+and does not touch this file's control flow.
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+from dataclasses import dataclass
+from typing import Any, Callable, Dict, Iterator, List, Optional
+
+from .budgets import Budget
+from .ledger import EvidenceLedger
+from .model import BaseModel, ModelResponse, ToolCall
+from .registry import REGISTRY, RunScope
+
+logger = logging.getLogger(__name__)
+
+
+# ── Output-gate hook (A3 replaces the body; A2 ships a passthrough stub) ─────────
+
+@dataclass
+class GateOutcome:
+    passed: bool
+    redacted_draft: Optional[str] = None
+    failures: List[Dict[str, Any]] = None  # [{name, detail}]
+    abstained: bool = False
+
+
+def run_output_gates(draft: str, ledger: EvidenceLedger) -> GateOutcome:
+    """STUB (A2). A3 replaces this with verify_numbers + verify_citations + repair/
+    redact (§3.4). For now it passes any draft so the loop is testable end-to-end.
+    The loop's control flow (repair-once-then-redact) is already wired around it."""
+    return GateOutcome(passed=True, failures=[])
+
+
+# ── Helpers ──────────────────────────────────────────────────────────────────────
+
+def _args_summary(args: Dict[str, Any]) -> str:
+    """One-line, log-safe summary of tool args for the timeline."""
+    try:
+        s = json.dumps(args, default=str, ensure_ascii=False)
+    except Exception:  # noqa: BLE001
+        s = str(args)
+    return s[:160]
+
+
+def _tool_result_message(call: ToolCall, result: Dict[str, Any]) -> Dict[str, Any]:
+    """Anthropic tool_result content block referencing the tool_use id."""
+    return {
+        "role": "user",
+        "content": [{
+            "type": "tool_result",
+            "tool_use_id": call.id,
+            "content": json.dumps(result, default=str),
+            "is_error": not result.get("ok", False),
+        }],
+    }
+
+
+def _assistant_message(resp: ModelResponse) -> Dict[str, Any]:
+    """Reconstruct the assistant turn (text + tool_use blocks) for the message history."""
+    content: List[Dict[str, Any]] = []
+    if resp.text:
+        content.append({"type": "text", "text": resp.text})
+    for tc in resp.tool_calls:
+        content.append({"type": "tool_use", "id": tc.id, "name": tc.name, "input": tc.args})
+    return {"role": "assistant", "content": content or [{"type": "text", "text": ""}]}
+
+
+# ── The loop ──────────────────────────────────────────────────────────────────────
+
+def run_agent(
+    question: str,
+    *,
+    model: BaseModel,
+    scope: RunScope,
+    budget: Budget,
+    system_prompt: str = "",
+    history: Optional[List[Dict[str, Any]]] = None,
+    registry=REGISTRY,
+    gate_fn: Callable[[str, EvidenceLedger], GateOutcome] = run_output_gates,
+) -> Iterator[Dict[str, Any]]:
+    """Drive one agent run, yielding §3.6 events. `model` is injected (live or scripted).
+
+    Termination: the model returns a text answer with no tool calls AND the gates pass
+    (or a single repair has been spent → the redacted draft ships). Budget exhaustion
+    wraps up with whatever is gated + an explicit abstain. A model API error is retried
+    once by the caller's model wrapper; an unrecoverable one degrades (the route falls
+    back to Brain — that's A4). This function never raises into the generator consumer.
+    """
+    ledger = EvidenceLedger()
+    tools = registry.schemas(budget.mode)
+
+    messages: List[Dict[str, Any]] = list(history or [])
+    messages.append({"role": "user", "content": question})
+
+    repair_attempted = False
+    final_text: Optional[str] = None
+    abstained = False
+
+    while True:
+        # Budget gate BEFORE each model call (§3.2): no silent overspend.
+        if budget.step_exhausted() or budget.tokens_exhausted():
+            why = "step" if budget.step_exhausted() else "token"
+            yield {"type": "gate", "name": "budget", "pass": False,
+                   "detail": f"{why} budget exhausted at step {budget.steps_used}"}
+            final_text = (
+                "I ran out of my analysis budget before finishing. Here is only what I "
+                "verified from the sources; I'm not stating anything I couldn't confirm."
+            )
+            abstained = True
+            break
+
+        budget.steps_used += 1
+        step = budget.steps_used
+        yield {"type": "agent_step", "n": step}
+
+        try:
+            resp = model.invoke(messages, tools)
+        except Exception as exc:  # noqa: BLE001 — surfaced as a degrade signal to the caller
+            logger.warning("[agent_core.loop] model.invoke failed at step %d: %s", step, exc)
+            yield {"type": "gate", "name": "model_error", "pass": False, "detail": str(exc)}
+            final_text = None
+            abstained = True
+            # Signal degrade: yield meta with an error marker; A4's route falls back.
+            yield {"type": "meta", "mode": budget.mode, "steps": step,
+                   "tokens": budget.tokens_used, "abstained": True,
+                   "error": f"model_error: {exc}", "degrade": True}
+            return
+
+        budget.tokens_used += (resp.usage or {}).get("in", 0) + (resp.usage or {}).get("out", 0)
+        if resp.text:
+            yield {"type": "agent_thought", "text": resp.text[:500]}
+
+        # Record the assistant turn in history.
+        messages.append(_assistant_message(resp))
+
+        if resp.wants_tools:
+            for call in resp.tool_calls:
+                yield {"type": "tool_call", "name": call.name,
+                       "args_summary": _args_summary(call.args)}
+                result = registry.execute(call, scope)
+                n_prov = ledger.record(call.name, step, result.get("provenance"))
+                yield {"type": "tool_result", "name": call.name,
+                       "ok": bool(result.get("ok")), "summary": result.get("summary", ""),
+                       "n_provenance": n_prov}
+                messages.append(_tool_result_message(call, result))
+            continue  # let the model see the results and decide the next move
+
+        # No tool calls → the model thinks it's done. Run the output gates (A3).
+        draft = resp.text or ""
+        outcome = gate_fn(draft, ledger)
+        for f in (outcome.failures or []):
+            yield {"type": "gate", "name": f.get("name", "gate"), "pass": False,
+                   "detail": f.get("detail", "")}
+
+        if outcome.passed:
+            yield {"type": "gate", "name": "output", "pass": True, "detail": "all claims traced"}
+            final_text = draft
+            break
+
+        if repair_attempted:
+            # Second failure → redact: ship the gated content, withhold the rest (§3.4).
+            final_text = outcome.redacted_draft or draft
+            abstained = outcome.abstained or True
+            yield {"type": "gate", "name": "output", "pass": False,
+                   "detail": "redacted ungated claims after one repair"}
+            break
+
+        # First failure → ONE repair turn: feed the gate failures back to the model.
+        repair_attempted = True
+        fb = "; ".join(f.get("detail", "") for f in (outcome.failures or [])) or "untraced claims"
+        messages.append({
+            "role": "user",
+            "content": (
+                f"Some claims didn't pass verification ({fb}). Fix or remove them: every "
+                f"number must come from a tool result and every factual sentence must cite "
+                f"a source. Re-answer."
+            ),
+        })
+        # loop continues → model re-answers
+
+    # Wrap up: emit sources from the ledger, the final answer, and run meta.
+    yield {"type": "sources", "sources": ledger.to_sources()}
+    if final_text is not None:
+        yield {"type": "token", "text": final_text}
+    yield {"type": "meta", "mode": budget.mode, "steps": budget.steps_used,
+           "tokens": budget.tokens_used, "abstained": abstained,
+           "n_evidence": len(ledger.entries)}

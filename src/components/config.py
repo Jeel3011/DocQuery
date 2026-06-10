@@ -186,3 +186,34 @@ class Config:
     # Chunks pulled per hop. Kept modest so the running evidence set the gap detector reads
     # stays small/fast; dedup across hops means later hops mostly add net-new chunks.
     MULTIHOP_PER_HOP_K: int = int(os.getenv("MULTIHOP_PER_HOP_K", "5"))
+
+    # ── Agent Core (AGENT_CORE_PLAN Phase A, §3.1) ──
+    # Opt-in: set USE_AGENT_CORE=true to expose POST /query/agentcore/stream (A4). A
+    # frontier model orchestrates by calling our deterministic machinery as TOOLS,
+    # behind non-bypassable output gates. OFF by default — flag off = the route 404s
+    # and every existing Brain/Spine path is byte-identical (the plan's prime directive).
+    USE_AGENT_CORE: bool = os.getenv("USE_AGENT_CORE", "false").lower() == "true"
+
+    # Orchestrator model policy is CONFIG, not code (§3.1) — multi-vendor from day one.
+    # Jeel's call (2026-06-10): Opus 4.8 for BOTH standard and deep — max quality
+    # everywhere, overriding the plan's Sonnet-for-standard default. Env-overridable so
+    # the cloud/cost tradeoff can change without touching code. The classifier is the one
+    # cheap call (mode dispatch), so it stays on a mini model.
+    AGENT_MODEL_STANDARD: str = os.getenv("AGENT_MODEL_STANDARD", "claude-opus-4-8")
+    AGENT_MODEL_DEEP: str = os.getenv("AGENT_MODEL_DEEP", "claude-opus-4-8")
+    AGENT_MODEL_CLASSIFIER: str = os.getenv("AGENT_MODEL_CLASSIFIER", "gpt-4o-mini")
+
+    # Per-mode budgets (§3.1), enforced IN CODE by the loop runner (not advisory). A run
+    # that exhausts a budget wraps up with whatever is gated + an explicit abstain for the
+    # rest — it never silently truncates or overspends.
+    AGENT_STD_MAX_STEPS: int = int(os.getenv("AGENT_STD_MAX_STEPS", "12"))
+    AGENT_STD_WALL_S: float = float(os.getenv("AGENT_STD_WALL_S", "90"))
+    AGENT_STD_TOKEN_BUDGET: int = int(os.getenv("AGENT_STD_TOKEN_BUDGET", "60000"))
+    AGENT_DEEP_MAX_STEPS: int = int(os.getenv("AGENT_DEEP_MAX_STEPS", "40"))
+    AGENT_DEEP_WALL_S: float = float(os.getenv("AGENT_DEEP_WALL_S", "480"))
+    AGENT_DEEP_TOKEN_BUDGET: int = int(os.getenv("AGENT_DEEP_TOKEN_BUDGET", "250000"))
+
+    # Anthropic SDK key (primary orchestrator vendor). Empty until set; no live agent
+    # call is possible without it (the offline gates use a mocked model, so they need
+    # neither this nor the network).
+    ANTHROPIC_API_KEY: str = os.getenv("ANTHROPIC_API_KEY", "")
