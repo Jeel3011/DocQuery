@@ -87,9 +87,20 @@ def _check_predicate(b: Binding) -> Optional[InvariantCheck]:
         if not (win.value > thr):
             return InvariantCheck("predicate", ok=False, decided=True,
                                   detail=f"first_exceeds: winner {win.value:g} is NOT > {thr:g}")
-        # the period just before the winner (in scan order) must be ≤ threshold
         idx = cands.index(win)
-        if idx > 0 and cands[idx - 1].value > thr:
+        # A genuine FIRST crossing needs a WITNESS below the threshold earlier in the
+        # (chronologically-ordered) series — otherwise the series begins already above
+        # thr (e.g. a too-small threshold makes every value exceed it) or the order is
+        # unknown, and "first" cannot be confirmed. No below-witness → ABSTAIN. This is
+        # the deterministic backstop for the descending-grid / wrong-units confident-wrong
+        # (the winner-at-index-0 case the old "if idx>0" check waved through).
+        if idx == 0 or not any(c.value <= thr for c in cands[:idx]):
+            return InvariantCheck("predicate", ok=False, decided=True,
+                                  detail=f"first_exceeds: no earlier period ≤ {thr:g} before "
+                                         f"{b.value} — cannot confirm it is the FIRST to exceed "
+                                         f"(series may begin above the threshold or be mis-ordered)")
+        # the period just before the winner must be ≤ threshold (no skipped crossing)
+        if cands[idx - 1].value > thr:
             return InvariantCheck("predicate", ok=False, decided=True,
                                   detail=f"first_exceeds: a PRIOR period ({cands[idx-1].period}="
                                          f"{cands[idx-1].value:g}) already exceeded {thr:g} — "
@@ -101,7 +112,14 @@ def _check_predicate(b: Binding) -> Optional[InvariantCheck]:
             return InvariantCheck("predicate", ok=False, decided=True,
                                   detail=f"last_below: winner {win.value:g} is NOT < {thr:g}")
         idx = cands.index(win)
-        if idx < len(cands) - 1 and cands[idx + 1].value < thr:
+        # Symmetric: a genuine LAST-below needs a WITNESS at/above the threshold LATER in
+        # the series; otherwise the series ends below thr and "last" can't be confirmed.
+        if idx == len(cands) - 1 or not any(c.value >= thr for c in cands[idx + 1:]):
+            return InvariantCheck("predicate", ok=False, decided=True,
+                                  detail=f"last_below: no later period ≥ {thr:g} after {b.value} — "
+                                         f"cannot confirm it is the LAST below (series may end below "
+                                         f"the threshold or be mis-ordered)")
+        if cands[idx + 1].value < thr:
             return InvariantCheck("predicate", ok=False, decided=True,
                                   detail=f"last_below: a LATER period ({cands[idx+1].period}) is also "
                                          f"< {thr:g} — {b.value} is not the LAST")

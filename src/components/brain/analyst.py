@@ -41,6 +41,26 @@ _STRIP = re.compile(r"[,$%\s]")
 # a value-column header that denotes a real period (a year / FY / quarter), used to tell a
 # properly-extracted grid from one still on positional col_1/col_2 placeholders.
 _YEARISH_COL = re.compile(r"(?:19|20)\d{2}|FY\s?\d{2,4}|Q[1-4]\b", re.I)
+_FULL_YEAR = re.compile(r"(?:19|20)\d{2}")
+_FY_SHORT = re.compile(r"FY\s?'?(\d{2})\b", re.I)
+
+
+def _period_year(key: str) -> Optional[int]:
+    """Extract a sortable 4-digit year from a period token, for CHRONOLOGICAL ordering
+    of a selection series. '2022'→2022, 'FY2022'→2022, 'Dec 31, 2022'→2022, "FY '23"→2023.
+    Returns None when the token carries no year (e.g. a positional 'col_1' axis) — the
+    caller then leaves the series in its original order rather than guess a chronology,
+    and the reasoning verifier's predicate check abstains instead of trusting the order.
+    """
+    s = str(key)
+    m = _FULL_YEAR.search(s)
+    if m:
+        return int(m.group())
+    m = _FY_SHORT.search(s)
+    if m:
+        yy = int(m.group(1))
+        return 2000 + yy if yy < 70 else 1900 + yy
+    return None
 
 
 class CellError(ValueError):
@@ -649,6 +669,16 @@ def compute(spec: Dict[str, Any], grids: List[Grid]) -> ComputeResult:
                 continue
         if not series:
             raise CellError(f"selection over periods resolved no numeric cells for {label!r}")
+        # Chronological order is REQUIRED for threshold ops: grid COLUMN order is not
+        # guaranteed ascending (Microsoft statements list the LATEST year first), so a
+        # raw `first_exceeds` scan over column order binds the wrong year (and the monitor,
+        # seeing the winner at scan index 0, has no prior to test → certifies it). Sort the
+        # period series ascending by extracted year so the scan walks time forward. Only
+        # when EVERY key yields a year; a positional/mixed axis (col_1…) is left as-is and
+        # the predicate check abstains rather than trust an unknown order. Order-independent
+        # ops (argmax/argmin/rank/filter) are unaffected by the sort.
+        if all(_period_year(k) is not None for k, _c in series):
+            series.sort(key=lambda kv: _period_year(kv[0]))
         return series, "period"
 
     def _num(spec: Dict[str, Any], *keys: str) -> float:
