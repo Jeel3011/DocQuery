@@ -81,7 +81,11 @@ J_DEGRADED = "not json at all"   # → comprehend degrades → applied=False
 def main():
     print("Coordinator gate (§5.6 / C6) — spine dispatch + block assembly, offline\n")
     g = grids_for(AMZN22)
-    Q = "bridge question text"
+    # A REALISTIC question is now load-bearing: comprehension's structural validation
+    # (ir_structural_issues) requires every IR metric to appear in the question — a
+    # placeholder string would (correctly) degrade the fixture IR as inconsistent.
+    Q = ("In the fiscal year AWS operating income first exceeded $20 billion, "
+         "what was Amazon's total consolidated net sales?")
 
     # (1) pivot/bridge → spine applies, verified answer in block
     out = run_executive_spine(Q, g, FakeLLM(J_BRIDGE))

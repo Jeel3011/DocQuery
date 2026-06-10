@@ -27,10 +27,20 @@ from .executive import plan, execute
 from .monitoring import monitor
 
 
-# the question shapes the deterministic spine handles end-to-end. A plain `lookup` is left
-# to the existing Analyst/Brain path (the spine would add a plan/monitor round-trip for no
-# gain on a single stated value); `exists`/`qualitative` route to claims+verifier elsewhere.
-_SPINE_TYPES = ("extremum_pivot", "lookup_pivot", "compare")
+# The question shapes the deterministic spine handles end-to-end. Currently ONLY
+# `extremum_pivot` — its `select` goals carry a whitelisted kernel op (argmax/argmin/
+# first_exceeds/last_below), so plan→execute resolves a real pivot.
+#
+# `lookup_pivot` and `compare` are DELIBERATELY excluded (SPINE_TRUST_BREAKS H1): their
+# planner builders emit a `select` goal with NO `op` (the kernel has no "closest/matches"
+# or entity-compare selection op yet), so they could only ever ABSTAIN and fall through —
+# listing them here just burned a plan/execute round-trip and pretended to a capability we
+# don't have. They fall through to the existing Analyst/Brain path EXACTLY as before; the
+# only change is the spine no longer feigns coverage. Re-add a type here the moment its
+# kernel op lands (the executability gate, eval/test_spine_executability.py, enforces that
+# every type listed here produces an executable plan). A plain `lookup` is likewise left to
+# the existing path; `exists`/`qualitative` route to claims+verifier elsewhere.
+_SPINE_TYPES = ("extremum_pivot",)
 
 
 @dataclass
@@ -100,21 +110,21 @@ def run_executive_spine(question: str, grids: List[Grid], llm) -> SpineOutcome:
         # the spine must never crash the request — degrade to the existing path
         return SpineOutcome(applied=False, reason=f"spine error: {exc}")
 
-    # Dispatch (the §5.6 prime directive — only ADD verified figures, never suppress the
-    # Brain's prose path):
-    #   • spine did NOT resolve (a capability gap — e.g. a lookup_pivot "closest to X" the
-    #     kernel has no op for, or grounding abstained) → FALL THROUGH. Injecting an
-    #     "I withhold" block here would wrongly suppress a prose answer the Brain can give.
-    #   • spine resolved a figure but the self-monitor FLAGGED the reasoning → step aside
-    #     and do NOT inject the (possibly-wrong) number; the Brain runs as the baseline.
-    #     (Forcing a hard abstain that OVERRIDES the prose path is the deferred §5.5 _reduce
-    #     swap; for C6 the spine never makes the answer worse, only better.)
+    # Dispatch (§5.6):
+    #   • spine did NOT resolve (a capability gap — e.g. a lookup_pivot the kernel has no op
+    #     for, or grounding abstained) → FALL THROUGH (applied=False, abstained=False). The
+    #     spine simply has nothing to compute; a prose answer the Brain can give is not
+    #     suppressed.
+    #   • spine RESOLVED a figure but the self-monitor FLAGGED the reasoning → return
+    #     abstained=True. The caller (chat.py / brain.run) reads this as a binary WITHHOLD
+    #     and refuses cleanly INSTEAD of letting the old prose path state the rejected number
+    #     — the C4 enforcement (§5.5). This is the deliberate over-abstain trade vs. shipping
+    #     a confident wrong: correct-or-abstain is the prime directive (§4a).
     #   • spine resolved AND verified → inject the authoritative figure block (the win).
     if not res.ok:
         return SpineOutcome(applied=False, reason=f"spine did not resolve ({res.reason[:50]})")
     if verdict.abstain:
-        return SpineOutcome(applied=False, abstained=True,
-                            reason=f"monitor flagged, withholding from REDUCE: {verdict.reason[:50]}")
+        return SpineOutcome(applied=False, abstained=True, reason=verdict.reason[:140])
 
     b = res.answer_binding
     return SpineOutcome(

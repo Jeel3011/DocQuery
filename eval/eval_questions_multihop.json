@@ -2,7 +2,7 @@
   {
     "_comment": "Phase 4.6 (§7) measurement set for the live 'very big' collection (8 docs: GOOG FY21/22/23, MSFT FY21/22/23, AMZN FY22/23). EXPANDED 2026-06-08 from 5 → 27 questions across the §7 distribution so WRONG-rate is measured over the real question mix, not just bridges. Every numeric ground_truth is VERIFIED against the live table grids (see eval/_dump_grids notes / aws-20b-gold-correction memory) — NOT free-recalled. 'query_type' tags the category for per-bucket WRONG-rate breakdown: extremum_pivot (argmax/argmin/first_exceeds — THE failure class Layer 1 selection ops target), lookup_pivot (resolve a stated pivot then read a value), qualitative (route to the claims+verifier path, NOT the deterministic kernel), single_hop_control (must NOT regress — guards the prime directive). 'answer_must_include' = facts the final answer must contain (LLM-judged, phrasing/rounding-robust). 'bridge_fact' = the intermediate fact the reasoning must surface (diagnosis only, not scored directly).",
     "_collection_name": "very big",
-    "_collection_id": "d1ef8357-5cf0-4f34-9f91-db5ba511f788",
+    "_collection_id": "79ae7a9c-7f27-4bdf-be11-0c5b640105de",
     "_verified_figures": {
       "_units": "USD millions unless noted",
       "goog_total_revenue": {"2021": 257637, "2022": 282836, "2023": 307394},

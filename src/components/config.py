@@ -152,6 +152,12 @@ class Config:
     # today's Brain path. The spine NEVER emits a number itself — the kernel reads cells
     # and the monitor converts a wrong-reasoning result to a clean abstain (§4a).
     USE_EXEC_SPINE: bool = os.getenv("USE_EXEC_SPINE", "false").lower() == "true"
+    # The spine's COMPREHEND call (§5.2) — the ONE LLM in the spine, and the live-measured
+    # bottleneck (it parses the question into the typed IR every deterministic organ
+    # consumes; a dropped pivot metric poisons the whole chain). One call per spine-shaped
+    # question, so the strong model costs pennies and is the cheapest accuracy lever in
+    # the system. Defaults to the REDUCE-tier model, env-overridable.
+    COMPREHEND_LLM_MODEL: str = os.getenv("COMPREHEND_LLM_MODEL", "") or os.getenv("REDUCE_LLM_MODEL", "gpt-4o")
     # Per-document retrieval timeout (seconds) for the Brain — fail fast on a network/
     # DNS blip instead of hanging on Pinecone retries for minutes.
     BRAIN_RETRIEVE_TIMEOUT_S: float = float(os.getenv("BRAIN_RETRIEVE_TIMEOUT_S", "20"))

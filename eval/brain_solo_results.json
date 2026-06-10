@@ -1,10 +1,10 @@
 {
-  "collection_id": "d1ef8357-5cf0-4f34-9f91-db5ba511f788",
+  "collection_id": "79ae7a9c-7f27-4bdf-be11-0c5b640105de",
   "n": 5,
   "buckets": {
-    "CORRECT": 2,
-    "ABSTAINED": 2,
-    "WRONG": 1
+    "CORRECT": 3,
+    "ABSTAINED": 0,
+    "WRONG": 2
   },
   "by_type": {
     "lookup_pivot": {
@@ -13,9 +13,9 @@
       "WRONG": 0
     },
     "extremum_pivot": {
-      "CORRECT": 0,
-      "ABSTAINED": 2,
-      "WRONG": 1
+      "CORRECT": 1,
+      "ABSTAINED": 0,
+      "WRONG": 2
     },
     "qualitative": {
       "CORRECT": 1,
@@ -27,22 +27,22 @@
     "covered": 5,
     "measurable": 5,
     "rate": 1.0,
-    "wrong_with_full_coverage": 1,
+    "wrong_with_full_coverage": 2,
     "wrong_with_missing_coverage": 0
   },
   "abstention_usefulness": {
-    "total": 2,
-    "useful": 2,
+    "total": 0,
+    "useful": 0,
     "wasteful_single_hop": 0,
     "other": 0,
-    "useful_rate": 1.0
+    "useful_rate": null
   },
   "rows": [
     {
       "q": "In the fiscal year that Microsoft's total revenue was closest to $200 billion, what total revenue did Alphabet (Google) report?",
       "query_type": "lookup_pivot",
       "bucket": "CORRECT",
-      "answer_head": "In the fiscal year 2022, Microsoft's total revenue was $198,270 million, which is the closest to $200 billion among the years reported [Source: msft-10k_2022063",
+      "answer_head": "In the fiscal year 2022, Microsoft's total revenue was $198,270 million, which is the closest to $200 billion among the fiscal years reported [Source: 000095017",
       "gold_docs": [
         "msft-10k_20220630.htm.pdf",
         "goog-20221231.pdf"
@@ -57,8 +57,8 @@
     {
       "q": "In the fiscal year Amazon's AWS segment operating income first exceeded $20 billion, what was Amazon's total consolidated net sales?",
       "query_type": "extremum_pivot",
-      "bucket": "WRONG",
-      "answer_head": "In the fiscal year when Amazon's AWS segment operating income first exceeded $20 billion, Amazon's total consolidated net sales were $574,785 million [Source: a",
+      "bucket": "CORRECT",
+      "answer_head": "In the fiscal year 2022, Amazon's AWS segment operating income first exceeded $20 billion, reaching $22,841 million [Source: amzn-20221231.pdf]. For that same y",
       "gold_docs": [
         "amzn-20221231.pdf"
       ],
@@ -71,8 +71,8 @@
     {
       "q": "For the company among Google, Microsoft, and Amazon with the highest total revenue in fiscal 2023, what were that same company's fiscal 2023 research and development expenses?",
       "query_type": "extremum_pivot",
-      "bucket": "ABSTAINED",
-      "answer_head": "I can only partially answer this question based on the available documents. Here is what I found, but please treat it as preliminary:\n\nTo determine which compan",
+      "bucket": "WRONG",
+      "answer_head": "To determine which company among Google, Microsoft, and Amazon had the highest total revenue in fiscal 2023 and to identify that company's research and developm",
       "gold_docs": [
         "amzn-20231231.pdf"
       ],
@@ -86,7 +86,7 @@
       "q": "Alphabet reports a 'Google Cloud' operating segment. In Alphabet's fiscal 2023 report, did Google Cloud reach profitability, and what was its fiscal 2023 operating income or loss?",
       "query_type": "qualitative",
       "bucket": "CORRECT",
-      "answer_head": "In Alphabet's fiscal 2023 report, Google Cloud reached profitability, reporting an operating income of $1.7 billion. This marks a significant turnaround from pr",
+      "answer_head": "In Alphabet's fiscal 2023 report, Google Cloud reached profitability with an operating income of $1.7 billion. This marks a significant turnaround from the prev",
       "gold_docs": [
         "goog-20231231.pdf"
       ],
@@ -99,8 +99,8 @@
     {
       "q": "Across these filings, in the fiscal year Microsoft acquired the largest company it discloses acquiring, what was Microsoft's total revenue that year?",
       "query_type": "extremum_pivot",
-      "bucket": "ABSTAINED",
-      "answer_head": "To determine Microsoft's total revenue in the fiscal year it acquired the largest company it discloses acquiring, we need to identify the fiscal year and the co",
+      "bucket": "WRONG",
+      "answer_head": "In the fiscal year 2022, Microsoft completed its acquisition of Nuance Communications, Inc. for a total purchase price of $18.8 billion [Source: msft-10k_202206",
       "gold_docs": [
         "0000950170-23-035122.pdf"
       ],

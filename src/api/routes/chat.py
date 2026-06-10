@@ -1171,14 +1171,29 @@ async def brain_query_stream(
             # When the flag is off OR the question isn't a spine shape, this is a no-op and
             # the Analyst path below is byte-identical to today.
             _spine_block = None
+            _spine_abstain = None
             if getattr(user_config, "USE_EXEC_SPINE", False):
                 try:
                     from src.components.brain.meta_reasoner import run_executive_spine
-                    outcome = run_executive_spine(body.question, grids, spec_llm)
+                    # comprehend is the spine's single LLM call and its measured live
+                    # bottleneck — run it on the strong tier (one call per pivot/bridge
+                    # question; the Analyst spec-writer below stays on the cheap model).
+                    comprehend_llm = ChatOpenAI(
+                        model=getattr(user_config, "COMPREHEND_LLM_MODEL", None)
+                              or user_config.LLM_MODEL_NAME,
+                        temperature=0.0, api_key=user_config.OPENAI_API_KEY,
+                        request_timeout=30,
+                    )
+                    outcome = run_executive_spine(body.question, grids, comprehend_llm)
                     if outcome.applied and outcome.block:
                         _spine_block = outcome.block
-                        logger.info("[brain] executive spine applied (abstained=%s, pivot=%s)",
-                                    outcome.abstained, outcome.binding)
+                        logger.info("[brain] executive spine applied (pivot=%s)", outcome.binding)
+                    elif outcome.abstained:
+                        # C4 enforcement: the spine RESOLVED a figure but its self-monitor
+                        # flagged the reasoning → carry the reason so REDUCE binary-WITHHOLDS
+                        # instead of letting the old path ship the wrong number (§5.5/§4a).
+                        _spine_abstain = outcome.reason or "self-monitor flagged the reasoning"
+                        logger.info("[brain] executive spine WITHHELD: %s", _spine_abstain)
                 except Exception as exc:
                     logger.warning("[brain] executive spine skipped: %s", exc)
 
@@ -1201,13 +1216,13 @@ async def brain_query_stream(
                 _count = max(_count, 1)
         except Exception as exc:
             logger.warning("[brain] Analyst step skipped: %s", exc)
-        return _block, _count
+        return _block, _count, _spine_abstain
 
     try:
-        analyst_block, analyst_count = await asyncio.to_thread(_run_analyst_sync)
+        analyst_block, analyst_count, spine_abstain = await asyncio.to_thread(_run_analyst_sync)
     except Exception as exc:
         logger.warning("[brain] Analyst thread failed: %s", exc)
-        analyst_block = None
+        analyst_block, analyst_count, spine_abstain = None, 0, None
 
     # Pass the sync generator straight to StreamingResponse — Starlette iterates it
     # in a worker thread, so the blocking MAP/REDUCE/VERIFY work stays off the event
@@ -1225,6 +1240,7 @@ async def brain_query_stream(
                 conversation_id=conversation_id,
                 analyst_block=analyst_block,
                 analyst_count=analyst_count,
+                spine_abstain=spine_abstain,
             ),
             sb,
             conversation_id,

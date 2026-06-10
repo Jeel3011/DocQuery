@@ -55,6 +55,20 @@ MAP_QUORUM = 0.90        # proceed to REDUCE if ≥ 90% of docs MAP'd successful
 BRAIN_ABSTAIN_THRESHOLD = 0.45
 
 
+def _spine_withhold_message(reason: str) -> str:
+    """The clean binary refusal shipped when the executive spine's self-monitor flags the
+    numeric reasoning (C4 enforcement, §5.5 / §4a). The spine COMPUTED an answer and its
+    own deterministic monitor (predicate / completeness / binding) rejected it; we withhold
+    rather than let prose synthesis state a figure the check just rejected — turning the
+    spine's WRONG→ABSTAIN into a SHIPPED outcome. A withheld number beats a confident wrong
+    one (the prime directive)."""
+    return (
+        "I can't give a reliable answer to this question. A deterministic check of the "
+        f"numeric reasoning didn't hold ({reason}), so I'm withholding the figure rather "
+        "than state one I can't stand behind."
+    )
+
+
 # ── Prompt builders ───────────────────────────────────────────────────────────
 # IMPORTANT: these are plain string builders, NOT LangChain ChatPromptTemplates.
 # The prompts contain literal JSON examples (e.g. {"claim": ...}) and ChatPromptTemplate
@@ -517,6 +531,7 @@ class Brain:
         collection_id: Optional[str] = None,
         conversation_id: Optional[str] = None,
         analyst_block: Optional[str] = None,
+        spine_abstain: Optional[str] = None,
     ) -> BrainResult:
         """Run the full MAP → VERIFY → REDUCE pipeline.
 
@@ -566,7 +581,20 @@ class Brain:
             )
 
         # ── REDUCE (synthesise prose from verified claims only) ────────────────
-        if not verified_claims:
+        abstained = False
+        abstain_reason = None
+        if spine_abstain:
+            # C4 enforcement (§5.5): the executive spine computed an answer and its own
+            # self-monitor flagged the reasoning — binary WITHHOLD instead of running
+            # REDUCE (which could synthesise the rejected figure from prose). Clean refusal,
+            # no number generated. This is the SHIPPED WRONG→ABSTAIN the coordinator alone
+            # couldn't do (it could only decline to ADD a block; the old path would answer).
+            logger.info("[Brain] spine self-monitor withheld: %s", spine_abstain)
+            answer = _spine_withhold_message(spine_abstain)
+            confidence = 0.0
+            abstained = True
+            abstain_reason = f"executive spine self-monitor withheld the figure: {spine_abstain}"
+        elif not verified_claims:
             answer = (
                 "I couldn't verify any claims against the source documents for this "
                 "question, so I can't give a grounded answer."
@@ -591,10 +619,9 @@ class Brain:
                     groundedness, len(unsupported),
                 )
 
-        # Abstain if confidence is too low (§4a.4)
-        abstained = False
-        abstain_reason = None
-        if confidence < BRAIN_ABSTAIN_THRESHOLD:
+        # Abstain if confidence is too low (§4a.4). A spine withhold is ALREADY a clean
+        # refusal — don't wrap it in the "preliminary" preamble.
+        if not spine_abstain and confidence < BRAIN_ABSTAIN_THRESHOLD:
             abstained = True
             abstain_reason = (
                 f"Brain confidence {confidence:.2f} below abstention threshold "
@@ -667,6 +694,7 @@ class Brain:
         conversation_id: Optional[str] = None,
         analyst_block: Optional[str] = None,
         analyst_count: int = 0,
+        spine_abstain: Optional[str] = None,
     ) -> Iterator[str]:
         """Generator yielding SSE events as the Brain works.
 
@@ -733,7 +761,14 @@ class Brain:
         yield f"data: {_json.dumps({'type': 'brain_verify', 'claims_total': len(all_claims), 'claims_verified': len(verified_claims)})}\n\n"
 
         # ── REDUCE from verified claims only ───────────────────────────────────
-        if not verified_claims:
+        if spine_abstain:
+            # C4 enforcement (§5.5): the spine's self-monitor flagged the numeric reasoning
+            # → binary WITHHOLD; skip REDUCE so no rejected figure is synthesised. A withheld
+            # number beats a confident wrong one (§4a). The old path no longer ships the wrong
+            # answer the monitor just caught.
+            answer, confidence = _spine_withhold_message(spine_abstain), 0.0
+            groundedness, n_unsupported = 1.0, 0
+        elif not verified_claims:
             answer, confidence = (
                 "I couldn't verify any claims against the source documents for this "
                 "question, so I can't give a grounded answer.",
@@ -754,7 +789,8 @@ class Brain:
         yield f"data: {_json.dumps({'type': 'brain_reduce', 'docs_relevant': docs_relevant, 'groundedness': round(groundedness, 2), 'unsupported': n_unsupported})}\n\n"
 
         abstained = confidence < BRAIN_ABSTAIN_THRESHOLD
-        if abstained:
+        # a spine withhold is already a clean refusal — don't wrap it as "preliminary".
+        if abstained and not spine_abstain:
             answer = (
                 "I can only partially answer this question based on the available documents. "
                 f"Here is what I found, but please treat it as preliminary:\n\n{answer}"

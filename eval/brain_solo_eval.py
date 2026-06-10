@@ -80,19 +80,21 @@ def _local_grids_for_docs(filenames):
 
 
 def _spine_block_for(config, sb, question, doc_chunks, spec_llm):
-    """Build the executive-spine block for a question, EXACTLY as chat.py's Brain endpoint
-    does — gated by USE_EXEC_SPINE. Returns (block_or_None, tag). This is what makes the
-    eval actually test C2→C6: brain.run() consumes the block in REDUCE. When the flag is
-    off, returns (None, 'off') and brain.run is byte-identical to the pre-spine path.
+    """Build the executive-spine outcome for a question, EXACTLY as chat.py's Brain endpoint
+    does — gated by USE_EXEC_SPINE. Returns (block_or_None, abstain_reason_or_None, tag).
+    This is what makes the eval test C2→C6 end to end: brain.run() consumes `block` as the
+    authoritative figure in REDUCE, and `abstain_reason` triggers the C4 binary-WITHHOLD (the
+    spine's self-monitor flagged the reasoning → refuse, don't let the old path ship a wrong
+    number). When the flag is off, returns (None, None, 'off') — byte-identical to pre-spine.
 
     Mirrors chat.py: has_numeric_intent gate → load_grids_for_docs → run_executive_spine.
     """
     if not getattr(config, "USE_EXEC_SPINE", False):
-        return None, "off"
+        return None, None, "off"
     try:
         from src.components.brain.table_intent import has_numeric_intent, load_grids_for_docs
         if not has_numeric_intent(question):
-            return None, "non-numeric"
+            return None, None, "non-numeric"
         filename_by_doc = {did: fn for did, (fn, _ch) in doc_chunks.items()}
         if os.getenv("SPINE_LOCAL_GRIDS") == "1":
             # TEST PATH: feed the spine grids freshly RE-EXTRACTED from the local PDFs (the
@@ -104,15 +106,17 @@ def _spine_block_for(config, sb, question, doc_chunks, spec_llm):
                 sb, list(doc_chunks.keys()), question=question, filename_by_doc=filename_by_doc,
             )
         if not grids:
-            return None, "no-grids"
+            return None, None, "no-grids"
         from src.components.brain.meta_reasoner import run_executive_spine
         outcome = run_executive_spine(question, grids, spec_llm)
         if outcome.applied and outcome.block:
-            tag = f"ABSTAIN(pivot={outcome.binding})" if outcome.abstained else f"applied(pivot={outcome.binding})"
-            return outcome.block, tag
-        return None, f"fall-through({outcome.reason[:30]})"
+            return outcome.block, None, f"applied(pivot={outcome.binding})"
+        if outcome.abstained:
+            # C4: spine resolved a figure, monitor flagged it → binary withhold downstream.
+            return None, outcome.reason, f"WITHHOLD({outcome.reason[:30]})"
+        return None, None, f"fall-through({outcome.reason[:30]})"
     except Exception as exc:
-        return None, f"error: {exc}"
+        return None, None, f"error: {exc}"
 
 
 def _brain_retrieve(retrieval_mgr, question, filenames, per_doc_k):
@@ -208,8 +212,10 @@ def main():
     retrieval_mgr = RetrievalManager(config)
     brain = Brain(config)
     judge_llm = ChatOpenAI(model="gpt-4o", temperature=0.0, api_key=config.OPENAI_API_KEY, request_timeout=30)
-    # the spine's comprehend call uses the cheap model, same as chat.py's Analyst thread
-    spec_llm = ChatOpenAI(model=config.LLM_MODEL_NAME, temperature=0.0,
+    # the spine's comprehend call runs on the strong tier (COMPREHEND_LLM_MODEL), same as
+    # chat.py — it is the spine's single LLM call and its measured live bottleneck
+    spec_llm = ChatOpenAI(model=getattr(config, "COMPREHEND_LLM_MODEL", None) or config.LLM_MODEL_NAME,
+                          temperature=0.0,
                           api_key=config.OPENAI_API_KEY, request_timeout=20, max_retries=1)
     spine_tags = []   # per-question spine outcome, for the summary
 
@@ -241,10 +247,11 @@ def main():
             covered_count += int(covered)
         # Phase 4.6: build the executive-spine block (gated by USE_EXEC_SPINE), exactly as
         # chat.py does, and feed it to brain.run so REDUCE states the monitored figure.
-        spine_block, spine_tag = _spine_block_for(config, sb, q, doc_chunks, spec_llm)
+        spine_block, spine_abstain, spine_tag = _spine_block_for(config, sb, q, doc_chunks, spec_llm)
         spine_tags.append(spine_tag)
         try:
-            result = brain.run(query=q, doc_chunks=doc_chunks, analyst_block=spine_block)
+            result = brain.run(query=q, doc_chunks=doc_chunks, analyst_block=spine_block,
+                               spine_abstain=spine_abstain)
             answer = getattr(result, "answer", "") or ""
         except Exception as e:
             answer = ""
@@ -274,13 +281,14 @@ def main():
 
     # ── spine activity: how often the executive spine actually ran (only meaningful with
     #    USE_EXEC_SPINE=true). 'applied' = the spine produced a verified figure block;
-    #    'ABSTAIN' = the monitor withheld; the rest fell through to the old path.
+    #    'withhold' = the monitor flagged the reasoning → C4 binary abstain enforced;
+    #    the rest fell through to the old path.
     if spine_on:
         from collections import Counter
         sc = Counter("applied" if t.startswith("applied")
-                     else "abstain" if t.startswith("ABSTAIN")
+                     else "withhold" if t.startswith("WITHHOLD")
                      else "fallthrough" for t in spine_tags)
-        print(f"  SPINE ACTIVITY: applied={sc['applied']}  abstain={sc['abstain']}  "
+        print(f"  SPINE ACTIVITY: applied={sc['applied']}  withhold={sc['withhold']}  "
               f"fell-through={sc['fallthrough']}  (of {n})")
         print("=" * 68)
 

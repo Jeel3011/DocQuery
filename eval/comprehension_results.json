@@ -2,7 +2,7 @@
   "n": 27,
   "type_accuracy": 0.9259259259259259,
   "type_hits": 25,
-  "degraded": 0,
+  "degraded": 1,
   "by_type": {
     "lookup_pivot": {
       "hit": 8,
@@ -20,5 +20,7 @@
       "hit": 5,
       "n": 5
     }
-  }
+  },
+  "bridge_metric_completeness": 1.0,
+  "comprehend_model": "gpt-4o"
 }
