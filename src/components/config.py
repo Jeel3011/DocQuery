@@ -208,7 +208,10 @@ class Config:
     # rest — it never silently truncates or overspends.
     AGENT_STD_MAX_STEPS: int = int(os.getenv("AGENT_STD_MAX_STEPS", "12"))
     AGENT_STD_WALL_S: float = float(os.getenv("AGENT_STD_WALL_S", "90"))
-    AGENT_STD_TOKEN_BUDGET: int = int(os.getenv("AGENT_STD_TOKEN_BUDGET", "60000"))
+    # 120k (was 60k): a reasoning-tier orchestrator (gpt-5.4 / Opus) emits reasoning
+    # tokens and accumulates tool-result context across steps; 60k forced an abstain at
+    # step 5 on an already-correct figure in the first live run. Still well under deep.
+    AGENT_STD_TOKEN_BUDGET: int = int(os.getenv("AGENT_STD_TOKEN_BUDGET", "120000"))
     AGENT_DEEP_MAX_STEPS: int = int(os.getenv("AGENT_DEEP_MAX_STEPS", "40"))
     AGENT_DEEP_WALL_S: float = float(os.getenv("AGENT_DEEP_WALL_S", "480"))
     AGENT_DEEP_TOKEN_BUDGET: int = int(os.getenv("AGENT_DEEP_TOKEN_BUDGET", "250000"))

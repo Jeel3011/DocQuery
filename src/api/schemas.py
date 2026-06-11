@@ -81,6 +81,9 @@ class QueryRequest(BaseModel):
     # vs. the parallel-decompose retriever for THIS request. Lets the UI A/B the two
     # without an env change or restart.
     multi_hop: Optional[bool] = None
+    # A4 (agent core §3.1): per-request mode for /query/agentcore/stream. None defaults
+    # to "standard"; "deep" raises the step/wall/token budget. Ignored by other endpoints.
+    mode: Optional[str] = None
 
 
 class QueryResponse(BaseModel):

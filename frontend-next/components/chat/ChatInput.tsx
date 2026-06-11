@@ -2,7 +2,7 @@
 
 import { useRef, useState, useCallback, KeyboardEvent } from "react";
 import { AnimatePresence, motion } from "framer-motion";
-import { ArrowUp, Square, Loader2, Zap, Brain } from "lucide-react";
+import { ArrowUp, Square, Loader2, Zap, Brain, Sparkles } from "lucide-react";
 
 const SLASH_COMMANDS = [
   { cmd: "/compare", desc: "Compare two documents side by side" },
@@ -21,6 +21,8 @@ interface ChatInputProps {
   onToggleAgentic?: () => void;
   brainMode?: boolean;
   onToggleBrain?: () => void;
+  agentCoreMode?: boolean;
+  onToggleAgentCore?: () => void;
 }
 
 export function ChatInput({
@@ -33,6 +35,8 @@ export function ChatInput({
   onToggleAgentic,
   brainMode = false,
   onToggleBrain,
+  agentCoreMode = false,
+  onToggleAgentCore,
 }: ChatInputProps) {
   const [value, setValue] = useState("");
   const [showSlash, setShowSlash] = useState(false);
@@ -178,6 +182,27 @@ export function ChatInput({
 
           {/* Mode toggles */}
           <div className="flex items-center gap-1.5 pb-0.5">
+            {onToggleAgentCore && (
+              <button
+                onClick={onToggleAgentCore}
+                title={agentCoreMode ? "Agent mode ON (verified tool loop)" : "Enable Agent mode (verified tool loop)"}
+                aria-pressed={agentCoreMode}
+                className="w-8 h-8 rounded-xl flex items-center justify-center flex-shrink-0 transition-[background-color,color,box-shadow,transform] duration-[120ms] ease-[cubic-bezier(0.23,1,0.32,1)] active:scale-[0.97] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)]"
+                style={agentCoreMode ? {
+                  background: "var(--accent)",
+                  color: "white",
+                  boxShadow: "0 2px 8px rgba(0,0,0,0.2), var(--skeu-inset)",
+                } : {
+                  background: "var(--glass-bg)",
+                  color: "var(--text-muted)",
+                  border: "1px solid var(--glass-border)",
+                  boxShadow: "var(--skeu-raised)",
+                }}
+              >
+                <Sparkles size={14} className={agentCoreMode ? "fill-current" : ""} />
+              </button>
+            )}
+
             {onToggleBrain && (
               <button
                 onClick={onToggleBrain}

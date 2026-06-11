@@ -103,12 +103,31 @@ def read_document(
             scoped = [g for g in loaded if getattr(g, "doc", None) == doc_id]
             if scoped:
                 loaded = scoped
+        # Honor the model's page_range against the grids too. Without this the adapter
+        # returned EVERY grid on the doc (e.g. 60) regardless of the requested pages —
+        # each grid's full JSON floods the message history and blows the token budget
+        # before the model can answer (observed live: read_document → 60 grids → 75k
+        # tokens at step 5 → forced abstain on an ALREADY-CORRECT figure). Scope to the
+        # range when the page is known; if nothing falls in range, keep the doc-scoped
+        # set (showing structure beats returning nothing).
+        _pr = _parse_page_range(page_range)
+        if _pr is not None:
+            lo, hi = _pr
+            in_range = [g for g in loaded
+                        if isinstance(getattr(g, "page", None), int) and lo <= g.page <= hi]
+            if in_range:
+                loaded = in_range
     elif table_grids and db_client is not None:
         from src.components.brain.table_intent import load_grids_for_docs
 
+        # load_grids_for_docs keys on the DB doc_id (UUID). The model may pass a filename;
+        # resolve it the same way the page-text query below does.
+        _fb = filename_by_doc or {}
+        _uuid_by_fn = {fn: did for did, fn in _fb.items()}
+        _grid_id = _uuid_by_fn.get(doc_id, doc_id)
         loaded = load_grids_for_docs(
             db_client,
-            [doc_id],
+            [_grid_id],
             question=question,
             filename_by_doc=filename_by_doc,
         )
@@ -116,18 +135,32 @@ def read_document(
     grid_jsons = [_grid_to_json(g) for g in loaded] if table_grids else []
 
     # Page text: only available with a live db_client; scoped to the page range.
+    # The model addresses docs by the FILENAME it saw in search results, but the DB's
+    # document_id is a UUID — passing a filename as document_id is a 400 Bad Request
+    # (observed live on an MSFT question: the model retried read_document, burned steps,
+    # and produced no answer). Resolve filename→UUID via the reverse of filename_by_doc;
+    # if we can't resolve to a UUID, skip the text query (the grids already answer the
+    # numeric question — text is supplementary).
     page_text: List[Dict[str, Any]] = []
     pr = _parse_page_range(page_range)
-    if db_client is not None and pr is not None:
+    fb = filename_by_doc or {}
+    uuid_by_filename = {fn: did for did, fn in fb.items()}
+    resolved_id = uuid_by_filename.get(doc_id, doc_id if doc_id in fb else None)
+    if db_client is not None and pr is not None and resolved_id is not None:
         try:
-            rows = (
+            # BUG-2 fix: push the chunk_type filter to the DB (JSONB ->> operator, same
+            # as load_grids_for_docs) and cap the rows. The old query pulled EVERY chunk
+            # for the doc then filtered in Python — ~15s/call and a token sink (observed
+            # live). Text chunks for a 1-2 page range are few; 64 is a generous ceiling.
+            q = (
                 db_client.client.table("document_chunks")
                 .select("content,metadata")
-                .eq("document_id", doc_id)
-                .execute()
-                .data
-                or []
+                .eq("document_id", resolved_id)
             )
+            try:
+                rows = q.eq("metadata->>chunk_type", "text").limit(64).execute().data or []
+            except Exception:  # noqa: BLE001 — JSONB filter unsupported → fall back, still capped
+                rows = q.limit(256).execute().data or []
             lo, hi = pr
             for r in rows:
                 md = r.get("metadata") or {}

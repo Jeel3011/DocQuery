@@ -12,7 +12,24 @@ export interface StreamEvent {
   type:
     | "sources" | "token" | "error" | "done" | "status" | "meta" | "sub_queries" | "web_search"
     // Brain (map-reduce) step events — emitted by /query/brain/stream
-    | "brain_start" | "brain_analyst" | "brain_map" | "brain_verify" | "brain_reduce" | "brain_meta";
+    | "brain_start" | "brain_analyst" | "brain_map" | "brain_verify" | "brain_reduce" | "brain_meta"
+    // Agent-core loop events (§3.6) — emitted by /query/agentcore/stream
+    | "agent_step" | "agent_thought" | "tool_call" | "tool_result" | "gate" | "artifact";
+  // ── Agent-core event fields (§3.6) ──
+  n?: number;                 // agent_step (step number)
+  text?: string;              // agent_thought
+  name?: string;              // tool_call / tool_result / gate
+  args_summary?: string;      // tool_call
+  ok?: boolean;               // tool_result
+  summary?: string;           // tool_result
+  n_provenance?: number;      // tool_result
+  pass?: boolean;             // gate
+  detail?: string;            // gate
+  degrade?: boolean;          // meta (agent-core degrade signal)
+  mode?: string;              // meta (standard | deep)
+  steps?: number;             // meta
+  tokens?: number;            // meta
+  n_evidence?: number;        // meta
   content?: string;        // for type='token'
   sources?: SourceInfo[];  // for type='sources'
   message?: string;        // for type='error'
@@ -60,6 +77,7 @@ export interface StreamQueryRequest {
   conversation_id?: string | null;
   collection_id?: string | null;  // Phase 1
   multi_hop?: boolean | null;     // Phase 4.5: force the sequential multi-hop loop on the agent endpoint
+  mode?: string | null;           // A4: agent-core mode ("standard" | "deep") for /query/agentcore/stream
 }
 
 // ─── Main streaming function ───────────────────────────────────────────────────
@@ -409,6 +427,150 @@ export async function streamBrainQuery(
           }
         } catch {
           console.warn("[brain-streaming] Malformed SSE line:", dataStr);
+        }
+      }
+    }
+  } catch (err) {
+    if ((err as Error).name === "AbortError") {
+      callbacks.onDone();
+    } else {
+      callbacks.onError("Stream interrupted. Please try again.");
+    }
+  } finally {
+    reader.releaseLock();
+  }
+}
+
+
+// ─── Agent-core (frontier-model tool loop) streaming — Phase A (A4) ───────────
+// POST /api/v1/query/agentcore/stream. Requires collection_id and USE_AGENT_CORE=true
+// on the backend (flag off ⇒ 404). The model IS the orchestrator; this emits the §3.6
+// loop events (agent_step / agent_thought / tool_call / tool_result / gate / artifact)
+// that drive the same ThinkingStream timeline as Brain — now showing the model's tool
+// calls and the non-bypassable output gates, plus the standard sources/token answer.
+
+export interface AgentCoreStreamCallbacks extends StreamCallbacks {
+  onAgentStep?: (n: number) => void;
+  onAgentThought?: (text: string) => void;
+  onToolCall?: (name: string, argsSummary?: string) => void;
+  onToolResult?: (ev: { name: string; ok: boolean; summary?: string; nProvenance?: number }) => void;
+  onGate?: (ev: { name: string; pass: boolean; detail?: string }) => void;
+  onAgentMeta?: (meta: { mode?: string; steps?: number; tokens?: number; abstained?: boolean; degrade?: boolean }) => void;
+}
+
+export async function streamAgentCoreQuery(
+  token: string,
+  body: StreamQueryRequest,
+  callbacks: AgentCoreStreamCallbacks,
+  signal?: AbortSignal
+): Promise<void> {
+  let response: Response;
+
+  try {
+    response = await fetch(`${API_BASE}/api/v1/query/agentcore/stream`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "application/json",
+        Accept: "text/event-stream",
+      },
+      body: JSON.stringify(body),
+      signal,
+    });
+  } catch (err) {
+    if ((err as Error).name === "AbortError") {
+      callbacks.onDone();
+      return;
+    }
+    callbacks.onError("Network error — could not connect to server.");
+    return;
+  }
+
+  if (!response.ok) {
+    const text = await response.text().catch(() => "Unknown error");
+    // 404 = USE_AGENT_CORE disabled, 400 = collection_id missing — surface clearly.
+    callbacks.onError(`Server error ${response.status}: ${text}`);
+    return;
+  }
+
+  if (!response.body) {
+    callbacks.onError("No response body — streaming not supported.");
+    return;
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split("\n");
+      buffer = lines.pop() ?? "";
+
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (!trimmed || !trimmed.startsWith("data: ")) continue;
+        const dataStr = trimmed.slice(6);
+
+        if (dataStr === "[DONE]") {
+          callbacks.onDone();
+          return;
+        }
+
+        try {
+          const event = JSON.parse(dataStr) as StreamEvent;
+
+          switch (event.type) {
+            case "agent_step":
+              callbacks.onAgentStep?.(event.n ?? 0);
+              break;
+            case "agent_thought":
+              callbacks.onAgentThought?.(event.text ?? "");
+              break;
+            case "tool_call":
+              callbacks.onToolCall?.(event.name ?? "tool", event.args_summary);
+              break;
+            case "tool_result":
+              callbacks.onToolResult?.({
+                name: event.name ?? "tool",
+                ok: event.ok ?? false,
+                summary: event.summary,
+                nProvenance: event.n_provenance,
+              });
+              break;
+            case "gate":
+              callbacks.onGate?.({
+                name: event.name ?? "gate",
+                pass: event.pass ?? false,
+                detail: event.detail,
+              });
+              break;
+            case "sources":
+              callbacks.onSources(event.sources ?? []);
+              break;
+            case "token":
+              if (event.content) callbacks.onToken(event.content);
+              break;
+            case "meta":
+              callbacks.onAgentMeta?.({
+                mode: event.mode,
+                steps: event.steps,
+                tokens: event.tokens,
+                abstained: event.abstained,
+                degrade: event.degrade,
+              });
+              if (event.degrade && callbacks.onFallback) callbacks.onFallback();
+              break;
+            case "error":
+              callbacks.onError(event.message ?? "Stream error");
+              break;
+          }
+        } catch {
+          console.warn("[agentcore-streaming] Malformed SSE line:", dataStr);
         }
       }
     }

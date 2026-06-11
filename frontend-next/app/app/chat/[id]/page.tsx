@@ -16,7 +16,7 @@ import { SkeletonMessage } from "@/components/ui/Skeleton";
 import { MOCK_ANSWER_META, AnswerMeta, ConfidenceLevel } from "@/components/chat/TrustBar";
 import { useAuthStore } from "@/stores/auth.store";
 import { getMessages, MessageResponse, SourceInfo, exportConversation, compareDocuments, ComparisonResult, DocumentResponse, listDocuments } from "@/lib/api";
-import { streamQuery, streamAgenticQuery, streamBrainQuery } from "@/lib/streaming";
+import { streamQuery, streamAgenticQuery, streamBrainQuery, streamAgentCoreQuery } from "@/lib/streaming";
 import { useCollectionStore } from "@/stores/collection.store";
 import { toast } from "sonner";
 import { Search, Download, FolderOpen, GitCompare, Globe, X, ChevronRight } from "lucide-react";
@@ -56,6 +56,7 @@ function ChatPageInner() {
   const [loading, setLoading] = useState(true);
   const [agenticMode, setAgenticMode] = useState(false);
   const [brainMode, setBrainMode] = useState(false);
+  const [agentCoreMode, setAgentCoreMode] = useState(false);  // A4: verified tool-loop agent
   const [showExport, setShowExport] = useState(false);
   const [showCompare, setShowCompare] = useState(false);
   const [documents, setDocuments] = useState<DocumentResponse[]>([]);
@@ -76,12 +77,14 @@ function ChatPageInner() {
   const isStreamingRef = useRef(false);
   const agenticModeRef = useRef(false);
   const brainModeRef = useRef(false);
+  const agentCoreModeRef = useRef(false);
   const activeCollectionIdRef = useRef<string | null>(null);
 
   // Keep refs in sync with state
   useEffect(() => { isStreamingRef.current = isStreaming; }, [isStreaming]);
   useEffect(() => { agenticModeRef.current = agenticMode; }, [agenticMode]);
   useEffect(() => { brainModeRef.current = brainMode; }, [brainMode]);
+  useEffect(() => { agentCoreModeRef.current = agentCoreMode; }, [agentCoreMode]);
   useEffect(() => { activeCollectionIdRef.current = activeCollectionId; }, [activeCollectionId]);
 
   // Close export dropdown on outside click
@@ -163,7 +166,102 @@ function ChatPageInner() {
 
       const collId = activeCollectionIdRef.current;
 
-      if (brainModeRef.current) {
+      if (agentCoreModeRef.current) {
+        // Agent core (A4): a frontier model calls our verified tools in a loop; the
+        // draft is bound to the evidence ledger by non-bypassable output gates. Requires
+        // a collection scope and USE_AGENT_CORE=true on the backend (flag off ⇒ 404).
+        if (!collId) {
+          toast.error("Select a collection to use Agent mode");
+          setMessages((prev) => prev.filter((m) => m.id !== assistantMsgId && m.id !== userMsgId));
+          setIsStreaming(false);
+          return;
+        }
+
+        const acStart = Date.now();
+        // The agent loop's steps are emergent (the model decides), so the timeline is
+        // built live from tool_call / gate events rather than a fixed pipeline.
+        let steps: ThinkingStep[] = [
+          { id: "plan", label: "Reasoning", detail: "Deciding which tools to call", status: "active" },
+        ];
+        const pushSteps = () => {
+          const snapshot = steps.map((s) => ({ ...s }));
+          setMessages((prev) =>
+            prev.map((m) => (m.id === assistantMsgId ? { ...m, thinkingSteps: snapshot } : m))
+          );
+        };
+        const upsert = (id: string, step: ThinkingStep) => {
+          const i = steps.findIndex((s) => s.id === id);
+          if (i >= 0) steps[i] = { ...steps[i], ...step };
+          else steps = [...steps, step];
+          pushSteps();
+        };
+
+        setMessages((prev) =>
+          prev.map((m) => (m.id === assistantMsgId ? { ...m, isBrain: true } : m))
+        );
+        pushSteps();
+
+        await streamAgentCoreQuery(
+          token,
+          { question, conversation_id: convId, collection_id: collId, mode: "standard" },
+          {
+            ...callbacks,
+            onDone: () => {
+              steps = steps.map((s) =>
+                s.status === "active" || s.status === "pending" ? { ...s, status: "done" as const } : s
+              );
+              const total = Date.now() - acStart;
+              const snapshot = steps.map((s) => ({ ...s }));
+              setMessages((prev) =>
+                prev.map((m) =>
+                  m.id === assistantMsgId ? { ...m, thinkingSteps: snapshot, thinkingTotalMs: total } : m
+                )
+              );
+              callbacks.onDone();
+            },
+            onAgentThought: (text) => {
+              if (text) upsert("plan", { id: "plan", label: "Reasoning", detail: text.slice(0, 80), status: "active" });
+            },
+            onToolCall: (name, argsSummary) => {
+              upsert("plan", { id: "plan", label: "Reasoning", status: "done" });
+              upsert(`tool-${name}`, {
+                id: `tool-${name}`,
+                label: name === "compute" ? "Computing" : name === "table_lookup" ? "Looking up cells"
+                  : name === "read_document" ? "Reading document" : "Searching documents",
+                detail: argsSummary?.slice(0, 80),
+                status: "active",
+              });
+            },
+            onToolResult: ({ name, ok, summary, nProvenance }) => {
+              upsert(`tool-${name}`, {
+                id: `tool-${name}`,
+                label: name === "compute" ? "Computing" : name === "table_lookup" ? "Looking up cells"
+                  : name === "read_document" ? "Reading document" : "Searching documents",
+                detail: summary
+                  ? `${summary}${nProvenance ? ` · ${nProvenance} cited` : ""}`
+                  : undefined,
+                status: ok ? "done" : "failed",
+              });
+            },
+            onGate: ({ name, pass, detail }) => {
+              upsert(`gate-${name}`, {
+                id: `gate-${name}`,
+                label: "Verifying answer",
+                detail: detail || (pass ? "all claims traced" : `${name} flagged`),
+                status: pass ? "done" : "failed",
+              });
+            },
+            onAgentMeta: ({ abstained, degrade }) => {
+              const level: ConfidenceLevel = abstained || degrade ? "low" : "high";
+              const meta: AnswerMeta = { confidence: level, claimTypes: ["fact"] };
+              setMessages((prev) =>
+                prev.map((m) => (m.id === assistantMsgId ? { ...m, answerMeta: meta } : m))
+              );
+            },
+          },
+          abortRef.current.signal
+        );
+      } else if (brainModeRef.current) {
         // Brain (map-reduce synthesis) requires a collection scope.
         if (!collId) {
           toast.error("Select a collection to use Brain synthesis");
@@ -601,9 +699,11 @@ function ChatPageInner() {
         onCancel={handleCancel}
         isStreaming={isStreaming}
         agenticMode={agenticMode}
-        onToggleAgentic={() => { setAgenticMode((v) => !v); setBrainMode(false); }}
+        onToggleAgentic={() => { setAgenticMode((v) => !v); setBrainMode(false); setAgentCoreMode(false); }}
         brainMode={brainMode}
-        onToggleBrain={() => { setBrainMode((v) => !v); setAgenticMode(false); }}
+        onToggleBrain={() => { setBrainMode((v) => !v); setAgenticMode(false); setAgentCoreMode(false); }}
+        agentCoreMode={agentCoreMode}
+        onToggleAgentCore={() => { setAgentCoreMode((v) => !v); setBrainMode(false); setAgenticMode(false); }}
       />
 
       {/* Compare Documents Modal */}

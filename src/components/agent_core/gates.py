@@ -45,6 +45,16 @@ _CONTENT_WORD = re.compile(
 _SENT_SPLIT = re.compile(r"(?<=[.!?])\s+")
 
 
+def _strip_citations(text: str) -> str:
+    """Remove citation markers before number-tracing. A marker like [amzn-20231231.pdf
+    p.62] is PROVENANCE, not a claimed figure — but its embedded digits (e.g. the
+    -20231231 in the filename) read as a free-floating number to figure_traces_to_cells,
+    which then fails a fully-correct, fully-traced answer and redacts it. Observed live:
+    the AWS bridge resolved 2022/80,096 correctly, cited the source, and was redacted
+    solely because '-20231231' inside the citation traced to no cell. Strip them first."""
+    return _CITE_RE.sub(" ", text or "")
+
+
 @dataclass
 class _CellLike:
     """Minimal CellRef-shaped object for figure_traces_to_cells (it only reads .value)."""
@@ -69,12 +79,13 @@ def verify_numbers(draft: str, ledger: EvidenceLedger) -> Dict[str, Any]:
     from src.components.brain.monitoring.invariants import figure_traces_to_cells
 
     cells = _ledger_cells(ledger)
-    check = figure_traces_to_cells(draft or "", cells)
+    traceable = _strip_citations(draft)  # citation markers are provenance, not figures
+    check = figure_traces_to_cells(traceable, cells)
     # decided=False (no cells to trace against) → can't vouch for any stated figure.
     # If the draft states figures but the ledger is empty, that's a FAIL (free-floating
     # numbers); if the draft states no figures, it passes vacuously.
     if not check.decided:
-        has_fig = bool(_has_substantive_figure(draft))
+        has_fig = bool(_has_substantive_figure(traceable))
         if has_fig:
             return {"name": "verify_numbers", "pass": False,
                     "detail": "draft states figures but no source cells were gathered"}
@@ -184,13 +195,14 @@ def _redact(draft: str, ledger: EvidenceLedger, failures: List[Dict[str, Any]]) 
             continue
         if st in uncited:
             continue
-        if numbers_failed and _has_substantive_figure(st):
+        st_traceable = _strip_citations(st)  # don't count citation-marker digits as figures
+        if numbers_failed and _has_substantive_figure(st_traceable):
             # Keep only if THIS sentence's figures PROVABLY trace. Undecided (e.g. an
             # EMPTY ledger — the model gathered no evidence at all) must redact, not
             # pass: `decided=False` means "nothing to trace against", and shipping an
             # unverifiable figure on absence-of-evidence is the exact fail-open §3.4
             # forbids. Fail closed.
-            chk = figure_traces_to_cells(st, cells)
+            chk = figure_traces_to_cells(st_traceable, cells)
             if not (chk.decided and chk.ok):
                 continue
         kept.append(st)
