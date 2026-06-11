@@ -138,6 +138,33 @@ def main() -> int:
     # Live-ish call with a None db_client and no grids → ok envelope, empty grids (no raise).
     r = read_document("some-doc-id", db_client=None)
     c.ok(is_envelope(r), "read_document: no db_client → envelope (no raise)")
+    # doc_id matching the grids' doc label scopes the result to that doc only.
+    mixed = msft + amzn
+    r = read_document("amzn-20221231.pdf", grids=mixed)
+    c.ok(r["ok"] and all(g["doc"] == "amzn-20221231.pdf" for g in r["data"]["grids"]),
+         "read_document: doc_id filters pre-loaded grids to the requested doc")
+    c.ok(0 < len(r["data"]["grids"]) < len(mixed),
+         "read_document: filtered set is a strict, non-empty subset")
+
+    print("\n── compute: entity-axis selection (over='entity' + rows) ────────")
+    # The schema must let the model express a cross-entity argmax (the cross-company
+    # question class). Fixture: two sections, one metric, fixed period.
+    seg = Grid({"headers": ["label", "2022"], "periods": ["2022"],
+                "rows": [{"section": "AWS", "label": "Net sales", "2022": "80,096"},
+                         {"section": "North America", "label": "Net sales", "2022": "315,880"}],
+                "table_id": "seg"}, doc="amzn-2022", page=108)
+    c.ok("over" in SCHEMAS["compute"]["input_schema"]["properties"]
+         and "rows" in SCHEMAS["compute"]["input_schema"]["properties"],
+         "compute schema exposes over + rows (entity axis expressible)")
+    r = compute({"op": "argmax", "over": "entity", "period": "2022",
+                 "rows": [{"row": {"section": "AWS", "label": "Net sales"}},
+                          {"row": {"section": "North America", "label": "Net sales"}}]},
+                [seg])
+    c.ok(r["ok"] and r["data"]["binding"] == "North America",
+         "compute: entity argmax binds the right entity"
+         + ("" if r["ok"] else f" (error: {r.get('error')})"))
+    c.ok(r["ok"] and len(r["data"]["candidates"]) == 2,
+         "compute: entity argmax carries the full completeness trail (2 candidates)")
 
     print("\n── search_vault (retrieval adapter) ─────────────────────────────")
     # Stub manager mimicking RetrievalManager's two methods.

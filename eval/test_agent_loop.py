@@ -159,6 +159,49 @@ def main() -> int:
     c.ok(types[-1] == "meta", "stream ends with meta")
     c.ok("sources" in types and "token" in types, "stream has sources + token")
 
+    # ── 6. Gate failure → fail CLOSED (non-bypassable means withhold, not passthrough)
+    print("\n── raising gate_fn → fail CLOSED (withhold ships, no crash) ─────")
+    def _boom_gate(draft, ledger):
+        raise RuntimeError("gates exploded")
+    events = collect(run_agent("net sales 2022", model=ScriptedModel([
+        ModelResponse(text="Invented figure 123,456 with no evidence.", tool_calls=[]),
+        ModelResponse(text="Still invented: 123,456.", tool_calls=[]),
+    ]), scope=scope, budget=std_budget(), gate_fn=_boom_gate))
+    token = next((e["text"] for e in events if e["type"] == "token"), "")
+    meta = next(e for e in events if e["type"] == "meta")
+    c.ok("123,456" not in token, "gate crash → invented figure does NOT ship")
+    c.ok(meta["abstained"] is True, "gate crash → run abstains (fail closed)")
+    c.ok(any(e["type"] == "gate" and e["name"] == "gates_unavailable" for e in events),
+         "emitted a gates_unavailable gate event")
+
+    # ── 7. Wall-clock budget enforced ────────────────────────────────────────────
+    print("\n── wall-clock budget → graceful abstain ─────────────────────────")
+    wall0 = Budget(mode="standard", model="m", max_steps=12, wall_clock_s=1e-9,
+                   token_budget=60000)
+    events = collect(run_agent("x", model=ScriptedModel([
+        ModelResponse(text="never reached", tool_calls=[])]), scope=scope, budget=wall0))
+    meta = next(e for e in events if e["type"] == "meta")
+    c.ok(meta["steps"] == 0 and meta["abstained"] is True,
+         "wall-clock exhausted before step 1 → abstain, zero model calls")
+    c.ok(any(e["type"] == "gate" and e["name"] == "budget" and "wall-clock" in e["detail"]
+             for e in events), "budget gate names wall-clock as the cause")
+
+    # ── 8. Transient model error → ONE retry covers it (no degrade) ──────────────
+    print("\n── transient model error → retry-once recovers ──────────────────")
+    def _raise_once(_messages):
+        raise RuntimeError("transient 529")
+    events = collect(run_agent("net sales 2022", model=ScriptedModel([
+        _raise_once,  # first invoke raises → loop retries → next item proceeds
+        ModelResponse(text="reading", tool_calls=[ToolCall(id="r1", name="compute", args={
+            "op": "value", "row": {"label": "Total net sales"}, "period": "2022"})]),
+        ModelResponse(text="Net sales were 513,983 [amzn-2022 p.41].", tool_calls=[]),
+    ]), scope=scope, budget=std_budget()))
+    meta = next(e for e in events if e["type"] == "meta")
+    c.ok(meta.get("degrade") is not True and meta["abstained"] is False,
+         "single transient model error recovered by the retry (no degrade)")
+    c.ok(any("513,983" in e.get("text", "") for e in events if e["type"] == "token"),
+         "answer shipped after the retry")
+
     print("\n" + "=" * 64)
     print(f"  PASS: {c.passed}   FAIL: {c.failed}")
     print("=" * 64)

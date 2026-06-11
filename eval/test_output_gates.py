@@ -91,6 +91,16 @@ def main() -> int:
     c.ok("513,983" in (out.redacted_draft or ""), "redaction KEEPS the traced figure")
     c.ok("12,248" not in (out.redacted_draft or ""), "redaction REMOVES the untraced figure")
     c.ok("removed one or more" in (out.redacted_draft or ""), "redaction appends a withhold line")
+    # EMPTY ledger + invented figures: tracing is UNDECIDED (nothing to trace against) —
+    # redaction must fail CLOSED and drop every figure, not pass them on absence of
+    # evidence (the fail-open hole found in review: decided=False was treated as keep).
+    out = run_output_gates(
+        "Revenue was 999,999 [doc p.1]. Profit was 11,111 [doc p.1].", EvidenceLedger())
+    c.ok(not out.passed, "empty ledger + figures → fails")
+    rd = out.redacted_draft or ""
+    c.ok("999,999" not in rd and "11,111" not in rd,
+         "EMPTY-ledger redaction drops ALL invented figures (fail closed)")
+    c.ok(out.abstained, "empty-ledger redaction flagged abstained")
 
     print("\n── loop: repair-once-then-redact (end-to-end, mocked model) ─────")
     scope = RunScope(grids=[])

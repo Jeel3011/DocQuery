@@ -48,16 +48,27 @@ class GateOutcome:
     abstained: bool = False
 
 
+_GATE_UNAVAILABLE_TEXT = (
+    "I can't verify this answer right now (the verification layer was unavailable), so "
+    "I'm not stating it. Please retry."
+)
+
+
 def _default_gate(draft: str, ledger: EvidenceLedger) -> GateOutcome:
     """Resolve the real A3 output gates lazily (avoids a gates↔loop import cycle:
     gates.py imports GateOutcome from this module). If gates.py is somehow unavailable
-    the loop degrades to passthrough rather than crashing."""
+    the loop fails CLOSED — "non-bypassable" (§3.4) means an unverifiable draft is
+    withheld, never shipped ungated. Failing open here would be the product failing."""
     try:
         from .gates import run_output_gates as _gates
         return _gates(draft, ledger)
     except Exception as exc:  # noqa: BLE001
-        logger.warning("[agent_core.loop] output gates unavailable, passing through: %s", exc)
-        return GateOutcome(passed=True, failures=[])
+        logger.error("[agent_core.loop] output gates unavailable — failing CLOSED: %s", exc)
+        return GateOutcome(
+            passed=False, abstained=True,
+            failures=[{"name": "gates_unavailable", "detail": str(exc)}],
+            redacted_draft=_GATE_UNAVAILABLE_TEXT,
+        )
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────────────
@@ -115,6 +126,8 @@ def run_agent(
     once by the caller's model wrapper; an unrecoverable one degrades (the route falls
     back to Brain — that's A4). This function never raises into the generator consumer.
     """
+    import time
+
     ledger = EvidenceLedger()
     tools = registry.schemas(budget.mode)
 
@@ -124,11 +137,17 @@ def run_agent(
     repair_attempted = False
     final_text: Optional[str] = None
     abstained = False
+    started = time.monotonic()
+
+    def _wall_exhausted() -> bool:
+        return budget.wall_clock_s > 0 and (time.monotonic() - started) >= budget.wall_clock_s
 
     while True:
-        # Budget gate BEFORE each model call (§3.2): no silent overspend.
-        if budget.step_exhausted() or budget.tokens_exhausted():
-            why = "step" if budget.step_exhausted() else "token"
+        # Budget gate BEFORE each model call (§3.2): no silent overspend — steps,
+        # tokens, AND wall clock are all hard ceilings.
+        if budget.step_exhausted() or budget.tokens_exhausted() or _wall_exhausted():
+            why = ("step" if budget.step_exhausted()
+                   else "token" if budget.tokens_exhausted() else "wall-clock")
             yield {"type": "gate", "name": "budget", "pass": False,
                    "detail": f"{why} budget exhausted at step {budget.steps_used}"}
             final_text = (
@@ -143,7 +162,12 @@ def run_agent(
         yield {"type": "agent_step", "n": step}
 
         try:
-            resp = model.invoke(messages, tools)
+            try:
+                resp = model.invoke(messages, tools)
+            except Exception as first_exc:  # noqa: BLE001 — one retry for transient API blips
+                logger.warning("[agent_core.loop] model.invoke failed at step %d (retrying once): %s",
+                               step, first_exc)
+                resp = model.invoke(messages, tools)
         except Exception as exc:  # noqa: BLE001 — surfaced as a degrade signal to the caller
             logger.warning("[agent_core.loop] model.invoke failed at step %d: %s", step, exc)
             yield {"type": "gate", "name": "model_error", "pass": False, "detail": str(exc)}
@@ -175,8 +199,17 @@ def run_agent(
             continue  # let the model see the results and decide the next move
 
         # No tool calls → the model thinks it's done. Run the output gates (A3).
+        # A raising gate_fn fails CLOSED (withhold) — same contract as _default_gate.
         draft = resp.text or ""
-        outcome = gate_fn(draft, ledger)
+        try:
+            outcome = gate_fn(draft, ledger)
+        except Exception as exc:  # noqa: BLE001
+            logger.error("[agent_core.loop] gate_fn raised — failing CLOSED: %s", exc)
+            outcome = GateOutcome(
+                passed=False, abstained=True,
+                failures=[{"name": "gates_unavailable", "detail": str(exc)}],
+                redacted_draft=_GATE_UNAVAILABLE_TEXT,
+            )
         for f in (outcome.failures or []):
             yield {"type": "gate", "name": f.get("name", "gate"), "pass": False,
                    "detail": f.get("detail", "")}

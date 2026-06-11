@@ -58,6 +58,29 @@ SCHEMA: Dict[str, Any] = {
             "numerator": {"type": "object"},
             "denominator": {"type": "object"},
             "threshold": {"type": "number"},
+            "over": {
+                "type": "string",
+                "enum": ["period", "entity"],
+                "description": (
+                    "Selection axis: 'period' scans ONE row across its years "
+                    "(first_exceeds / peak year); 'entity' compares a LIST of rows at a "
+                    "FIXED period (which company/segment was highest) — needs `rows` + `period`."
+                ),
+            },
+            "rows": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "row": {
+                            "type": "object",
+                            "properties": {"section": {"type": "string"},
+                                           "label": {"type": "string"}},
+                        },
+                    },
+                },
+                "description": "For over='entity': the row references to compare, one per entity.",
+            },
         },
         "required": ["op"],
     },

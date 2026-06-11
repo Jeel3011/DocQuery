@@ -94,8 +94,15 @@ def read_document(
 
     loaded: List[Any] = []
     if grids is not None:
-        # Offline / pre-loaded path: caller already built the grids.
+        # Offline / pre-loaded path: caller already built the grids. Honor the model's
+        # doc_id when it matches the grids' doc labels (the model knows docs by the
+        # filename it saw in search results); if nothing matches, fall back to all —
+        # showing extra structure beats silently returning nothing.
         loaded = list(grids)
+        if doc_id:
+            scoped = [g for g in loaded if getattr(g, "doc", None) == doc_id]
+            if scoped:
+                loaded = scoped
     elif table_grids and db_client is not None:
         from src.components.brain.table_intent import load_grids_for_docs
 

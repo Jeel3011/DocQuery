@@ -97,6 +97,13 @@ class ToolRegistry:
                 # Merge the model's scope arg over the run scope (model may narrow it).
                 model_scope = args.get("scope") or {}
                 merged = {**scope.scope_dict(), **model_scope}
+                # The retriever filters by FILENAME. The model may scope by doc_ids —
+                # usually the filenames it saw in results, but possibly real UUIDs;
+                # translate via filename_by_doc so a UUID never reaches the retriever
+                # as a filename filter.
+                if merged.get("doc_ids") and not merged.get("filenames"):
+                    fmap = scope.filename_by_doc or {}
+                    merged["doc_ids"] = [fmap.get(d, d) for d in merged["doc_ids"]]
                 return search_tool(
                     args.get("query", ""),
                     scope.retrieval_manager,

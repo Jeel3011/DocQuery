@@ -185,9 +185,13 @@ def _redact(draft: str, ledger: EvidenceLedger, failures: List[Dict[str, Any]]) 
         if st in uncited:
             continue
         if numbers_failed and _has_substantive_figure(st):
-            # keep only if THIS sentence's figures all trace
+            # Keep only if THIS sentence's figures PROVABLY trace. Undecided (e.g. an
+            # EMPTY ledger — the model gathered no evidence at all) must redact, not
+            # pass: `decided=False` means "nothing to trace against", and shipping an
+            # unverifiable figure on absence-of-evidence is the exact fail-open §3.4
+            # forbids. Fail closed.
             chk = figure_traces_to_cells(st, cells)
-            if chk.decided and not chk.ok:
+            if not (chk.decided and chk.ok):
                 continue
         kept.append(st)
 
