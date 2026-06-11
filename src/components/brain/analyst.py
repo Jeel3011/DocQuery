@@ -311,6 +311,21 @@ def _fmt(n: float) -> str:
     return f"{n:g}"
 
 
+def _doc_match(grid_doc: Optional[str], want: str) -> bool:
+    """Does a grid's document label satisfy a requested `doc` scope?
+
+    Normalized substring either way, so "msft-10k_20220630" matches
+    "msft-10k_20220630.htm.pdf" without the caller reproducing the extension.
+    A grid with NO doc label never matches an explicit scope (fail closed).
+    """
+    def norm(s: str) -> str:
+        return re.sub(r"\s+", " ", (s or "").lower()).strip()
+    g, w = norm(grid_doc or ""), norm(want)
+    if not g or not w:
+        return False
+    return w in g or g in w
+
+
 def _norm_section_match(row: Dict[str, Any], section: str) -> bool:
     """True if `row` genuinely belongs to the requested section (strict pass).
 
@@ -474,6 +489,47 @@ def compute(spec: Dict[str, Any], grids: List[Grid]) -> ComputeResult:
             return [grids[idx]] + [g for i, g in enumerate(grids) if i != idx]
         return grids
 
+    def _ref_doc(ref: Dict[str, Any], row: Dict[str, Any]) -> str:
+        """The document scope for one cell reference: ref-level wins, then the row,
+        then a spec-level default (so a whole growth/ratio spec scopes once)."""
+        return str(ref.get("doc") or row.get("doc") or spec.get("doc") or "")
+
+    def scoped_grids(doc: str) -> List[Grid]:
+        """candidate_grids() narrowed to `doc` when one is requested (BUG-1 fix).
+
+        In a multi-document scope every cross-issuer-common label ("total revenue",
+        "net income") otherwise resolves in several issuers' statements at once and
+        ALWAYS abstains as ambiguous. An explicit doc must scope to that document
+        only; an unknown doc is a hard error (we never silently widen back out —
+        that would re-open the wrong-issuer bind).
+        """
+        glist = candidate_grids()
+        if not doc:
+            return glist
+        scoped = [g for g in glist if _doc_match(g.doc, doc)]
+        if not scoped:
+            have = sorted({g.doc for g in glist if g.doc})
+            raise CellError(f"document not in scope: {doc!r} (have {have})")
+        return scoped
+
+    def ambiguous(label: str, section: str, period: str,
+                  cells: List[CellRef]) -> AmbiguousCell:
+        """A self-healing ambiguity: name each value's DOCUMENT(s) and the repair.
+
+        Live (2026-06-11) the bare value list left the model retrying blind; with
+        the docs named it can immediately re-issue the spec with a `doc` scope.
+        """
+        by_val: Dict[float, set] = {}
+        for c in cells:
+            by_val.setdefault(round(c.value, 4), set()).add(c.doc or "?")
+        detail = "; ".join(f"{v:g} ({', '.join(sorted(d))})"
+                           for v, d in sorted(by_val.items()))
+        sec = f"[{section}]" if section else ""
+        return AmbiguousCell(
+            f"ambiguous: {label!r}{sec}[{period}] resolves to {detail} — "
+            f'add "doc" to the reference to scope one document; flagged for review'
+        )
+
     def resolve(ref: Dict[str, Any], period: str) -> CellRef:
         """Resolve a {row:{section,label}, period} reference across candidate grids.
 
@@ -488,7 +544,7 @@ def compute(spec: Dict[str, Any], grids: List[Grid]) -> ComputeResult:
         row = ref.get("row", ref)  # allow flat {section,label} too
         section = row.get("section", "")
         label = row.get("label", "")
-        grids_list = candidate_grids()
+        grids_list = scoped_grids(_ref_doc(ref, row))
 
         # pass 1: honor the section if one was given — a unique strict match wins.
         if section:
@@ -504,10 +560,7 @@ def compute(spec: Dict[str, Any], grids: List[Grid]) -> ComputeResult:
                 vals = {round(c.value, 4) for c in strict}
                 if len(vals) == 1:
                     return strict[0]
-                raise AmbiguousCell(
-                    f"ambiguous: {label!r}[{section}][{period}] resolves to "
-                    f"{sorted(vals)} across {len(strict)} tables — flagged for review"
-                )
+                raise ambiguous(label, section, period, strict)
 
         # pass 2: section-agnostic. Collect ALL matches; abstain if they disagree.
         # Grounding delegation (§5.1): when the requested label signals an AGGREGATE
@@ -556,10 +609,7 @@ def compute(spec: Dict[str, Any], grids: List[Grid]) -> ComputeResult:
         vals = {round(c.value, 4) for c in matches}
         if len(vals) == 1:
             return matches[0]
-        raise AmbiguousCell(
-            f"ambiguous: {label!r}[{period}] resolves to {sorted(vals)} across "
-            f"{len(matches)} tables — specify a section/table; flagged for review"
-        )
+        raise ambiguous(label, "", period, matches)
 
     def build_series(spec: Dict[str, Any]) -> Tuple[List[Tuple[str, CellRef]], str]:
         """Resolve a selection spec into an ordered series of (key, CellRef) pairs.
@@ -606,6 +656,7 @@ def compute(spec: Dict[str, Any], grids: List[Grid]) -> ComputeResult:
         ref = spec.get("row", spec)
         row = ref.get("row", ref)
         section, label = row.get("section", ""), row.get("label", "")
+        doc_scope = _ref_doc(ref, row)
         periods = spec.get("periods")
         # find the grid that actually holds this row, to know its period columns.
         # Skip a row whose label is PROSE, not a line-item (geometry over a text page
@@ -627,10 +678,10 @@ def compute(spec: Dict[str, Any], grids: List[Grid]) -> ComputeResult:
         def _real_periods(g: Grid) -> bool:
             return any(_YEARISH_COL.search(str(c)) for c in g.value_columns())
 
-        def _find_host(require_section: bool, require_periods: bool) -> Optional[Grid]:
-            line_host: Optional[Grid] = None
+        def _find_hosts(require_section: bool, require_periods: bool) -> List[Grid]:
+            line_hosts: List[Grid] = []
             text_host: Optional[Grid] = None
-            for g in candidate_grids():
+            for g in scoped_grids(doc_scope):
                 if require_periods and not _real_periods(g):
                     continue
                 r = g.find_row(label, section if require_section else "")
@@ -639,34 +690,86 @@ def compute(spec: Dict[str, Any], grids: List[Grid]) -> ComputeResult:
                 if require_section and section and not _norm_section_match(r, section):
                     continue
                 if is_lineitem_label(r.get("label", "")):
-                    return g                    # first real line-item host wins
-                if text_host is None:
+                    line_hosts.append(g)
+                elif text_host is None:
                     text_host = g
-            return line_host or text_host
+            if line_hosts:
+                return line_hosts
+            return [text_host] if text_host is not None else []
 
         # preference order (real-period grids always win): (periods+section) →
         # (periods, any section) → (any grid + section) → (any grid). `eff_section` is the
         # section to READ cells with: the requested section when it matched, else "" (the
         # row sat under a different/over-scoped section label, e.g. parent "amazon").
-        host = _find_host(require_section=True, require_periods=True)
+        hosts = _find_hosts(require_section=True, require_periods=True)
         eff_section = section
-        if host is None and section:
-            host = _find_host(require_section=False, require_periods=True)
+        if not hosts and section:
+            hosts = _find_hosts(require_section=False, require_periods=True)
             eff_section = ""
-        if host is None:                              # no real-period grid — degrade
-            host = _find_host(require_section=True, require_periods=False)
+        if not hosts:                                 # no real-period grid — degrade
+            hosts = _find_hosts(require_section=True, require_periods=False)
             eff_section = section
-        if host is None and section:
-            host = _find_host(require_section=False, require_periods=False)
+        if not hosts and section:
+            hosts = _find_hosts(require_section=False, require_periods=False)
             eff_section = ""
-        if host is None:
+        if not hosts:
             raise CellError(f"selection: row not found: section={section!r} label={label!r}")
-        cols = list(periods) if periods else host.value_columns()
-        for p in cols:
-            try:
-                series.append((str(p), host.cell(label, p, eff_section)))
-            except CellError:
-                continue
+
+        host_docs = {g.doc for g in hosts if g.doc}
+        if len(host_docs) <= 1:
+            # single document (or unlabelled grids): the original single-host scan.
+            host = hosts[0]
+            cols = list(periods) if periods else host.value_columns()
+            for p in cols:
+                try:
+                    series.append((str(p), host.cell(label, p, eff_section)))
+                except CellError:
+                    continue
+        else:
+            # The row exists in SEVERAL documents and no `doc` scope was given.
+            # "First host wins" would silently scan whichever issuer/filing came
+            # first — and a threshold/extremum pivot is WINDOW-sensitive, so the
+            # wrong document binds a wrong year (a confident-wrong). Structural
+            # resolution, value-decided (no doc guessed):
+            #   • merge the per-document series into ONE union series — valid ONLY
+            #     when every document AGREES at every shared year (two filings of
+            #     the same issuer overlap and agree; the union is the most COMPLETE
+            #     window, which is exactly what threshold ops need);
+            #   • any shared-year disagreement = different underlying series (e.g.
+            #     two issuers' "Total revenue") → abstain, naming the documents and
+            #     the `doc` repair;
+            #   • no shared year at all = no consistency evidence → abstain too
+            #     (silently chaining unrelated windows would fabricate a series).
+            by_year: Dict[int, CellRef] = {}
+            docs_at_year: Dict[int, set] = {}
+            for g in hosts:
+                for p in (list(periods) if periods else g.value_columns()):
+                    y = _period_year(str(p))
+                    if y is None:
+                        continue  # only real years are alignable across documents
+                    try:
+                        c = g.cell(label, p, eff_section)
+                    except CellError:
+                        continue
+                    prev = by_year.get(y)
+                    if prev is not None and round(prev.value, 4) != round(c.value, 4):
+                        raise AmbiguousCell(
+                            f"ambiguous: {label!r} differs across documents at {y} "
+                            f"({prev.value:g} in {prev.doc or '?'} vs {c.value:g} in "
+                            f"{c.doc or '?'}) — add \"doc\" to scope one document; "
+                            f"flagged for review"
+                        )
+                    if prev is None:
+                        by_year[y] = c
+                    docs_at_year.setdefault(y, set()).add(g.doc)
+            if not any(len(d) > 1 for d in docs_at_year.values()):
+                raise AmbiguousCell(
+                    f"ambiguous: a {label!r} series exists in several documents "
+                    f"({', '.join(sorted(host_docs))}) with no overlapping years to "
+                    f"prove they are the same series — add \"doc\" to scope one; "
+                    f"flagged for review"
+                )
+            series = [(str(y), by_year[y]) for y in sorted(by_year)]
         if not series:
             raise CellError(f"selection over periods resolved no numeric cells for {label!r}")
         # Chronological order is REQUIRED for threshold ops: grid COLUMN order is not
