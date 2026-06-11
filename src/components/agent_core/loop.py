@@ -138,6 +138,7 @@ def run_agent(
     final_text: Optional[str] = None
     abstained = False
     started = time.monotonic()
+    low_budget_warned = False  # inject the "wrap up" nudge once, near the wall
 
     def _wall_exhausted() -> bool:
         return budget.wall_clock_s > 0 and (time.monotonic() - started) >= budget.wall_clock_s
@@ -156,6 +157,25 @@ def run_agent(
             )
             abstained = True
             break
+
+        # BUDGET AWARENESS (the harness gap): the model must not fly toward the wall
+        # blind. When it's near the ceiling, inject ONE message telling it to commit its
+        # best VERIFIED answer now — this turns "found the answer at step 7, guillotined
+        # at step 9 mid-retry" into "found it, delivered it". A frontier model wraps up
+        # cleanly when told the runway is short; it can't when it doesn't know.
+        steps_left = budget.remaining_steps()
+        tokens_left = (budget.token_budget - budget.tokens_used) if budget.token_budget else 10**9
+        if not low_budget_warned and (steps_left <= 3 or tokens_left <= 25000):
+            low_budget_warned = True
+            messages.append({
+                "role": "user",
+                "content": (
+                    f"[budget notice] You have ~{steps_left} tool-steps left. STOP exploring "
+                    f"and DELIVER now: state every figure you have ALREADY verified through a "
+                    f"tool (with its [doc p.N] citation), and for anything still unresolved say "
+                    f"plainly you couldn't verify it. Do not start a new line of investigation."
+                ),
+            })
 
         budget.steps_used += 1
         step = budget.steps_used

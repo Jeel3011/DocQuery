@@ -119,6 +119,12 @@ def main() -> int:
     c.ok(meta["steps"] <= 4, "stopped at max_steps (no overspend)")
     c.ok(meta["abstained"] is True, "budget-exhausted run abstains")
     c.ok(len(budget_gate) == 1 and budget_gate[0]["pass"] is False, "emitted a failed budget gate")
+    # Budget AWARENESS (the harness gap): before the wall, the model must receive a
+    # [budget notice] telling it to wrap up — so "found it at step 7, guillotined at
+    # step 9" becomes "found it, delivered it". Assert the nudge reached the model.
+    all_msgs = [m for callrec in loopy.calls for m in callrec["messages"]]
+    notice_seen = any("[budget notice]" in str(m.get("content", "")) for m in all_msgs)
+    c.ok(notice_seen, "model received a [budget notice] before the wall (budget awareness)")
 
     # ── 3. Tool error → the model adapts ─────────────────────────────────────────
     print("\n── tool error → adapt (error is a RESULT, not a raise) ──────────")

@@ -182,6 +182,13 @@ async def agentcore_query_stream(
 
     # ── The stream: iterate the sync loop generator (Starlette runs it in a worker
     # thread, so the blocking model.invoke stays off the event loop). Translate events. ─
+    # Every run is TRACED to a durable JSONL journal + auto-flagged for loose-end signals
+    # (a dead tool, a stuck model, budget exhaustion) so the next BUG-F shows up in the
+    # health summary instead of being found by luck (§I1).
+    from src.components.agent_core.tracer import RunTracer
+    import uuid as _uuid
+    tracer = RunTracer(run_id=_uuid.uuid4().hex[:12], question=body.question, mode=mode)
+
     def _agent_stream():
         try:
             for ev in run_agent(
@@ -192,10 +199,8 @@ async def agentcore_query_stream(
                 system_prompt=sys_prompt,
                 registry=REGISTRY,
             ):
-                # Trace every loop event to the API log (read-only; does not alter the
-                # stream). Lets us diagnose tool-call/gate behaviour from the server side
-                # instead of the browser-only SSE. Tool args/results are summarised by the
-                # loop already; we log the whole event compactly.
+                tracer.record(ev)  # durable journal + health (never raises)
+                # Also log compactly to the API stdout for live tailing.
                 try:
                     logger.info("[agentcore.ev] %s", json.dumps(ev, default=str)[:2000])
                 except Exception:  # noqa: BLE001 — logging must never break the stream
@@ -203,10 +208,19 @@ async def agentcore_query_stream(
                 yield _sse(_translate(ev))
         except Exception as exc:  # noqa: BLE001 — the loop shouldn't raise, but never 500 the stream
             logger.error("[agentcore] loop raised — degrading: %s", exc)
+            tracer.record({"type": "meta", "mode": mode, "degrade": True, "error": str(exc),
+                           "abstained": True})
             yield _sse({"type": "meta", "mode": mode, "degrade": True, "error": str(exc)})
             yield _sse({"type": "token",
                         "content": "I hit an internal error before I could verify an answer, "
                                    "so I'm not stating one. Please try again."})
+        finally:
+            # Persist the journal + surface health flags (warns in the log if flagged).
+            health = tracer.finish()
+            if health.get("flags"):
+                # Emit a non-fatal trace_health event so the route/UI can see loose ends.
+                yield _sse({"type": "trace_health", "run_id": health["run_id"],
+                            "flags": health["flags"], "journal": health.get("journal")})
         yield "data: [DONE]\n\n"
 
     conversation_id = getattr(body, "conversation_id", None)

@@ -225,16 +225,34 @@ def main() -> int:
             self.metadata = md
 
     class _StubRM:
+        def __init__(self):
+            self.table_kwargs = None
         def retrieve(self, query, **kw):
             return [_Doc("net sales rose", {"filename": "amzn.pdf", "page_number": 41,
                                             "chunk_id": "c1", "score": 0.9})]
         def retrieve_table_chunks(self, query, **kw):
+            self.table_kwargs = kw  # capture what search_vault passed
             return [_Doc("table", {"filename": "amzn.pdf", "page_number": 42, "chunk_id": "t1"})]
 
     r = search_vault("AWS net sales", _StubRM(), scope={"collection_id": "x"}, k=4, kind="both")
     c.ok(is_envelope(r) and r["ok"], "search_vault: stub manager → ok envelope")
     c.ok(len(r["provenance"]) >= 1 and r["provenance"][0]["kind"] == "span",
          "search_vault: provenance is chunk spans")
+
+    # BUG-F (live, 2026-06-11): table retrieval must filter by FILENAME, not
+    # collection_id. Ingest never stamps collection_id on chunks, and
+    # retrieve_table_chunks prioritizes collection_id when present → the live filter
+    # {chunk_type:table, collection_id:<id>} matched 0 chunks on every numeric query
+    # (the model's primary "find the table" tool was silently dead). Assert
+    # search_vault passes filenames and does NOT pass collection_id to table search.
+    stub = _StubRM()
+    search_vault("AWS net sales", stub,
+                 scope={"collection_id": "x", "filenames": ["amzn.pdf", "msft.pdf"]},
+                 k=4, kind="table")
+    c.ok(stub.table_kwargs is not None
+         and stub.table_kwargs.get("filename_filters") == ["amzn.pdf", "msft.pdf"]
+         and not stub.table_kwargs.get("collection_id"),
+         "search_vault(table): filters by FILENAME, not collection_id (BUG-F)")
     # No manager → error, not raise.
     r = search_vault("x", None)
     c.ok(is_envelope(r) and not r["ok"] and "error" in r, "search_vault: no manager → error envelope")

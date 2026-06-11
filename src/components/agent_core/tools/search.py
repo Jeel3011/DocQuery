@@ -88,9 +88,16 @@ def search_vault(
         docs.extend(text_docs or [])
 
     if kind in ("table", "both"):
+        # Filter table chunks by FILENAME, not collection_id. Ingest stamps `filename`
+        # + `chunk_type` on every chunk but NEVER `collection_id` (verified
+        # 2026-06-11) — and `retrieve_table_chunks` filters collection_id FIRST when
+        # present, so passing it made the Pinecone filter
+        # {chunk_type:table, collection_id:<id>} match ZERO chunks. Live result: every
+        # `search_vault(kind='table')` returned 0, the model's primary "find the right
+        # table" tool was dead, and it burned steps on text-search / read_document
+        # workarounds. Pass filenames (which ARE on the metadata), like the text branch.
         table_docs = retrieval_manager.retrieve_table_chunks(
             query,
-            collection_id=collection_id,
             filename_filters=filenames,
             k=k,
         )
