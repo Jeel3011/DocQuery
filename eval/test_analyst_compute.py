@@ -12,6 +12,8 @@ from src.components.table_extraction import extract_tables_from_pdf
 from src.components.brain.analyst import Grid, compute, verify_numbers, cells_from_results
 
 AMZN = "test docs/amzn-20231231.pdf"
+MSFT = "test docs/msft-10k_20220630.htm.pdf"
+GOOG = "test docs/goog-20221231.pdf"
 
 
 def aws_segment_grid():
@@ -21,6 +23,20 @@ def aws_segment_grid():
         ):
             return Grid(t.to_metadata(), doc="amzn-20231231.pdf", page=t.page_number)
     raise SystemExit("AWS segment grid not found — re-check extraction")
+
+
+def multidoc_grids():
+    """Real MSFT FY22 + GOOG FY22 grids in ONE scope — the live BUG-1 shape.
+
+    'Total revenue'[2021] exists in BOTH issuers (MSFT 168,088 / GOOG 257,637), so
+    an unscoped reference is GENUINELY ambiguous (the abstain is correct); a
+    doc-scoped reference must resolve. Mirrors the agent core's multi-doc scope.
+    """
+    grids = []
+    for path, label in ((MSFT, "msft-10k_20220630.htm.pdf"), (GOOG, "goog-20221231.pdf")):
+        for t in extract_tables_from_pdf(path):
+            grids.append(Grid(t.to_metadata(), doc=label, page=t.page_number))
+    return grids
 
 
 # (description, spec, expected display) — answers verified by hand.
@@ -72,6 +88,82 @@ def main():
     miss_ok = (not r.ok) and r.value is None
     passed += miss_ok; failed += (not miss_ok)
     print(f"  [{'PASS' if miss_ok else 'FAIL'}] missing row → graceful error: {r.error}")
+
+    # ── BUG-1 (live, 2026-06-11): doc scoping in a multi-document scope ──────────
+    # In the agent core's 8-doc scope, 'Total revenue'[2021] matched BOTH Microsoft
+    # (168,088) and Alphabet ('Total revenues' 257,637) → every cross-doc-common
+    # metric was ambiguous → every growth/delta over a totals line abstained.
+    md = multidoc_grids()
+    tot = {"section": "Revenue", "label": "Total revenue"}
+
+    # (a) unscoped stays a CORRECT abstain (genuine cross-issuer ambiguity)…
+    r = compute({"op": "delta", "row": tot, "from_period": "2021", "to_period": "2022"}, md)
+    a_ok = (not r.ok) and "ambiguous" in (r.error or "")
+    passed += a_ok; failed += (not a_ok)
+    print(f"  [{'PASS' if a_ok else 'FAIL'}] multidoc unscoped → abstain: {r.error}")
+
+    # …and the abstain message must NAME the docs + the repair (so the agent can
+    # self-disambiguate instead of retrying blind 4 times, as happened live).
+    e = r.error or ""
+    a2_ok = (not r.ok) and "msft-10k_20220630" in e and "goog-20221231" in e and "doc" in e
+    passed += a2_ok; failed += (not a2_ok)
+    print(f"  [{'PASS' if a2_ok else 'FAIL'}] ambiguity error names docs + 'doc' repair hint")
+
+    # (b) doc-scoped delta/growth resolve — the exact live MSFT FY22 growth question.
+    r = compute({"op": "delta", "row": tot, "doc": "msft-10k_20220630",
+                 "from_period": "2021", "to_period": "2022"}, md)
+    b_ok = r.ok and r.display() == "30,182"
+    passed += b_ok; failed += (not b_ok)
+    print(f"  [{'PASS' if b_ok else 'FAIL'}] doc-scoped MSFT delta 21→22: {r.display()} (want 30,182)")
+
+    r = compute({"op": "growth_pct", "row": tot, "doc": "msft-10k_20220630",
+                 "from_period": "2021", "to_period": "2022"}, md)
+    g_ok = r.ok and r.display() == "18.0%"
+    passed += g_ok; failed += (not g_ok)
+    print(f"  [{'PASS' if g_ok else 'FAIL'}] doc-scoped MSFT growth 21→22: {r.display()} (want 18.0%)")
+
+    # (c) same question scoped to the OTHER issuer → the other (correct) number.
+    # (section included: label-only 'Total revenues' is genuinely ambiguous even
+    # WITHIN the GOOG doc — the tax note's 'Current/Total' row contains-matches —
+    # and the kernel correctly abstains on that; doc+section is the realistic spec.)
+    r = compute({"op": "growth_pct", "row": {"section": "Revenues", "label": "Total revenues"},
+                 "doc": "goog-20221231", "from_period": "2021", "to_period": "2022"}, md)
+    c_ok = r.ok and r.display() == "9.8%"
+    passed += c_ok; failed += (not c_ok)
+    print(f"  [{'PASS' if c_ok else 'FAIL'}] doc-scoped GOOG growth 21→22: {r.display()} (want 9.8%)")
+
+    # (d) selection over periods threads doc too (build_series host selection).
+    r = compute({"op": "argmax", "over": "period", "row": tot, "doc": "msft-10k_20220630"}, md)
+    d_ok = r.ok and r.binding == "2022" and r.value == 198270.0
+    passed += d_ok; failed += (not d_ok)
+    print(f"  [{'PASS' if d_ok else 'FAIL'}] doc-scoped argmax over periods: {r.binding} ({r.value})")
+
+    # (d2) UNSCOPED selection where the row lives in BOTH issuers must abstain —
+    # _find_host returning "first host wins" across docs is a silent wrong-issuer
+    # scan (which issuer it binds depends on grid order, i.e. luck).
+    r = compute({"op": "argmax", "over": "period", "row": tot}, md)
+    d2_ok = (not r.ok) and "doc" in (r.error or "")
+    passed += d2_ok; failed += (not d2_ok)
+    print(f"  [{'PASS' if d2_ok else 'FAIL'}] unscoped multi-doc selection → abstain: {r.error}")
+
+    # (e) a doc OUTSIDE the scope errors cleanly (never silently widens back out).
+    r = compute({"op": "delta", "row": tot, "doc": "nvda-20240128",
+                 "from_period": "2021", "to_period": "2022"}, md)
+    e_ok = (not r.ok) and "not in scope" in (r.error or "")
+    passed += e_ok; failed += (not e_ok)
+    print(f"  [{'PASS' if e_ok else 'FAIL'}] unknown doc → clean error: {r.error}")
+
+    # (f) doc scoping must NOT mask genuine ambiguity WITHIN one document.
+    twin = {"headers": ["section", "label", "2022"], "periods": ["2022"],
+            "rows": [{"section": "X", "label": "Total revenue", "2022": "100"}]}
+    twin2 = {"headers": ["section", "label", "2022"], "periods": ["2022"],
+             "rows": [{"section": "X", "label": "Total revenue", "2022": "999"}]}
+    same_doc = [Grid(twin, doc="one.pdf", page=1), Grid(twin2, doc="one.pdf", page=2)]
+    r = compute({"op": "value", "row": {"section": "X", "label": "Total revenue"},
+                 "doc": "one.pdf", "period": "2022"}, same_doc)
+    f_ok = (not r.ok) and "ambiguous" in (r.error or "")
+    passed += f_ok; failed += (not f_ok)
+    print(f"  [{'PASS' if f_ok else 'FAIL'}] intra-doc disagreement still abstains: {r.error}")
 
     # numeric verifier (§4b step 5): grounded answer passes, fabricated figure flagged
     results = [

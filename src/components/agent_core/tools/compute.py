@@ -27,7 +27,10 @@ SCHEMA: Dict[str, Any] = {
         "human-readable formula, and the exact source cells used (provenance). Use "
         "this for ANY figure that is a calculation (growth, margin, sum, ratio) or a "
         "selection over a series (argmax/argmin/first_exceeds/...). Never guesses: a "
-        "bad/ambiguous spec returns an error or abstains, it does not invent a number."
+        "bad/ambiguous spec returns an error or abstains, it does not invent a number. "
+        "When SEVERAL documents are loaded, common metrics (e.g. 'total revenue') exist "
+        "in more than one — pass `doc` (the document filename) to scope the references "
+        "to one document, or the kernel will report the clash and abstain."
     ),
     "input_schema": {
         "type": "object",
@@ -45,10 +48,22 @@ SCHEMA: Dict[str, Any] = {
                 "type": "integer",
                 "description": "Optional grid index to try first; the kernel falls back to all grids.",
             },
+            "doc": {
+                "type": "string",
+                "description": (
+                    "Optional document filename (e.g. 'msft-10k_20220630.htm.pdf'; a "
+                    "distinctive substring is enough) scoping ALL cell references in this "
+                    "spec to that document. REQUIRED in practice when several documents "
+                    "are loaded and the metric exists in more than one (every issuer has "
+                    "a 'total revenue'). A per-reference `doc` inside row/numerator/... "
+                    "overrides it for cross-document comparisons."
+                ),
+            },
             "row": {
                 "type": "object",
-                "description": "Cell reference {section?, label} for single-cell ops.",
-                "properties": {"section": {"type": "string"}, "label": {"type": "string"}},
+                "description": "Cell reference {section?, label, doc?} for single-cell ops.",
+                "properties": {"section": {"type": "string"}, "label": {"type": "string"},
+                               "doc": {"type": "string"}},
             },
             "from_period": {"type": "string"},
             "to_period": {"type": "string"},
@@ -75,7 +90,8 @@ SCHEMA: Dict[str, Any] = {
                         "row": {
                             "type": "object",
                             "properties": {"section": {"type": "string"},
-                                           "label": {"type": "string"}},
+                                           "label": {"type": "string"},
+                                           "doc": {"type": "string"}},
                         },
                     },
                 },
