@@ -118,6 +118,7 @@ def load_grids_for_docs(
     filename_by_doc: Optional[Dict[str, str]] = None,
     top_grids: int = 8,
     max_tables_per_doc: int = 60,
+    per_doc_top: Optional[int] = None,
 ):
     """Load structured table grids (analyst.Grid) for doc_ids, ranked by relevance.
 
@@ -186,6 +187,24 @@ def load_grids_for_docs(
 
     if question:
         scored.sort(key=lambda x: x[0], reverse=True)
-        scored = [s for s in scored if s[0] > 0][:top_grids] or scored[:top_grids]
+        if per_doc_top is None:
+            scored = [s for s in scored if s[0] > 0][:top_grids] or scored[:top_grids]
+    if per_doc_top is not None:
+        # Per-document cap (agent-core scope preload). The GLOBAL top-N starves whole
+        # documents out of the kernel scope when other docs' tables outrank them
+        # lexically — live (2026-06-11) the MSFT FY22 income statement never loaded for
+        # an MSFT growth question and `compute` reported the doc "not in scope". Keep
+        # each doc's top-N (relevance-ordered when a question is given) so EVERY scoped
+        # document stays computable. Default None = the old global behaviour, so the
+        # brain path is byte-identical.
+        kept_per_doc: Dict[str, int] = {}
+        kept = []
+        for rel, g in scored:
+            d = g.doc or "?"
+            if kept_per_doc.get(d, 0) >= per_doc_top:
+                continue
+            kept_per_doc[d] = kept_per_doc.get(d, 0) + 1
+            kept.append((rel, g))
+        scored = kept
 
     return [g for _rel, g in scored]

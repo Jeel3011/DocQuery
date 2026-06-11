@@ -144,6 +144,22 @@ def compute(spec: Dict[str, Any], grids: List[Any]) -> Dict[str, Any]:
         extra_prov.append({"kind": "param", "label": "threshold",
                            "value": float(threshold), "op": result.op})
 
+    # The DERIVED result itself (a growth %, a delta) is a legitimate figure the answer
+    # will state, and it is NOT one of the operand cells — verify_numbers redacted a
+    # CORRECT computed growth live (2026-06-11: stated "-0.5" traced to no cell) because
+    # only operands were ledgered. The value comes from the kernel's executed formula
+    # (never the model's prose), so it belongs in provenance exactly like a threshold
+    # param. Ledger the raw value AND its display rounding (the model restates "18.0%",
+    # not "17.956...%" — the invariant's 1% rel_tol is too tight for sub-1 values).
+    if isinstance(result.value, (int, float)):
+        rv = float(result.value)
+        extra_prov.append({"kind": "param", "label": "result", "value": rv,
+                           "op": result.op, "formula": result.formula})
+        rounded = round(rv, 1)
+        if rounded != rv:
+            extra_prov.append({"kind": "param", "label": "result_rounded",
+                               "value": rounded, "op": result.op})
+
     data = {
         "value": result.value,
         "formula": result.formula,

@@ -36,6 +36,7 @@ class RunScope:
     retrieval_manager: Any = None                          # live RetrievalManager (search_vault)
     db_client: Any = None                                  # live SupabaseClient (read_document)
     filename_by_doc: Dict[str, str] = field(default_factory=dict)
+    question: Optional[str] = None                         # the run's question (grid relevance ranking)
 
     def scope_dict(self) -> Dict[str, Any]:
         return {
@@ -88,9 +89,15 @@ class ToolRegistry:
                     args.get("doc_id", ""),
                     db_client=scope.db_client,
                     grids=scope.grids or None,
+                    question=scope.question,
                     filename_by_doc=scope.filename_by_doc,
                     page_range=args.get("page_range"),
                     table_grids=args.get("table_grids", True),
+                    # The run's LIVE grid scope (mutable): grids read_document loads
+                    # fresh from the DB join it, so a later `compute` can use them.
+                    # Live (2026-06-11) the model read the right doc but compute
+                    # couldn't see it — "document not in scope".
+                    scope_grids=scope.grids,
                 )
 
             if name == "search_vault":

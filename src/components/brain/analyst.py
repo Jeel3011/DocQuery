@@ -514,20 +514,45 @@ def compute(spec: Dict[str, Any], grids: List[Grid]) -> ComputeResult:
 
     def ambiguous(label: str, section: str, period: str,
                   cells: List[CellRef]) -> AmbiguousCell:
-        """A self-healing ambiguity: name each value's DOCUMENT(s) and the repair.
+        """A self-healing ambiguity: name the right repair for THIS clash.
 
-        Live (2026-06-11) the bare value list left the model retrying blind; with
-        the docs named it can immediately re-issue the spec with a `doc` scope.
+        Two distinct clashes need two distinct repairs (live 2026-06-11):
+          - CROSS-DOC: the same label in several issuers' filings → name each
+            value's DOCUMENT(s); repair = add `doc`.
+          - INTRA-DOC: a generic label like "Total" appears in many SECTIONS of one
+            document (Revenue/Operating Income/Geographic…) → "add doc" is useless
+            (the doc is already one); name each value's SECTION; repair = add
+            `section`. Without this the model burned its whole step budget guessing
+            sections on the MSFT "Total" revenue row (it never tried section:"Revenue").
         """
-        by_val: Dict[float, set] = {}
+        docs = {c.doc or "?" for c in cells}
+        if len(docs) > 1:
+            by_val: Dict[float, set] = {}
+            for c in cells:
+                by_val.setdefault(round(c.value, 4), set()).add(c.doc or "?")
+            detail = "; ".join(f"{v:g} ({', '.join(sorted(d))})"
+                               for v, d in sorted(by_val.items()))
+            sec = f"[{section}]" if section else ""
+            return AmbiguousCell(
+                f"ambiguous: {label!r}{sec}[{period}] resolves to {detail} — "
+                f'add "doc" to the reference to scope one document; flagged for review'
+            )
+
+        # Intra-doc: disambiguate by SECTION. Name each value's section (the empty
+        # section is shown as "(none)") so the model re-issues with the right one.
+        by_val_sec: Dict[float, set] = {}
         for c in cells:
-            by_val.setdefault(round(c.value, 4), set()).add(c.doc or "?")
-        detail = "; ".join(f"{v:g} ({', '.join(sorted(d))})"
-                           for v, d in sorted(by_val.items()))
+            by_val_sec.setdefault(round(c.value, 4), set()).add(
+                (c.section or "").strip() or "(none)")
+        detail = "; ".join(f"{v:g} [{', '.join(sorted(s))}]"
+                           for v, s in sorted(by_val_sec.items()))
+        avail = sorted({(c.section or "").strip() for c in cells if (c.section or "").strip()})
+        avail_hint = (f' available sections: {", ".join(avail)}.' if avail else "")
         sec = f"[{section}]" if section else ""
         return AmbiguousCell(
-            f"ambiguous: {label!r}{sec}[{period}] resolves to {detail} — "
-            f'add "doc" to the reference to scope one document; flagged for review'
+            f"ambiguous: {label!r}{sec}[{period}] resolves to {detail} — add a "
+            f'"section" to the reference to pick one row (e.g. row:{{"section":"…",'
+            f'"label":{label!r}}}).{avail_hint} Flagged for review'
         )
 
     def resolve(ref: Dict[str, Any], period: str) -> CellRef:
@@ -541,9 +566,23 @@ def compute(spec: Dict[str, Any], grids: List[Grid]) -> ComputeResult:
                    AmbiguousCell so the figure is flagged for a human rather than
                    silently picking one. Identical values across grids are fine.
         """
-        row = ref.get("row", ref)  # allow flat {section,label} too
+        # Accept the row ref under "row", "numerator" (models reuse the ratio shape for
+        # delta/growth), or flat {section,label}. Live (2026-06-11) a growth spec carried
+        # its ref under "numerator"; resolve() fell through to the WHOLE spec, read an
+        # EMPTY label, and bound an arbitrary row — a kernel-level confident-wrong.
+        row = ref.get("row") or ref.get("numerator") or ref
+        if not isinstance(row, dict):
+            row = ref
         section = row.get("section", "")
         label = row.get("label", "")
+        if not str(label).strip():
+            # An empty label must never resolve: find_row('') matches arbitrary rows.
+            # Fail closed with the repair named (self-healing, same style as ambiguous()).
+            raise CellError(
+                "cell reference needs a non-empty 'label' — pass "
+                'row:{"section"?, "label"} (e.g. {"op":"growth_pct",'
+                '"row":{"section":"Revenue","label":"Total"},"from_period":...,"to_period":...})'
+            )
         grids_list = scoped_grids(_ref_doc(ref, row))
 
         # pass 1: honor the section if one was given — a unique strict match wins.

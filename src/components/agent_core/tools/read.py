@@ -84,6 +84,7 @@ def read_document(
     filename_by_doc: Optional[Dict[str, str]] = None,
     page_range: Optional[str] = None,
     table_grids: bool = True,
+    scope_grids: Optional[List[Any]] = None,
 ) -> Dict[str, Any]:
     """Read grids (+ optional page text) for `doc_id`; return the §3.3 envelope.
 
@@ -92,45 +93,93 @@ def read_document(
     if not doc_id and not grids:
         return error_result("read_document requires a 'doc_id' (or pre-loaded grids)")
 
-    loaded: List[Any] = []
-    if grids is not None:
-        # Offline / pre-loaded path: caller already built the grids. Honor the model's
-        # doc_id when it matches the grids' doc labels (the model knows docs by the
-        # filename it saw in search results); if nothing matches, fall back to all —
-        # showing extra structure beats silently returning nothing.
-        loaded = list(grids)
-        if doc_id:
-            scoped = [g for g in loaded if getattr(g, "doc", None) == doc_id]
-            if scoped:
-                loaded = scoped
-        # Honor the model's page_range against the grids too. Without this the adapter
-        # returned EVERY grid on the doc (e.g. 60) regardless of the requested pages —
-        # each grid's full JSON floods the message history and blows the token budget
-        # before the model can answer (observed live: read_document → 60 grids → 75k
-        # tokens at step 5 → forced abstain on an ALREADY-CORRECT figure). Scope to the
-        # range when the page is known; if nothing falls in range, keep the doc-scoped
-        # set (showing structure beats returning nothing).
-        _pr = _parse_page_range(page_range)
-        if _pr is not None:
-            lo, hi = _pr
-            in_range = [g for g in loaded
-                        if isinstance(getattr(g, "page", None), int) and lo <= g.page <= hi]
-            if in_range:
-                loaded = in_range
-    elif table_grids and db_client is not None:
+    def _fresh_load(target: str) -> List[Any]:
+        """Load `target`'s grids from the DB and JOIN them to the run's grid scope.
+
+        Live (2026-06-11): the model read the right document, but the grids never
+        reached `compute`'s scope — "document not in scope" on an answerable
+        question. Freshly loaded grids are appended to `scope_grids` (the SAME list
+        the registry hands to compute/table_lookup), de-duplicated, so read → compute
+        works even when the preload missed the doc."""
         from src.components.brain.table_intent import load_grids_for_docs
 
-        # load_grids_for_docs keys on the DB doc_id (UUID). The model may pass a filename;
-        # resolve it the same way the page-text query below does.
+        # load_grids_for_docs keys on the DB doc_id (UUID). The model speaks filenames;
+        # resolve exact, then unique-substring, else pass through as an id.
         _fb = filename_by_doc or {}
         _uuid_by_fn = {fn: did for did, fn in _fb.items()}
-        _grid_id = _uuid_by_fn.get(doc_id, doc_id)
-        loaded = load_grids_for_docs(
-            db_client,
-            [_grid_id],
-            question=question,
-            filename_by_doc=filename_by_doc,
+        gid = _uuid_by_fn.get(target)
+        if gid is None:
+            subs = [did for fn, did in _uuid_by_fn.items()
+                    if target and (target in fn or fn in target)]
+            gid = subs[0] if len(subs) == 1 else target
+        fresh = load_grids_for_docs(
+            db_client, [gid], question=question, filename_by_doc=filename_by_doc,
         )
+        if fresh and scope_grids is not None:
+            seen = {(getattr(g, "doc", None), getattr(g, "page", None),
+                     getattr(g, "table_id", None)) for g in scope_grids}
+            for g in fresh:
+                k = (getattr(g, "doc", None), getattr(g, "page", None),
+                     getattr(g, "table_id", None))
+                if k not in seen:
+                    scope_grids.append(g)
+                    seen.add(k)
+        return fresh
+
+    def _doc_like(grid_doc: Any, want: str) -> bool:
+        """Kernel-consistent doc matching (a distinctive substring is enough)."""
+        try:
+            from src.components.brain.analyst import _doc_match
+            return _doc_match(grid_doc, want)
+        except Exception:  # noqa: BLE001 — fall back to exact/substring
+            gd = str(grid_doc or "")
+            return bool(want) and (gd == want or want in gd or gd in want)
+
+    loaded: List[Any] = []
+    if grids:
+        # Pre-loaded path: the run scope already holds grids. Honor the model's doc_id
+        # against the grids' doc labels (the model knows docs by the filename it saw in
+        # search results).
+        loaded = list(grids)
+        if doc_id:
+            scoped = [g for g in loaded if _doc_like(getattr(g, "doc", None), doc_id)]
+            if scoped:
+                loaded = scoped
+            elif table_grids and db_client is not None:
+                # The doc is real but its grids weren't preloaded — load them fresh and
+                # join the compute scope. (The old behaviour fell back to ALL preloaded
+                # grids: the model believed it read doc X while seeing other documents'
+                # tables — actively misleading, observed live.)
+                loaded = _fresh_load(doc_id)
+                if not loaded:
+                    have = sorted({str(getattr(g, "doc", "")) for g in grids})
+                    return error_result(
+                        f"document {doc_id!r} is not in the loaded scope and no grids "
+                        f"were found for it in the database (loaded docs: {have})"
+                    )
+            else:
+                have = sorted({str(getattr(g, "doc", "")) for g in grids})
+                return error_result(
+                    f"document {doc_id!r} is not in the loaded scope "
+                    f"(loaded docs: {have}) — use one of those document names"
+                )
+    elif table_grids and db_client is not None:
+        loaded = _fresh_load(doc_id)
+
+    # Honor the model's page_range against the grids (both paths). Without this the
+    # adapter returned EVERY grid on the doc (e.g. 60) regardless of the requested
+    # pages — each grid's full JSON floods the message history and blows the token
+    # budget before the model can answer (observed live: read_document → 60 grids →
+    # 75k tokens at step 5 → forced abstain on an ALREADY-CORRECT figure). Scope to
+    # the range when the page is known; if nothing falls in range, keep the doc-scoped
+    # set (showing structure beats returning nothing).
+    _pr = _parse_page_range(page_range)
+    if _pr is not None and loaded:
+        lo, hi = _pr
+        in_range = [g for g in loaded
+                    if isinstance(getattr(g, "page", None), int) and lo <= g.page <= hi]
+        if in_range:
+            loaded = in_range
 
     grid_jsons = [_grid_to_json(g) for g in loaded] if table_grids else []
 

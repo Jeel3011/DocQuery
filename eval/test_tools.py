@@ -126,8 +126,9 @@ def main() -> int:
     c.ok(is_envelope(r), "table_lookup: None grids → envelope (no raise)")
 
     print("\n── read_document (grid-load adapter) ────────────────────────────")
-    # Offline path: pass pre-built grids (no db_client).
-    r = read_document("msft-fixture", grids=msft)
+    # Offline path: pass pre-built grids (no db_client). Kernel-style doc matching: a
+    # distinctive substring is enough (the model rarely reproduces the extension).
+    r = read_document("msft-10k_20220630", grids=msft)
     c.ok(is_envelope(r) and r["ok"], "read_document: pre-loaded grids → ok envelope")
     c.ok(len(r["data"]["grids"]) == len(msft), "read_document: returns all grid JSONs")
     c.ok(all("rows" in g and "periods" in g for g in r["data"]["grids"]),
@@ -145,6 +146,56 @@ def main() -> int:
          "read_document: doc_id filters pre-loaded grids to the requested doc")
     c.ok(0 < len(r["data"]["grids"]) < len(mixed),
          "read_document: filtered set is a strict, non-empty subset")
+
+    # Doc-miss with NO db_client: the old code fell back to ALL preloaded grids — the
+    # model believed it read doc X while seeing other documents' tables (live
+    # 2026-06-11). New contract: a self-healing error naming the loaded docs.
+    r = read_document("nvda-20240128.pdf", grids=mixed)
+    c.ok(is_envelope(r) and not r["ok"] and "not in the loaded scope" in (r.get("error") or "")
+         and "amzn-20221231.pdf" in (r.get("error") or ""),
+         "read_document: unknown doc → error naming loaded docs (no silent fallback)")
+
+    # Doc-miss WITH a db_client: the doc's grids load FRESH and JOIN the run's grid
+    # scope, so a follow-up compute can use them (live: the model read the right doc
+    # but compute said "document not in scope").
+    from types import SimpleNamespace
+
+    class _FakeQ:
+        def __init__(self, rows): self._rows = rows
+        def select(self, *_a, **_k): return self
+        def eq(self, *_a, **_k): return self
+        def limit(self, *_a, **_k): return self
+        def execute(self): return SimpleNamespace(data=self._rows)
+
+    class _FakeDB:
+        def __init__(self, rows):
+            self.client = SimpleNamespace(table=lambda _name: _FakeQ(rows))
+
+    _tj = {"headers": ["section", "label", "2022", "2021"], "periods": ["2022", "2021"],
+           "rows": [{"section": "Revenue", "label": "Total revenue",
+                     "2022": "200", "2021": "100"}]}
+    _rows = [{"content": "fresh table",
+              "metadata": {"chunk_type": "table", "table_json": _tj, "page_number": 7}}]
+    scope_list = list(msft)  # the live list the registry hands to compute
+    r = read_document("fresh-doc.pdf", grids=msft, db_client=_FakeDB(_rows),
+                      filename_by_doc={"uuid-fresh-1": "fresh-doc.pdf"},
+                      scope_grids=scope_list)
+    c.ok(is_envelope(r) and r["ok"] and len(r["data"]["grids"]) == 1
+         and r["data"]["grids"][0]["doc"] == "fresh-doc.pdf",
+         "read_document: doc-miss + db → loads that doc's grids fresh")
+    c.ok(len(scope_list) == len(msft) + 1
+         and any(getattr(g, "doc", None) == "fresh-doc.pdf" for g in scope_list),
+         "read_document: fresh grids JOIN the run's compute scope")
+    r = compute({"op": "growth_pct", "doc": "fresh-doc.pdf",
+                 "row": {"section": "Revenue", "label": "Total revenue"},
+                 "from_period": "2021", "to_period": "2022"}, scope_list)
+    c.ok(r["ok"] and abs(((r["data"] or {}).get("value") or 0) - 100.0) < 1e-9,
+         "compute: resolves in the freshly joined doc (no 'document not in scope')")
+    # BUG-D: the DERIVED result (a growth %) is ledgered as a traceable param — the
+    # gate redacted a CORRECT computed growth live because only operand cells shipped.
+    _pk = [p for p in r["provenance"] if p.get("kind") == "param" and p.get("label") == "result"]
+    c.ok(len(_pk) == 1 and _pk[0]["value"] == 100.0,
+         "compute: derived result value ships in provenance (gate-traceable)")
 
     print("\n── compute: entity-axis selection (over='entity' + rows) ────────")
     # The schema must let the model express a cross-entity argmax (the cross-company

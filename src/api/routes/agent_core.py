@@ -133,9 +133,13 @@ async def agentcore_query_stream(
     def _load_grids():
         try:
             from src.components.brain.table_intent import load_grids_for_docs
+            # per_doc_top (not the global top-8): every scoped doc keeps its most
+            # relevant grids, so no document silently vanishes from the compute scope
+            # (the 2026-06-11 "document not in scope" starvation).
             return load_grids_for_docs(
                 sb, scoped_doc_ids,
                 question=body.question, filename_by_doc=filename_by_doc,
+                per_doc_top=8,
             )
         except Exception as exc:  # noqa: BLE001 — grids are best-effort; tools degrade gracefully
             logger.warning("[agentcore] grid preload failed: %s", exc)
@@ -158,6 +162,7 @@ async def agentcore_query_stream(
         retrieval_manager=retrieval_mgr,
         db_client=sb,
         filename_by_doc=filename_by_doc,
+        question=body.question,
     )
     budget = budget_for(mode, user_config)
     sys_prompt = system_prompt("v1")
@@ -187,6 +192,14 @@ async def agentcore_query_stream(
                 system_prompt=sys_prompt,
                 registry=REGISTRY,
             ):
+                # Trace every loop event to the API log (read-only; does not alter the
+                # stream). Lets us diagnose tool-call/gate behaviour from the server side
+                # instead of the browser-only SSE. Tool args/results are summarised by the
+                # loop already; we log the whole event compactly.
+                try:
+                    logger.info("[agentcore.ev] %s", json.dumps(ev, default=str)[:2000])
+                except Exception:  # noqa: BLE001 — logging must never break the stream
+                    logger.info("[agentcore.ev] <unserialisable %s>", ev.get("type"))
                 yield _sse(_translate(ev))
         except Exception as exc:  # noqa: BLE001 — the loop shouldn't raise, but never 500 the stream
             logger.error("[agentcore] loop raised — degrading: %s", exc)

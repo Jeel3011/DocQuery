@@ -66,6 +66,10 @@ class EvidenceLedger:
         seen = set()
         out: List[Dict[str, Any]] = []
         for e in self.entries:
+            if e.kind == "param":
+                # params (thresholds, derived compute results) are gate evidence, not
+                # document sources — they have no doc/page to show in the sources panel
+                continue
             key = (e.payload.get("doc"), e.payload.get("page"),
                    e.payload.get("label"), e.payload.get("period"),
                    e.payload.get("chunk_id"))

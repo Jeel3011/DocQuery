@@ -73,6 +73,28 @@ def main() -> int:
     r = verify_numbers("The company grew over the year.", EvidenceLedger())
     c.ok(r["pass"], "no figures → vacuous pass")
 
+    # BUG-D (live, 2026-06-11): a DERIVED compute result (growth %, delta) is not an
+    # operand cell — the gate redacted a CORRECT computed "-0.5" because only cells
+    # were ledgered. The compute adapter now ledgers the result (raw + display-rounded)
+    # as `param` entries; the gate must trace stated figures to them.
+    led_growth = ledger_with(value=198270.0)
+    led_growth.record("compute", 2, [
+        {"kind": "cell", "value": 168088.0, "doc": "msft-fy22", "page": 95,
+         "label": "Total revenue", "period": "2021", "trace": "Total revenue [2021]"},
+        {"kind": "param", "label": "result", "value": 17.956, "op": "growth_pct"},
+        {"kind": "param", "label": "result_rounded", "value": 18.0, "op": "growth_pct"},
+    ])
+    r = verify_numbers("Total revenue grew 18.0% in FY2022 [msft-fy22 p.95].", led_growth)
+    c.ok(r["pass"], "derived growth % traces via the ledgered compute result param")
+    led_delta = ledger_with(value=198270.0)
+    led_delta.record("compute", 2, [
+        {"kind": "param", "label": "result", "value": 30182.0, "op": "delta"}])
+    r = verify_numbers("Revenue increased by 30,182 [msft-fy22 p.95].", led_delta)
+    c.ok(r["pass"], "derived delta traces via the ledgered compute result param")
+    # …but an arbitrary figure still fails (params don't open a laundering hole).
+    r = verify_numbers("Revenue increased by 47,500 [msft-fy22 p.95].", led_delta)
+    c.ok(not r["pass"], "non-result figure still fails with params present")
+
     print("\n── verify_citations (marker presence) ───────────────────────────")
     r = verify_citations("Net sales were 513,983 [amzn-2022 p.41].", led)
     c.ok(r["pass"], "cited factual sentence passes")

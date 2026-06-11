@@ -25,6 +25,19 @@ def aws_segment_grid():
     raise SystemExit("AWS segment grid not found — re-check extraction")
 
 
+_msft_cache = None
+
+
+def grids_for_msft():
+    """All MSFT FY22 grids in one doc scope (BUG-E: the 'Total' label appears in many
+    sections; only section:'Revenue' picks the 198,270 revenue total)."""
+    global _msft_cache
+    if _msft_cache is None:
+        _msft_cache = [Grid(t.to_metadata(), doc="msft-10k_20220630.htm.pdf", page=t.page_number)
+                       for t in extract_tables_from_pdf(MSFT)]
+    return _msft_cache
+
+
 def multidoc_grids():
     """Real MSFT FY22 + GOOG FY22 grids in ONE scope — the live BUG-1 shape.
 
@@ -164,6 +177,52 @@ def main():
     f_ok = (not r.ok) and "ambiguous" in (r.error or "")
     passed += f_ok; failed += (not f_ok)
     print(f"  [{'PASS' if f_ok else 'FAIL'}] intra-doc disagreement still abstains: {r.error}")
+
+    # ── BUG-E (live, 2026-06-11): intra-doc ambiguity must hint SECTION, not doc ─────
+    # 'Total' appears in 8 sections of the MSFT filing; only section:'Revenue' picks
+    # the revenue total (198,270). The old error said 'add doc' (the doc was already
+    # scoped) → the model burned its whole step budget guessing sections. The error
+    # now NAMES the sections + the 'add section' repair so it self-heals in one step.
+    msft = grids_for_msft()
+    r = compute({"op": "value", "doc": "msft-10k_20220630.htm.pdf",
+                 "row": {"label": "Total"}, "period": "2022"}, msft)
+    e_intra = (not r.ok) and "section" in (r.error or "") \
+        and "Revenue" in (r.error or "") and 'add "doc"' not in (r.error or "")
+    passed += e_intra; failed += (not e_intra)
+    print(f"  [{'PASS' if e_intra else 'FAIL'}] intra-doc 'Total' → SECTION hint (not doc): {r.error}")
+    # and the hinted repair RESOLVES to the true revenue total.
+    r = compute({"op": "value", "doc": "msft-10k_20220630.htm.pdf",
+                 "row": {"section": "Revenue", "label": "Total"}, "period": "2022"}, msft)
+    e_fix = r.ok and r.value == 198270.0
+    passed += e_fix; failed += (not e_fix)
+    print(f"  [{'PASS' if e_fix else 'FAIL'}] section:'Revenue' resolves Total[2022]=198,270: {r.display() if r.ok else r.error}")
+
+    # ── BUG-B (live, 2026-06-11): the row ref under "numerator" + empty labels ───────
+    # The live MSFT growth call carried its row ref under "numerator" (the ratio
+    # shape); resolve() fell through to the WHOLE spec, read an EMPTY label, and
+    # find_row('') bound an ARBITRARY row → a kernel-level confident-wrong (-0.5%
+    # "growth" computed from an unrelated row's values).
+    # (g) "numerator" is now an accepted alias for the single-row ref:
+    r_row = compute({"op": "growth_pct", "row": {"section": "AWS", "label": "Net sales"},
+                     "from_period": "2022", "to_period": "2023"}, [grid])
+    r_num = compute({"op": "growth_pct", "numerator": {"section": "AWS", "label": "Net sales"},
+                     "from_period": "2022", "to_period": "2023"}, [grid])
+    g_alias_ok = r_row.ok and r_num.ok and r_row.value == r_num.value
+    passed += g_alias_ok; failed += (not g_alias_ok)
+    print(f"  [{'PASS' if g_alias_ok else 'FAIL'}] numerator-alias growth == row-shape growth "
+          f"({r_num.display() if r_num.ok else r_num.error})")
+
+    # (h) an EMPTY label must never resolve — hard error naming the repair, never a value.
+    r = compute({"op": "growth_pct", "numerator": {"section": "Revenue", "label": ""},
+                 "from_period": "2021", "to_period": "2022"}, [grid])
+    h_ok = (not r.ok) and "label" in (r.error or "")
+    passed += h_ok; failed += (not h_ok)
+    print(f"  [{'PASS' if h_ok else 'FAIL'}] empty label → clean error (no arbitrary bind): {r.error}")
+
+    r = compute({"op": "value", "row": {}, "period": "2022"}, [grid])
+    h2_ok = (not r.ok) and "label" in (r.error or "")
+    passed += h2_ok; failed += (not h2_ok)
+    print(f"  [{'PASS' if h2_ok else 'FAIL'}] empty row ref → clean error: {r.error}")
 
     # numeric verifier (§4b step 5): grounded answer passes, fabricated figure flagged
     results = [
