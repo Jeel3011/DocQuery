@@ -2,7 +2,7 @@
 
 import { useRef, useState, useCallback, KeyboardEvent } from "react";
 import { AnimatePresence, motion } from "framer-motion";
-import { ArrowUp, Square, Loader2, Zap, Brain, Sparkles } from "lucide-react";
+import { ArrowUp, Square, Loader2, Zap, Brain, Sparkles, FolderOpen } from "lucide-react";
 
 const SLASH_COMMANDS = [
   { cmd: "/compare", desc: "Compare two documents side by side" },
@@ -23,7 +23,15 @@ interface ChatInputProps {
   onToggleBrain?: () => void;
   agentCoreMode?: boolean;
   onToggleAgentCore?: () => void;
+  vaultName?: string | null;     // active collection name → shown as a "vault chip"
+  onChooseVault?: () => void;    // open the vault/collection picker (the chip is a button)
+  centered?: boolean;            // empty conversation → lift the composer toward center
 }
+
+// The three intelligence modes, surfaced as a labeled segmented control (Harvey-style)
+// instead of cryptic bare icons. "Agent" = the verified tool-loop (agentCore); "Brain" =
+// cross-doc synthesis; "Fast" = the default direct path (no special toggle).
+type ModeKey = "fast" | "agent" | "brain" | "agentic";
 
 export function ChatInput({
   onSubmit,
@@ -37,10 +45,14 @@ export function ChatInput({
   onToggleBrain,
   agentCoreMode = false,
   onToggleAgentCore,
+  vaultName,
+  onChooseVault,
+  centered = false,
 }: ChatInputProps) {
   const [value, setValue] = useState("");
   const [showSlash, setShowSlash] = useState(false);
   const [slashIdx, setSlashIdx] = useState(0);
+  const [focused, setFocused] = useState(false);
   const ref = useRef<HTMLTextAreaElement>(null);
 
   const slashFiltered = value.startsWith("/")
@@ -90,7 +102,10 @@ export function ChatInput({
   const canSend = value.trim().length > 0 && !isStreaming && !disabled;
 
   return (
-    <div className="px-4 md:px-8 pb-5 pt-2 flex-shrink-0 bg-transparent">
+    <motion.div
+      transition={{ duration: 0.55, ease: [0.23, 1, 0.32, 1] }}
+      className="relative z-10 px-4 md:px-8 pb-5 pt-2 flex-shrink-0 bg-transparent"
+    >
       <div className="max-w-3xl mx-auto relative">
 
         {/* Slash-command popover */}
@@ -129,19 +144,25 @@ export function ChatInput({
           )}
         </AnimatePresence>
 
-        {/* Main glass input bar — one tall premium surface */}
-        <div
-          className={`flex flex-col gap-2 rounded-[20px] px-4 pt-3 pb-2.5 transition-[border-color,box-shadow] duration-[160ms] ease-[cubic-bezier(0.23,1,0.32,1)]`}
+        {/* Main composer — a warm 'sheet of paper' with layered depth + focus glow.
+            Editorial/warm-paper direction: warm off-white gradient, a hairline warm
+            border, a soft stacked shadow (paper lifting off the page), and a faint top
+            highlight. On focus/typing it gently lifts + warms its ring. */}
+        <motion.div
+          animate={{
+            scale: focused ? 1.006 : 1,
+            y: focused ? -1 : 0,
+          }}
+          transition={{ duration: 0.35, ease: [0.23, 1, 0.32, 1] }}
+          className="flex flex-col gap-2.5 rounded-[22px] px-4 pt-3.5 pb-3"
           style={{
-            background: "linear-gradient(180deg, rgba(255,255,255,0.82), rgba(250,250,250,0.68))",
-            backdropFilter: "blur(24px) saturate(1.5)",
-            WebkitBackdropFilter: "blur(24px) saturate(1.5)",
-            border: value.length > 0
-              ? "1px solid rgba(23,19,13,0.28)"
-              : "1px solid var(--line)",
-            boxShadow: value.length > 0
-              ? "var(--shadow-lg), 0 0 0 3px rgba(23,19,13,0.05), inset 0 1px 0 rgba(255,255,255,0.85)"
-              : "var(--shadow-md), inset 0 1px 0 rgba(255,255,255,0.80)",
+            background: "linear-gradient(180deg, #FFFFFF 0%, #FAFAFA 100%)",
+            border: focused || value.length > 0
+              ? "1px solid rgba(0,0,0,0.22)"
+              : "1px solid rgba(0,0,0,0.08)",
+            boxShadow: focused || value.length > 0
+              ? "0 24px 60px -18px rgba(0,0,0,0.20), 0 8px 20px -8px rgba(0,0,0,0.10), 0 0 0 4px rgba(0,0,0,0.05), inset 0 1px 0 rgba(255,255,255,0.95)"
+              : "0 14px 40px -16px rgba(0,0,0,0.14), 0 3px 8px -3px rgba(0,0,0,0.07), inset 0 1px 0 rgba(255,255,255,0.92)",
           }}
         >
           {/* Streaming status — integrated thin row inside the bar */}
@@ -158,6 +179,34 @@ export function ChatInput({
             </div>
           )}
 
+          {/* ── Top row: vault chip (clickable → opens the vault picker) ── */}
+          <div className="flex items-center gap-2 pb-1.5 border-b border-[var(--glass-border)]">
+            <button
+              type="button"
+              onClick={onChooseVault}
+              disabled={!onChooseVault}
+              className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-[11px] font-medium transition-all duration-[140ms] enabled:hover:-translate-y-px enabled:active:scale-[0.98] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)] disabled:cursor-default"
+              style={{
+                background: vaultName
+                  ? "linear-gradient(180deg, #F4F4F4, #ECECEC)"
+                  : "transparent",
+                border: vaultName ? "1px solid rgba(0,0,0,0.14)" : "1px solid rgba(0,0,0,0.10)",
+                color: vaultName ? "var(--text-primary)" : "var(--text-muted)",
+                boxShadow: vaultName ? "0 1px 2px rgba(0,0,0,0.06), inset 0 1px 0 rgba(255,255,255,0.8)" : "none",
+              }}
+              title={vaultName ? `Vault: ${vaultName} — click to change` : "Choose a vault"}
+            >
+              <FolderOpen size={12} />
+              <span className="truncate max-w-[160px]">{vaultName || "Choose vault"}</span>
+            </button>
+            <span className="text-[10px] text-[var(--text-muted)] ml-auto select-none">
+              {agentCoreMode ? "Agent · verified tool loop"
+                : brainMode ? "Brain · cross-doc synthesis"
+                : agenticMode ? "Agentic · deep analysis"
+                : "Fast · direct answer"}
+            </span>
+          </div>
+
           {/* Input row */}
           <div className="flex items-end gap-3">
           <textarea
@@ -165,6 +214,8 @@ export function ChatInput({
             value={value}
             onChange={onChange}
             onKeyDown={onKey}
+            onFocus={() => setFocused(true)}
+            onBlur={() => setFocused(false)}
             placeholder={
               brainMode
                 ? "Ask a cross-document question (Brain synthesis)…"
@@ -176,75 +227,39 @@ export function ChatInput({
             rows={1}
             aria-label="Chat input"
             className="flex-1 bg-transparent text-[15px] text-[var(--text-primary)] leading-7
-              placeholder:text-[var(--text-muted)] resize-none outline-none min-h-[36px] py-1"
-            style={{ maxHeight: 180 }}
+              placeholder:text-[var(--text-muted)] resize-none outline-none border-0 focus:outline-none focus:ring-0 min-h-[36px] py-1 appearance-none"
+            style={{ maxHeight: 180, boxShadow: "none", border: "none" }}
           />
 
-          {/* Mode toggles */}
-          <div className="flex items-center gap-1.5 pb-0.5">
+          {/* Mode segment — labeled pills (Harvey-style), not cryptic icons */}
+          <div
+            className="flex items-center gap-0.5 p-0.5 rounded-xl flex-shrink-0"
+            style={{ background: "var(--bg-hover)", border: "1px solid var(--glass-border)" }}
+          >
             {onToggleAgentCore && (
-              <button
-                onClick={onToggleAgentCore}
-                title={agentCoreMode ? "Agent mode ON (verified tool loop)" : "Enable Agent mode (verified tool loop)"}
-                aria-pressed={agentCoreMode}
-                className="w-8 h-8 rounded-xl flex items-center justify-center flex-shrink-0 transition-[background-color,color,box-shadow,transform] duration-[120ms] ease-[cubic-bezier(0.23,1,0.32,1)] active:scale-[0.97] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)]"
-                style={agentCoreMode ? {
-                  background: "var(--accent)",
-                  color: "white",
-                  boxShadow: "0 2px 8px rgba(0,0,0,0.2), var(--skeu-inset)",
-                } : {
-                  background: "var(--glass-bg)",
-                  color: "var(--text-muted)",
-                  border: "1px solid var(--glass-border)",
-                  boxShadow: "var(--skeu-raised)",
-                }}
-              >
-                <Sparkles size={14} className={agentCoreMode ? "fill-current" : ""} />
-              </button>
+              <ModePill
+                active={agentCoreMode} onClick={onToggleAgentCore}
+                icon={<Sparkles size={12} className={agentCoreMode ? "fill-current" : ""} />}
+                label="Agent" title="Verified tool loop — cites & computes every figure"
+              />
             )}
-
             {onToggleBrain && (
-              <button
-                onClick={onToggleBrain}
-                title={brainMode ? "Brain synthesis ON" : "Enable Brain synthesis"}
-                aria-pressed={brainMode}
-                className="w-8 h-8 rounded-xl flex items-center justify-center flex-shrink-0 transition-[background-color,color,box-shadow,transform] duration-[120ms] ease-[cubic-bezier(0.23,1,0.32,1)] active:scale-[0.97] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)]"
-                style={brainMode ? {
-                  background: "var(--accent)",
-                  color: "white",
-                  boxShadow: "0 2px 8px rgba(0,0,0,0.2), var(--skeu-inset)",
-                } : {
-                  background: "var(--glass-bg)",
-                  color: "var(--text-muted)",
-                  border: "1px solid var(--glass-border)",
-                  boxShadow: "var(--skeu-raised)",
-                }}
-              >
-                <Brain size={14} className={brainMode ? "fill-current" : ""} />
-              </button>
+              <ModePill
+                active={brainMode} onClick={onToggleBrain}
+                icon={<Brain size={12} className={brainMode ? "fill-current" : ""} />}
+                label="Brain" title="Cross-document synthesis"
+              />
             )}
-
             {onToggleAgentic && (
-              <button
-                onClick={onToggleAgentic}
-                title={agenticMode ? "Agentic mode ON" : "Enable agentic mode"}
-                aria-pressed={agenticMode}
-                className="w-8 h-8 rounded-xl flex items-center justify-center flex-shrink-0 transition-[background-color,color,box-shadow,transform] duration-[120ms] ease-[cubic-bezier(0.23,1,0.32,1)] active:scale-[0.97] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)]"
-                style={agenticMode ? {
-                  background: "var(--accent)",
-                  color: "white",
-                  boxShadow: "0 2px 8px rgba(0,0,0,0.2), var(--skeu-inset)",
-                } : {
-                  background: "var(--glass-bg)",
-                  color: "var(--text-muted)",
-                  border: "1px solid var(--glass-border)",
-                  boxShadow: "var(--skeu-raised)",
-                }}
-              >
-                <Zap size={14} className={agenticMode ? "fill-current" : ""} />
-              </button>
+              <ModePill
+                active={agenticMode} onClick={onToggleAgentic}
+                icon={<Zap size={12} className={agenticMode ? "fill-current" : ""} />}
+                label="Deep" title="Agentic deep analysis"
+              />
             )}
+          </div>
 
+          <div className="flex items-center pb-0.5">
             {/* Send / Stop */}
             {isStreaming ? (
               <button
@@ -283,12 +298,44 @@ export function ChatInput({
             )}
           </div>
           </div>{/* end input row */}
-        </div>
+        </motion.div>
 
         <p className="text-[10px] text-[var(--text-muted)] mt-2 text-center select-none">
           ↵ send · ⇧↵ newline · / commands{brainMode ? " · 🧠 brain" : agenticMode ? " · ⚡ agentic" : ""} · always verify sources
         </p>
       </div>
-    </div>
+    </motion.div>
+  );
+}
+
+// A labeled mode pill inside the segmented control. Active = filled accent; inactive =
+// quiet. Replaces the old bare icon-only toggles so a user can read what each mode does.
+function ModePill({
+  active, onClick, icon, label, title,
+}: {
+  active: boolean; onClick: () => void; icon: React.ReactNode; label: string; title: string;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      title={title}
+      aria-pressed={active}
+      className="relative flex items-center gap-1 px-2.5 h-7 rounded-lg text-[11px] font-medium transition-[color] duration-[180ms] active:scale-[0.96] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)]"
+      style={{ color: active ? "#FFFFFF" : "var(--text-muted)" }}
+    >
+      {/* Shared-layout pill: the active highlight SLIDES between modes (Harvey feel) */}
+      {active && (
+        <motion.span
+          layoutId="mode-pill-active"
+          transition={{ type: "spring", stiffness: 480, damping: 36 }}
+          className="absolute inset-0 rounded-lg"
+          style={{
+            background: "linear-gradient(180deg, #2A2A2A, #0E0E0E)",
+            boxShadow: "0 2px 6px rgba(0,0,0,0.22), inset 0 1px 0 rgba(255,255,255,0.12)",
+          }}
+        />
+      )}
+      <span className="relative z-10 flex items-center gap-1">{icon}<span>{label}</span></span>
+    </button>
   );
 }

@@ -30,7 +30,7 @@ load_dotenv()
 from src.components.table_extraction import extract_tables_from_pdf
 from src.components.brain.analyst import Grid
 from src.components.agent_core.tools import (
-    compute, read_document, search_vault, table_lookup, SCHEMAS,
+    compute, read_document, search_vault, table_lookup, list_metrics, SCHEMAS,
 )
 
 CORPUS = "test docs"
@@ -263,8 +263,40 @@ def main() -> int:
     r = search_vault("x", _BoomRM(), kind="both")
     c.ok(is_envelope(r), "search_vault: raising manager → envelope (no raise escapes)")
 
+    print("\n── list_metrics (the line-item index — anti-guessing) ───────────")
+    # Live (2026-06-11) the model GUESSED labels it couldn't know ("Technology and
+    # content" instead of Amazon's real "Technology and infrastructure") → every
+    # compute/lookup failed → abstain. list_metrics shows the REAL labels so it picks
+    # an exact reference. Real AMZN + GOOG FY23 grids in one scope.
+    amzn = grids_for("amzn-20231231.pdf")
+    goog = grids_for("goog-20231231.pdf")
+    both = amzn + goog
+    r = list_metrics("amzn-20231231.pdf", both, contains="technology", period="2023")
+    labels = [m["label"] for m in r["data"]["metrics"]] if r["ok"] else []
+    c.ok(is_envelope(r) and r["ok"] and "Technology and infrastructure" in labels,
+         "list_metrics: surfaces AMZN's REAL R&D label 'Technology and infrastructure'")
+    # the model can now distinguish the $ row (Operating Expenses) from the % twins.
+    secs = {(m["label"], m["section"]) for m in r["data"]["metrics"]}
+    c.ok(any(lab == "Technology and infrastructure" and "Operating" in sec for lab, sec in secs),
+         "list_metrics: shows the section so the $ row is pickable (not the % twin)")
+    # scoping: a GOOG query does not leak AMZN rows.
+    r = list_metrics("goog-20231231.pdf", both, contains="research")
+    gdocs = {m.get("label") for m in r["data"]["metrics"]} if r["ok"] else set()
+    c.ok(r["ok"] and "Research and development" in gdocs,
+         "list_metrics: GOOG scope surfaces 'Research and development'")
+    # prose fragments are filtered OUT (the is_lineitem_label guard).
+    c.ok(r["ok"] and not any("increased" in (m["label"] or "").lower()
+                             for m in r["data"]["metrics"]),
+         "list_metrics: prose fragments excluded (only real line-items)")
+    # never-raise: unknown doc + empty scope → error envelopes.
+    c.ok(is_envelope(list_metrics("nope.pdf", both)) and not list_metrics("nope.pdf", both)["ok"],
+         "list_metrics: unknown doc → error envelope (names loaded docs)")
+    c.ok(is_envelope(list_metrics("x", [])) and not list_metrics("x", [])["ok"],
+         "list_metrics: empty scope → error envelope (no raise)")
+
     print("\n── schemas (registry-ready, A2) ─────────────────────────────────")
-    c.ok(set(SCHEMAS) == {"search_vault", "read_document", "table_lookup", "compute"},
+    c.ok(set(SCHEMAS) == {"search_vault", "read_document", "list_metrics",
+                          "table_lookup", "compute"},
          "SCHEMAS: all four tools registered")
     c.ok(all("name" in s and "input_schema" in s for s in SCHEMAS.values()),
          "SCHEMAS: each has name + input_schema")

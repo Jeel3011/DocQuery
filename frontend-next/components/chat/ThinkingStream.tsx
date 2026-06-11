@@ -2,7 +2,7 @@
 
 import { useEffect, useState, useRef } from "react";
 import { motion, useReducedMotion } from "framer-motion";
-import { Check, Loader2, AlertCircle, Clock } from "lucide-react";
+import { Check, Loader2, AlertCircle, Clock, FileText } from "lucide-react";
 
 export type StepStatus = "pending" | "active" | "done" | "failed";
 
@@ -12,6 +12,7 @@ export interface ThinkingStep {
   detail?: string;
   status: StepStatus;
   durationMs?: number;
+  chips?: string[];   // source/doc chips surfaced under the step (e.g. "goog p.53")
 }
 
 interface ThinkingStreamProps {
@@ -92,7 +93,25 @@ export function ThinkingStream({ steps, totalMs, collapsed = false }: ThinkingSt
               {step.label}
             </p>
             {step.detail && step.status !== "pending" && (
-              <p className="text-[10px] text-[var(--text-muted)] mt-0.5">{step.detail}</p>
+              <p className="text-[11px] text-[var(--text-secondary)] mt-0.5 leading-snug">{step.detail}</p>
+            )}
+            {/* Source/doc chips surfaced under the step as it works (Harvey-style) */}
+            {step.chips && step.chips.length > 0 && step.status !== "pending" && (
+              <div className="flex flex-wrap gap-1.5 mt-1.5">
+                {step.chips.map((c, ci) => (
+                  <motion.span
+                    key={c + ci}
+                    initial={{ opacity: 0, scale: 0.9 }}
+                    animate={{ opacity: 1, scale: 1 }}
+                    transition={{ delay: ci * 0.05, duration: 0.2, ease: [0.23, 1, 0.32, 1] }}
+                    className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md text-[10px] font-medium text-[var(--text-secondary)]"
+                    style={{ background: "#F0F0F0", border: "1px solid rgba(0,0,0,0.07)" }}
+                  >
+                    <FileText size={9} className="text-[var(--text-muted)]" />
+                    {c}
+                  </motion.span>
+                ))}
+              </div>
             )}
             {step.status === "done" && step.durationMs != null && (
               <span className="inline-flex items-center gap-1 text-[9px] text-[var(--text-muted)] mt-0.5 tabular-nums">

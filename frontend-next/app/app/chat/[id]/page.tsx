@@ -15,11 +15,64 @@ import { ThinkingStreamFixture, ThinkingStream, ThinkingStep } from "@/component
 import { SkeletonMessage } from "@/components/ui/Skeleton";
 import { MOCK_ANSWER_META, AnswerMeta, ConfidenceLevel } from "@/components/chat/TrustBar";
 import { useAuthStore } from "@/stores/auth.store";
-import { getMessages, MessageResponse, SourceInfo, exportConversation, compareDocuments, ComparisonResult, DocumentResponse, listDocuments } from "@/lib/api";
+import { getMessages, MessageResponse, SourceInfo, exportConversation, compareDocuments, ComparisonResult, DocumentResponse, listDocuments, listCollections } from "@/lib/api";
 import { streamQuery, streamAgenticQuery, streamBrainQuery, streamAgentCoreQuery } from "@/lib/streaming";
 import { useCollectionStore } from "@/stores/collection.store";
 import { toast } from "sonner";
-import { Search, Download, FolderOpen, GitCompare, Globe, X, ChevronRight } from "lucide-react";
+import { Search, Download, FolderOpen, GitCompare, Globe, X, ChevronRight, TrendingUp, BarChart3, ArrowUpRight } from "lucide-react";
+
+// ── Rich agent-run timeline helpers: turn raw tool events into readable steps + chips ──
+// A clean doc label from a filename ("goog-20231231.pdf" → "goog 2023"; the SEC accession
+// "0000950170-23-035122.pdf" → "MSFT FY23" via a small known map; else the bare stem).
+const _DOC_ALIAS: Record<string, string> = { "0000950170-23-035122": "MSFT FY23" };
+function _docLabel(raw?: string): string | null {
+  if (!raw) return null;
+  const stem = raw.replace(/\.(pdf|htm|html|docx?|txt)$/i, "").trim();
+  if (_DOC_ALIAS[stem]) return _DOC_ALIAS[stem];
+  const m = stem.match(/([a-zA-Z]{2,6}).*?(20\d{2})/);     // issuer + year
+  if (m) return `${m[1].toLowerCase()} ${m[2]}`;
+  return stem.length > 22 ? stem.slice(0, 22) + "…" : stem;
+}
+// Pull the `doc`/filename and any page out of a tool's arg/summary string for a chip.
+function _chipsFrom(text?: string): string[] {
+  if (!text) return [];
+  const chips: string[] = [];
+  const push = (v: string) => { if (v && chips.indexOf(v) === -1) chips.push(v); };
+  // filenames (with extension) — the most reliable token
+  const fnRe = /[\w.-]+\.(?:pdf|htm|html|docx?|txt)/gi;
+  let m: RegExpExecArray | null;
+  while ((m = fnRe.exec(text)) !== null) {
+    const d = _docLabel(m[0]); if (d) push(d);
+  }
+  // bare accession ids in our known map
+  Object.keys(_DOC_ALIAS).forEach((k) => { if (text.includes(k)) push(_DOC_ALIAS[k]); });
+  // a page reference → append to the last chip if present
+  const pg = text.match(/\bp(?:age|\.)?\s*(\d+)/i);
+  if (pg && chips.length) {
+    chips[chips.length - 1] = `${chips[chips.length - 1]} p.${pg[1]}`;
+  }
+  return chips.slice(0, 4);
+}
+function richToolLabel(name: string): string {
+  return name === "compute" ? "Computing"
+    : name === "table_lookup" ? "Looking up a cell"
+    : name === "read_document" ? "Reading"
+    : name === "list_metrics" ? "Listing metrics"
+    : name === "search_vault" ? "Searching" : name;
+}
+function describeToolCall(name: string, argsSummary?: string): { label: string; chips: string[] } {
+  return { label: richToolLabel(name), chips: _chipsFrom(argsSummary) };
+}
+function describeToolResult(name: string, summary?: string, nProv?: number):
+  { detail?: string; chips: string[] } {
+  // The tool summary already states the OUTCOME (e.g. "compute growth_pct = 18.0%",
+  // "search_vault '…' (table): 8 chunk(s)") — surface it verbatim, trimmed, + cite count.
+  const base = (summary || "").replace(/^\w+\s+/, "").trim();   // drop the leading tool name
+  const detail = base
+    ? `${base.charAt(0).toUpperCase()}${base.slice(1)}${nProv ? ` · ${nProv} cited` : ""}`
+    : undefined;
+  return { detail, chips: _chipsFrom(summary) };
+}
 
 interface LocalMessage {
   id: string;
@@ -49,7 +102,7 @@ function ChatPageInner() {
   const { id: convId } = useParams<{ id: string }>();
   const searchParams = useSearchParams();
   const { token, user } = useAuthStore();
-  const { activeCollectionId } = useCollectionStore();
+  const { activeCollectionId, setActiveCollectionId } = useCollectionStore();
 
   const [messages, setMessages] = useState<LocalMessage[]>([]);
   const [isStreaming, setIsStreaming] = useState(false);
@@ -57,6 +110,9 @@ function ChatPageInner() {
   const [agenticMode, setAgenticMode] = useState(false);
   const [brainMode, setBrainMode] = useState(false);
   const [agentCoreMode, setAgentCoreMode] = useState(false);  // A4: verified tool-loop agent
+  const [vaultName, setVaultName] = useState<string | null>(null);  // active collection name → composer vault chip
+  const [showVaultPicker, setShowVaultPicker] = useState(false);
+  const [vaultOptions, setVaultOptions] = useState<{ id: string; name: string }[]>([]);
   const [showExport, setShowExport] = useState(false);
   const [showCompare, setShowCompare] = useState(false);
   const [documents, setDocuments] = useState<DocumentResponse[]>([]);
@@ -79,6 +135,8 @@ function ChatPageInner() {
   const brainModeRef = useRef(false);
   const agentCoreModeRef = useRef(false);
   const activeCollectionIdRef = useRef<string | null>(null);
+  const toolStepSeq = useRef(0);                 // each tool call = its own timeline step
+  const lastToolStepId = useRef<string | null>(null);
 
   // Keep refs in sync with state
   useEffect(() => { isStreamingRef.current = isStreaming; }, [isStreaming]);
@@ -86,6 +144,22 @@ function ChatPageInner() {
   useEffect(() => { brainModeRef.current = brainMode; }, [brainMode]);
   useEffect(() => { agentCoreModeRef.current = agentCoreMode; }, [agentCoreMode]);
   useEffect(() => { activeCollectionIdRef.current = activeCollectionId; }, [activeCollectionId]);
+
+  // Resolve the active collection's NAME for the composer's vault chip + cache the full
+  // list for the vault picker (Harvey-style "Choose vault").
+  useEffect(() => {
+    if (!token) { setVaultName(null); return; }
+    let cancelled = false;
+    listCollections(token)
+      .then((cols) => {
+        if (cancelled) return;
+        setVaultOptions(cols.map((c) => ({ id: c.id, name: c.name })));
+        const c = cols.find((x) => x.id === activeCollectionId);
+        setVaultName(activeCollectionId ? (c?.name ?? null) : null);
+      })
+      .catch(() => { if (!cancelled) setVaultName(null); });
+    return () => { cancelled = true; };
+  }, [activeCollectionId, token]);
 
   // Close export dropdown on outside click
   useEffect(() => {
@@ -100,6 +174,13 @@ function ChatPageInner() {
   }, [showExport]);
 
   const userInitials = user?.email?.slice(0, 2).toUpperCase() ?? "U";
+  // First name from the email local-part: take the LEADING alphabetic run, so
+  // "jeel15thummar@…" → "Jeel", "john.doe@…" → "John". Avoids the ugly "Jeel15thummar".
+  const userName = (() => {
+    const local = user?.email?.split("@")[0] ?? "";
+    const lead = (local.match(/^[a-zA-Z]+/) ?? [""])[0];
+    return lead ? lead.charAt(0).toUpperCase() + lead.slice(1) : "";
+  })();
 
   // ── Stream handler (stable reference — uses refs, not state) ──────────────
   const handleSubmit = useCallback(
@@ -178,6 +259,8 @@ function ChatPageInner() {
         }
 
         const acStart = Date.now();
+        toolStepSeq.current = 0;          // fresh step numbering per run
+        lastToolStepId.current = null;
         // The agent loop's steps are emergent (the model decides), so the timeline is
         // built live from tool_call / gate events rather than a fixed pipeline.
         let steps: ThinkingStep[] = [
@@ -224,22 +307,22 @@ function ChatPageInner() {
             },
             onToolCall: (name, argsSummary) => {
               upsert("plan", { id: "plan", label: "Reasoning", status: "done" });
-              upsert(`tool-${name}`, {
-                id: `tool-${name}`,
-                label: name === "compute" ? "Computing" : name === "table_lookup" ? "Looking up cells"
-                  : name === "read_document" ? "Reading document" : "Searching documents",
-                detail: argsSummary?.slice(0, 80),
-                status: "active",
-              });
+              // Each tool call is its OWN step (id unique per call), so the timeline reads
+              // as a real sequence — "Read goog p.53 → Computed growth 18.0%" — not one
+              // re-used "Reading documents" row. The doc + result are parsed for chips.
+              const stepId = `tool-${toolStepSeq.current++}`;
+              lastToolStepId.current = stepId;
+              const { label, chips } = describeToolCall(name, argsSummary);
+              upsert(stepId, { id: stepId, label, chips, status: "active" });
             },
             onToolResult: ({ name, ok, summary, nProvenance }) => {
-              upsert(`tool-${name}`, {
-                id: `tool-${name}`,
-                label: name === "compute" ? "Computing" : name === "table_lookup" ? "Looking up cells"
-                  : name === "read_document" ? "Reading document" : "Searching documents",
-                detail: summary
-                  ? `${summary}${nProvenance ? ` · ${nProvenance} cited` : ""}`
-                  : undefined,
+              const stepId = lastToolStepId.current ?? `tool-${name}`;
+              const { detail, chips } = describeToolResult(name, summary, nProvenance);
+              upsert(stepId, {
+                id: stepId,
+                label: richToolLabel(name),
+                detail,
+                chips,
                 status: ok ? "done" : "failed",
               });
             },
@@ -482,12 +565,18 @@ function ChatPageInner() {
         return msgs;
       })
       .then((msgs) => {
-        // Auto-submit if ?q= param exists and conversation is empty (from suggestion buttons)
+        // Auto-submit if ?q= param exists and conversation is empty (from the landing).
+        // Honor &mode= so a mode picked on the landing (agent/brain/deep) is applied here
+        // before the run starts — otherwise the landing could only ever do fast mode.
         const q = searchParams.get("q");
         if (q && msgs.length === 0 && !autoSubmittedRef.current) {
           autoSubmittedRef.current = true;
+          const mode = searchParams.get("mode");
+          if (mode === "agent") { setAgentCoreMode(true); agentCoreModeRef.current = true; }
+          else if (mode === "brain") { setBrainMode(true); brainModeRef.current = true; }
+          else if (mode === "deep") { setAgenticMode(true); agenticModeRef.current = true; }
           // Small delay to let state settle
-          setTimeout(() => handleSubmit(q), 150);
+          setTimeout(() => handleSubmit(q), 200);
         }
       })
       .catch(() => toast.error("Failed to load messages"))
@@ -532,10 +621,62 @@ function ChatPageInner() {
   return (
     <div className="flex h-full overflow-hidden">
       {/* ── Main chat column ── */}
-      <div className="flex flex-col flex-1 min-w-0 overflow-hidden">
+      <div className="relative flex flex-col flex-1 min-w-0 overflow-hidden">
+      {/* ── Ambient background: monochrome SHAPES + texture so the canvas isn't dead flat.
+          Layered: (a) a faint dotted grid, (b) two soft drifting grey blobs, (c) a vignette
+          wash. All greyscale, very subtle, pointer-events-none, sits behind the content. ── */}
+      <div aria-hidden className="pointer-events-none absolute inset-0 z-0 overflow-hidden">
+        {/* (a) dotted grid — visible texture */}
+        <div
+          className="absolute inset-0"
+          style={{
+            backgroundImage: "radial-gradient(rgba(0,0,0,0.10) 1px, transparent 1px)",
+            backgroundSize: "24px 24px",
+            maskImage: "radial-gradient(130% 100% at 50% 18%, #000 0%, transparent 78%)",
+            WebkitMaskImage: "radial-gradient(130% 100% at 50% 18%, #000 0%, transparent 78%)",
+          }}
+        />
+        {/* (b) soft concentric ring shape — top, like the reference's geometric forms */}
+        <motion.div
+          className="absolute rounded-full"
+          style={{
+            width: 620, height: 620, top: "-22%", left: "50%", marginLeft: -310,
+            border: "1px solid rgba(0,0,0,0.05)",
+            background: "radial-gradient(circle, rgba(0,0,0,0.05) 0%, transparent 60%)",
+          }}
+          animate={{ scale: [1, 1.05, 1], opacity: [0.7, 1, 0.7] }}
+          transition={{ duration: 16, repeat: Infinity, ease: "easeInOut" }}
+        />
+        {/* (c) two drifting grey blobs — slow, organic, NOW visible */}
+        <motion.div
+          className="absolute rounded-full"
+          style={{
+            width: 520, height: 520, top: "2%", left: "2%",
+            background: "radial-gradient(circle, rgba(0,0,0,0.10), transparent 66%)",
+            filter: "blur(10px)",
+          }}
+          animate={{ x: [0, 50, 0], y: [0, 30, 0], scale: [1, 1.1, 1] }}
+          transition={{ duration: 22, repeat: Infinity, ease: "easeInOut" }}
+        />
+        <motion.div
+          className="absolute rounded-full"
+          style={{
+            width: 480, height: 480, bottom: "-8%", right: "3%",
+            background: "radial-gradient(circle, rgba(0,0,0,0.09), transparent 66%)",
+            filter: "blur(10px)",
+          }}
+          animate={{ x: [0, -42, 0], y: [0, -26, 0], scale: [1, 1.12, 1] }}
+          transition={{ duration: 26, repeat: Infinity, ease: "easeInOut", delay: 2 }}
+        />
+        {/* (c) top vignette so content reads cleanly */}
+        <div
+          className="absolute inset-0"
+          style={{ background: "radial-gradient(110% 75% at 50% 6%, rgba(255,255,255,0.5) 0%, transparent 55%)" }}
+        />
+      </div>
       {/* Top bar — collection badge + export */}
       <div
-        className="flex items-center justify-between px-4 py-1.5 border-b flex-shrink-0"
+        className="relative z-10 flex items-center justify-between px-4 py-1.5 border-b flex-shrink-0"
         style={{
           background: "var(--glass-bg-strong)",
           backdropFilter: "blur(16px)",
@@ -600,13 +741,126 @@ function ChatPageInner() {
       </div>
 
       {/* Messages — scrollable */}
-      <div ref={scrollRef} className="flex-1 overflow-y-auto scrollbar-thin">
+      <div ref={scrollRef} className="relative z-10 flex-1 overflow-y-auto scrollbar-thin">
         {loading ? (
           <div className="py-4 space-y-1">
             <SkeletonMessage />
             <SkeletonMessage />
             <SkeletonMessage />
           </div>
+        ) : messages.length === 0 ? (
+          // ── Centered empty-state: a calm welcome that lives in the middle of the page
+          // until the first message is sent (the composer below centers itself too, then
+          // both drop to the normal transcript layout). Harvey/ChatGPT-style entrance. ──
+          <motion.div
+            key="empty-hero"
+            variants={{ show: { transition: { staggerChildren: 0.09, delayChildren: 0.05 } } }}
+            initial="hidden"
+            animate="show"
+            className="h-full flex flex-col items-start justify-center w-full max-w-3xl mx-auto px-4 md:px-8 py-6 text-left select-none"
+          >
+            {/* The living orb mark: enters, then breathes (slow float + scale) forever, with
+                a soft rotating sheen + an outer glow ring that pulses. Monochrome grey depth. */}
+            <motion.div
+              variants={{ hidden: { opacity: 0, y: 16, scale: 0.7 }, show: { opacity: 1, y: 0, scale: 1 } }}
+              transition={{ duration: 0.7, ease: [0.23, 1, 0.32, 1] }}
+              className="mb-4 relative"
+            >
+              {/* outer glow ring — gentle pulse */}
+              <motion.div
+                aria-hidden
+                className="absolute rounded-full"
+                style={{ inset: -12, background: "radial-gradient(circle, rgba(0,0,0,0.06), transparent 70%)" }}
+                animate={{ scale: [1, 1.12, 1], opacity: [0.5, 0.85, 0.5] }}
+                transition={{ duration: 4.5, repeat: Infinity, ease: "easeInOut" }}
+              />
+              {/* the sphere — small, refined, breathing */}
+              <motion.div
+                className="w-[52px] h-[52px] rounded-full relative overflow-hidden"
+                style={{
+                  background: "radial-gradient(circle at 33% 25%, #FFFFFF 0%, #EAEAEA 38%, #B8B8B8 70%, #8E8E8E 100%)",
+                  boxShadow: "0 14px 30px -10px rgba(0,0,0,0.36), 0 3px 8px -3px rgba(0,0,0,0.18), inset 0 2px 5px rgba(255,255,255,0.92), inset 0 -9px 16px -5px rgba(0,0,0,0.24)",
+                }}
+                animate={{ y: [0, -6, 0], scale: [1, 1.03, 1] }}
+                transition={{ duration: 5.5, repeat: Infinity, ease: "easeInOut" }}
+              >
+                {/* primary specular highlight */}
+                <span
+                  className="absolute rounded-full"
+                  style={{ inset: "14% 42% 54% 20%", background: "radial-gradient(circle, rgba(255,255,255,0.95), transparent 70%)", filter: "blur(2px)" }}
+                />
+                {/* slow drifting sheen across the surface */}
+                <motion.span
+                  className="absolute inset-0 rounded-full"
+                  style={{ background: "linear-gradient(120deg, transparent 35%, rgba(255,255,255,0.45) 50%, transparent 65%)" }}
+                  animate={{ x: ["-60%", "60%"], opacity: [0, 0.7, 0] }}
+                  transition={{ duration: 6, repeat: Infinity, ease: "easeInOut", repeatDelay: 1.5 }}
+                />
+              </motion.div>
+            </motion.div>
+
+            {/* Big bold two-line greeting — scale & confidence (Genim "Creating Without Limits") */}
+            <motion.h2
+              variants={{ hidden: { opacity: 0, y: 14 }, show: { opacity: 1, y: 0 } }}
+              transition={{ duration: 0.6, ease: [0.23, 1, 0.32, 1] }}
+              className="text-[34px] md:text-[40px] leading-[1.08] font-bold text-[var(--text-primary)] tracking-[-0.035em]"
+            >
+              Hi{userName ? <>, <span className="text-[var(--text-muted)]">{userName}</span></> : " there"}.
+              <br />What would you like to know?
+            </motion.h2>
+            <motion.p
+              variants={{ hidden: { opacity: 0, y: 10 }, show: { opacity: 1, y: 0 } }}
+              transition={{ duration: 0.6, ease: [0.23, 1, 0.32, 1] }}
+              className="text-[14px] text-[var(--text-muted)] mt-3.5 max-w-lg leading-relaxed"
+            >
+              {vaultName
+                ? <>Scoped to <span className="font-medium text-[var(--text-secondary)]">{vaultName}</span> · pick a prompt below or ask your own. Every figure is computed and cited — or honestly withheld.</>
+                : "Pick a vault and ask. Every figure is computed and cited — or honestly withheld."}
+            </motion.p>
+
+            {/* Suggestion cards — concrete example questions (richer empty state, like the
+                reference designs). Clicking one submits it. Tuned to financial-filing Q&A. */}
+            <motion.div
+              variants={{ hidden: { opacity: 0, y: 12 }, show: { opacity: 1, y: 0 } }}
+              transition={{ duration: 0.6, ease: [0.23, 1, 0.32, 1] }}
+              className="mt-6 grid grid-cols-1 sm:grid-cols-2 gap-3 w-full"
+            >
+              {[
+                { icon: TrendingUp, title: "Revenue growth", q: "What was the year-over-year total revenue growth from FY2022 to FY2023?" },
+                { icon: BarChart3, title: "Cross-company compare", q: "Which company had the highest R&D-to-revenue ratio in fiscal 2023, and what was it?" },
+                { icon: Search, title: "Find a figure", q: "What was total net income in the most recent fiscal year?" },
+                { icon: GitCompare, title: "Bridge question", q: "In the fiscal year revenue was closest to $200B, what was operating income that year?" },
+              ].map((s) => (
+                <button
+                  key={s.title}
+                  onClick={() => handleSubmit(s.q)}
+                  className="group relative text-left rounded-2xl p-3.5 transition-all duration-200 hover:-translate-y-0.5 overflow-hidden"
+                  style={{
+                    background: "linear-gradient(180deg, #FFFFFF, #F6F6F6)",
+                    border: "1px solid rgba(0,0,0,0.10)",
+                    boxShadow: "0 6px 20px -10px rgba(0,0,0,0.16), inset 0 1px 0 rgba(255,255,255,0.95)",
+                  }}
+                >
+                  <div className="flex items-center gap-2.5 mb-1.5">
+                    <div
+                      className="w-8 h-8 rounded-lg flex items-center justify-center text-[var(--text-secondary)] group-hover:text-white group-hover:bg-[var(--accent)] transition-colors"
+                      style={{ background: "#EFEFEF", border: "1px solid rgba(0,0,0,0.07)" }}
+                    >
+                      <s.icon size={15} />
+                    </div>
+                    <span className="text-[14px] font-semibold text-[var(--text-primary)] tracking-[-0.01em]">{s.title}</span>
+                  </div>
+                  <p className="text-[12.5px] text-[var(--text-muted)] leading-snug group-hover:text-[var(--text-secondary)] transition-colors pr-5">
+                    {s.q}
+                  </p>
+                  <ArrowUpRight
+                    size={15}
+                    className="absolute bottom-3 right-3 text-[var(--text-muted)] opacity-0 -translate-x-1 group-hover:opacity-100 group-hover:translate-x-0 transition-all duration-200"
+                  />
+                </button>
+              ))}
+            </motion.div>
+          </motion.div>
         ) : (
           <div className="py-4">
             <AnimatePresence initial={false}>
@@ -704,7 +958,55 @@ function ChatPageInner() {
         onToggleBrain={() => { setBrainMode((v) => !v); setAgenticMode(false); setAgentCoreMode(false); }}
         agentCoreMode={agentCoreMode}
         onToggleAgentCore={() => { setAgentCoreMode((v) => !v); setBrainMode(false); setAgenticMode(false); }}
+        vaultName={vaultName}
+        onChooseVault={() => setShowVaultPicker(true)}
+        centered={messages.length === 0 && !loading}
       />
+
+      {/* Vault picker — "Choose vault" is now functional (was display-only) */}
+      {showVaultPicker && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/40"
+          onClick={() => setShowVaultPicker(false)}
+        >
+          <motion.div
+            initial={{ opacity: 0, scale: 0.97, y: 8 }}
+            animate={{ opacity: 1, scale: 1, y: 0 }}
+            transition={{ duration: 0.18, ease: [0.23, 1, 0.32, 1] }}
+            className="card w-full max-w-md mx-4 p-5 space-y-3"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2 text-sm font-medium text-[var(--text-primary)]">
+                <FolderOpen size={14} /> Choose a vault
+              </div>
+              <button onClick={() => setShowVaultPicker(false)} className="text-[var(--text-muted)] hover:text-[var(--text-primary)] transition-colors">
+                <X size={16} />
+              </button>
+            </div>
+            <div className="space-y-1 max-h-[50vh] overflow-y-auto scrollbar-thin">
+              <button
+                onClick={() => { setActiveCollectionId(null); setShowVaultPicker(false); }}
+                className={`w-full text-left px-3 py-2.5 rounded-lg text-sm transition-colors ${!activeCollectionId ? "bg-[var(--bg-hover)] text-[var(--text-primary)] font-medium" : "text-[var(--text-secondary)] hover:bg-[var(--bg-hover)]"}`}
+              >
+                All documents
+              </button>
+              {vaultOptions.map((v) => (
+                <button
+                  key={v.id}
+                  onClick={() => { setActiveCollectionId(v.id); setShowVaultPicker(false); }}
+                  className={`w-full text-left px-3 py-2.5 rounded-lg text-sm flex items-center gap-2 transition-colors ${activeCollectionId === v.id ? "bg-[var(--bg-hover)] text-[var(--text-primary)] font-medium" : "text-[var(--text-secondary)] hover:bg-[var(--bg-hover)]"}`}
+                >
+                  <FolderOpen size={13} /> {v.name}
+                </button>
+              ))}
+              {vaultOptions.length === 0 && (
+                <p className="text-xs text-[var(--text-muted)] px-3 py-2">No vaults yet — create one in the sidebar.</p>
+              )}
+            </div>
+          </motion.div>
+        </div>
+      )}
 
       {/* Compare Documents Modal */}
       {showCompare && (

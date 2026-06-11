@@ -19,6 +19,7 @@ from .model import ToolCall
 from .tools import (
     SCHEMAS,
     compute as compute_tool,
+    list_metrics as metrics_tool,
     read_document as read_tool,
     search_vault as search_tool,
     table_lookup as table_tool,
@@ -49,8 +50,8 @@ class RunScope:
 # Which tools each mode may use (§3.3 registry mechanics). survey_collection/draft/
 # knowledge tools arrive in later phases; A1 ships the four core tools.
 _MODE_TOOLS = {
-    "standard": ["search_vault", "read_document", "table_lookup", "compute"],
-    "deep": ["search_vault", "read_document", "table_lookup", "compute"],
+    "standard": ["search_vault", "read_document", "list_metrics", "table_lookup", "compute"],
+    "deep": ["search_vault", "read_document", "list_metrics", "table_lookup", "compute"],
     "fast": [],  # fast mode does not loop / call tools
 }
 
@@ -74,6 +75,14 @@ class ToolRegistry:
             if name == "compute":
                 spec = {k: v for k, v in args.items()}
                 return compute_tool(spec, scope.grids)
+
+            if name == "list_metrics":
+                return metrics_tool(
+                    args.get("doc_id", ""),
+                    scope.grids,
+                    contains=args.get("contains"),
+                    period=args.get("period"),
+                )
 
             if name == "table_lookup":
                 return table_tool(

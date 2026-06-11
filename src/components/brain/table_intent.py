@@ -110,6 +110,30 @@ def grids_from_table_chunks(table_chunks) -> list:
     return grids
 
 
+def _looks_like_statement(tj: Dict) -> bool:
+    """Does this table_json STRUCTURALLY look like a primary financial statement
+    (income statement / balance sheet / cash flow)? — many line-items across multiple
+    reporting periods, with classic statement labels. Structural (shape, not keywords)
+    so it generalizes across issuers and document types. Used to guarantee the core
+    statements survive the preload cap (they hold R&D / revenue / net-income / assets —
+    what most numeric questions need, but they're one table among ~100 in a 10-K)."""
+    try:
+        rows = tj.get("rows") or []
+        periods = tj.get("periods") or []
+        if len(rows) < 6 or len(periods) < 2:
+            return False
+        labels = [str(r.get("label") or "").strip().lower() for r in rows]
+        # statement anchors: a real statement carries several of these canonical lines.
+        anchors = ("revenue", "net sales", "cost of", "operating", "net income",
+                   "total assets", "total liabilities", "cash", "gross", "expenses",
+                   "research and development", "income from operations")
+        hits = sum(1 for lab in labels if any(a in lab for a in anchors))
+        # many rows + multi-period + several canonical lines → a statement, not a note.
+        return hits >= 3
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def load_grids_for_docs(
     db_client,
     doc_ids: List[str],
@@ -180,6 +204,16 @@ def load_grids_for_docs(
             doc_name = (filename_by_doc or {}).get(did) or md.get("filename")
             grid = Grid(tj, doc=doc_name, page=md.get("page_number"))
             rel = _relevance(question, tj, r.get("content", "")) if question else 1.0
+            # STATEMENT PRIORITY (2026-06-11): a primary financial statement (income
+            # statement / balance sheet / cash flow) is one table among ~100 in a 10-K,
+            # and MD&A prose pages that merely MENTION a metric outrank it lexically — so
+            # it fell out of the top-N preload and the kernel never saw the actual R&D /
+            # revenue / net-income rows (every numeric question quietly starved). Lift any
+            # grid that STRUCTURALLY looks like a core statement (many line-items across
+            # multiple periods) above the prose pages so it always survives the per-doc
+            # cap. Structural, not keyword — generalizes across issuers and finance/law.
+            if _looks_like_statement(tj):
+                rel += 100.0
             scored.append((rel, grid))
             n += 1
             if n >= max_tables_per_doc:

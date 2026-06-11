@@ -176,8 +176,20 @@ def read_document(
     _pr = _parse_page_range(page_range)
     if _pr is not None and loaded:
         lo, hi = _pr
+
+        def _page_num(g):
+            # grid.page may be int OR float ('39.0' from JSON) OR a numeric string. The
+            # old `isinstance(..., int)` check rejected floats → page_range="39-39" kept
+            # ALL grids (live 2026-06-11: read_document returned 20 grids/call, ~4k
+            # tokens each, exhausting the 120k budget before compute ran). Coerce.
+            p = getattr(g, "page", None)
+            try:
+                return int(float(p)) if p is not None and str(p).strip() != "" else None
+            except (ValueError, TypeError):
+                return None
+
         in_range = [g for g in loaded
-                    if isinstance(getattr(g, "page", None), int) and lo <= g.page <= hi]
+                    if (_pn := _page_num(g)) is not None and lo <= _pn <= hi]
         if in_range:
             loaded = in_range
 

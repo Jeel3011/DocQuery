@@ -13,6 +13,7 @@ Each module also exposes a `SCHEMA` dict (name + JSON input_schema) for the regi
 """
 
 from .compute import SCHEMA as COMPUTE_SCHEMA, compute
+from .metrics import SCHEMA as METRICS_SCHEMA, list_metrics
 from .read import SCHEMA as READ_SCHEMA, read_document
 from .search import SCHEMA as SEARCH_SCHEMA, search_vault
 from .table import SCHEMA as TABLE_SCHEMA, table_lookup
@@ -20,11 +21,13 @@ from .table import SCHEMA as TABLE_SCHEMA, table_lookup
 SCHEMAS = {
     "search_vault": SEARCH_SCHEMA,
     "read_document": READ_SCHEMA,
+    "list_metrics": METRICS_SCHEMA,
     "table_lookup": TABLE_SCHEMA,
     "compute": COMPUTE_SCHEMA,
 }
 
 __all__ = [
-    "search_vault", "read_document", "table_lookup", "compute",
-    "SEARCH_SCHEMA", "READ_SCHEMA", "TABLE_SCHEMA", "COMPUTE_SCHEMA", "SCHEMAS",
+    "search_vault", "read_document", "list_metrics", "table_lookup", "compute",
+    "SEARCH_SCHEMA", "READ_SCHEMA", "METRICS_SCHEMA", "TABLE_SCHEMA", "COMPUTE_SCHEMA",
+    "SCHEMAS",
 ]

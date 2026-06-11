@@ -206,12 +206,15 @@ class Config:
     # Per-mode budgets (§3.1), enforced IN CODE by the loop runner (not advisory). A run
     # that exhausts a budget wraps up with whatever is gated + an explicit abstain for the
     # rest — it never silently truncates or overspends.
-    AGENT_STD_MAX_STEPS: int = int(os.getenv("AGENT_STD_MAX_STEPS", "12"))
-    AGENT_STD_WALL_S: float = float(os.getenv("AGENT_STD_WALL_S", "90"))
-    # 120k (was 60k): a reasoning-tier orchestrator (gpt-5.4 / Opus) emits reasoning
-    # tokens and accumulates tool-result context across steps; 60k forced an abstain at
-    # step 5 on an already-correct figure in the first live run. Still well under deep.
-    AGENT_STD_TOKEN_BUDGET: int = int(os.getenv("AGENT_STD_TOKEN_BUDGET", "120000"))
+    AGENT_STD_MAX_STEPS: int = int(os.getenv("AGENT_STD_MAX_STEPS", "16"))
+    AGENT_STD_WALL_S: float = float(os.getenv("AGENT_STD_WALL_S", "150"))
+    # 220k (was 120k→60k): a multi-ENTITY question (e.g. "which of GOOG/MSFT/AMZN has the
+    # highest R&D-to-revenue ratio") legitimately needs ~12 reads + 3 computes across 3
+    # filings; offline the model computed 2 of 3 ratios correctly and hit 120k mid-3rd
+    # (139k used). The orchestrator emits reasoning tokens + accumulates tool-result
+    # context per step, so cross-entity work needs real headroom. Grids enter context
+    # only via read_document (now page-scoped), so this is bounded, not runaway.
+    AGENT_STD_TOKEN_BUDGET: int = int(os.getenv("AGENT_STD_TOKEN_BUDGET", "220000"))
     AGENT_DEEP_MAX_STEPS: int = int(os.getenv("AGENT_DEEP_MAX_STEPS", "40"))
     AGENT_DEEP_WALL_S: float = float(os.getenv("AGENT_DEEP_WALL_S", "480"))
     AGENT_DEEP_TOKEN_BUDGET: int = int(os.getenv("AGENT_DEEP_TOKEN_BUDGET", "250000"))

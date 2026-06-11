@@ -3,7 +3,7 @@
 import { motion } from "framer-motion";
 import { useAuthStore } from "@/stores/auth.store";
 import { useRouter } from "next/navigation";
-import { createConversation, listDocuments, DocumentResponse } from "@/lib/api";
+import { createConversation, listDocuments, DocumentResponse, listCollections } from "@/lib/api";
 import { useCollectionStore } from "@/stores/collection.store";
 import { toast } from "sonner";
 import { useState, useEffect } from "react";
@@ -22,7 +22,14 @@ export default function ChatIndexPage() {
   const { preferredName, hydrateFromServer } = useProfileStore();
   const [creating, setCreating] = useState(false);
   const [docs, setDocs] = useState<DocumentResponse[]>([]);
-  const fallbackName = user?.email?.split("@")[0] ?? "there";
+  const [vaultName, setVaultName] = useState<string | null>(null);
+  // Mode chosen on the landing — threaded into the new conversation so picking "Agent"
+  // here actually starts the conversation in agent mode (was: always fast).
+  const [agentCoreMode, setAgentCoreMode] = useState(false);
+  const [brainMode, setBrainMode] = useState(false);
+  const [agenticMode, setAgenticMode] = useState(false);
+  // First name: leading alphabetic run so "jeel15thummar" → "jeel" (not "jeel15thummar").
+  const fallbackName = (user?.email?.split("@")[0].match(/^[a-zA-Z]+/) ?? ["there"])[0];
   const name = preferredName ?? fallbackName;
 
   useEffect(() => {
@@ -31,6 +38,16 @@ export default function ChatIndexPage() {
     // Reconcile the preferred name with the server (source of truth).
     getMe(token).then((m) => hydrateFromServer(m.preferred_name)).catch(() => {});
   }, [token, hydrateFromServer]);
+
+  // Resolve the active collection's name for the composer's vault chip.
+  useEffect(() => {
+    if (!token || !activeCollectionId) { setVaultName(null); return; }
+    let cancelled = false;
+    listCollections(token)
+      .then((cols) => { if (!cancelled) setVaultName(cols.find((c) => c.id === activeCollectionId)?.name ?? null); })
+      .catch(() => { if (!cancelled) setVaultName(null); });
+    return () => { cancelled = true; };
+  }, [token, activeCollectionId]);
 
   const firstDoc = docs.find((d) => d.status === "ready");
   const suggestions = firstDoc
@@ -52,7 +69,10 @@ export default function ChatIndexPage() {
     setCreating(true);
     try {
       const c = await createConversation(token, q.slice(0, 50));
-      router.push(`/app/chat/${c.id}?q=${encodeURIComponent(q)}`);
+      // Carry the chosen mode into the conversation so it opens in the right mode.
+      const mode = agentCoreMode ? "agent" : brainMode ? "brain" : agenticMode ? "deep" : "";
+      const qp = `q=${encodeURIComponent(q)}${mode ? `&mode=${mode}` : ""}`;
+      router.push(`/app/chat/${c.id}?${qp}`);
     } catch { toast.error("Failed to create conversation"); }
     finally { setCreating(false); }
   }
@@ -72,37 +92,49 @@ export default function ChatIndexPage() {
           transition={{ duration: 0.32, ease }}
           className="w-full max-w-2xl"
         >
-          {/* Logo mark */}
-          <div className="flex flex-col items-center text-center mb-10">
-            <div
-              className="w-14 h-14 rounded-2xl flex items-center justify-center mb-5 shadow-md"
-              style={{
-                background: "var(--ink)",
-                boxShadow: "var(--shadow-lg)",
-              }}
-            >
-              <span
-                className="text-xl font-semibold"
-                style={{ color: "var(--on-ink)", fontFamily: "Fraunces, Georgia, serif", letterSpacing: "-0.02em" }}
+          {/* Logo mark — a living grey orb (breathing float + glow) */}
+          <div className="flex flex-col items-center text-center mb-9">
+            <div className="relative mb-6">
+              <motion.div
+                aria-hidden
+                className="absolute rounded-full"
+                style={{ inset: -12, background: "radial-gradient(circle, rgba(0,0,0,0.06), transparent 70%)" }}
+                animate={{ scale: [1, 1.12, 1], opacity: [0.5, 0.85, 0.5] }}
+                transition={{ duration: 4.5, repeat: Infinity, ease: "easeInOut" }}
+              />
+              <motion.div
+                className="w-[60px] h-[60px] rounded-full relative overflow-hidden"
+                style={{
+                  background: "radial-gradient(circle at 33% 25%, #FFFFFF 0%, #EAEAEA 38%, #B8B8B8 70%, #8E8E8E 100%)",
+                  boxShadow: "0 16px 34px -10px rgba(0,0,0,0.38), 0 3px 8px -3px rgba(0,0,0,0.18), inset 0 2px 6px rgba(255,255,255,0.92), inset 0 -10px 18px -6px rgba(0,0,0,0.24)",
+                }}
+                animate={{ y: [0, -6, 0], scale: [1, 1.03, 1] }}
+                transition={{ duration: 5.5, repeat: Infinity, ease: "easeInOut" }}
               >
-                D
-              </span>
+                <span className="absolute rounded-full" style={{ inset: "14% 42% 54% 20%", background: "radial-gradient(circle, rgba(255,255,255,0.95), transparent 70%)", filter: "blur(2px)" }} />
+                <motion.span
+                  className="absolute inset-0 rounded-full"
+                  style={{ background: "linear-gradient(120deg, transparent 35%, rgba(255,255,255,0.45) 50%, transparent 65%)" }}
+                  animate={{ x: ["-60%", "60%"], opacity: [0, 0.7, 0] }}
+                  transition={{ duration: 6, repeat: Infinity, ease: "easeInOut", repeatDelay: 1.5 }}
+                />
+              </motion.div>
             </div>
 
             <h1
-              className="mb-2"
+              className="mb-2.5"
               style={{
                 fontFamily: "Fraunces, Georgia, serif",
-                fontSize: "28px",
-                fontWeight: 400,
-                letterSpacing: "-0.025em",
+                fontSize: "40px",
+                fontWeight: 500,
+                letterSpacing: "-0.03em",
                 color: "var(--ink)",
-                lineHeight: 1.1,
+                lineHeight: 1.05,
               }}
             >
               Good day, {name}.
             </h1>
-            <p className="text-[15px]" style={{ color: "var(--ink-3)" }}>
+            <p className="text-[16px] max-w-md" style={{ color: "var(--ink-3)" }}>
               What would you like to know about your documents?
             </p>
 
@@ -189,7 +221,18 @@ export default function ChatIndexPage() {
         </motion.div>
       </div>
 
-      <ChatInput onSubmit={ask} isStreaming={creating} placeholder="Ask a question about your documents…" />
+      <ChatInput
+        onSubmit={ask}
+        isStreaming={creating}
+        placeholder="Ask a question about your documents…"
+        vaultName={vaultName}
+        agentCoreMode={agentCoreMode}
+        onToggleAgentCore={() => { setAgentCoreMode((v) => !v); setBrainMode(false); setAgenticMode(false); }}
+        brainMode={brainMode}
+        onToggleBrain={() => { setBrainMode((v) => !v); setAgentCoreMode(false); setAgenticMode(false); }}
+        agenticMode={agenticMode}
+        onToggleAgentic={() => { setAgenticMode((v) => !v); setAgentCoreMode(false); setBrainMode(false); }}
+      />
     </div>
   );
 }

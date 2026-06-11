@@ -125,6 +125,14 @@ def main() -> int:
     all_msgs = [m for callrec in loopy.calls for m in callrec["messages"]]
     notice_seen = any("[budget notice]" in str(m.get("content", "")) for m in all_msgs)
     c.ok(notice_seen, "model received a [budget notice] before the wall (budget awareness)")
+    # PARTIAL ANSWER on budget exhaustion (2026-06-11): the verified figures in the
+    # ledger must SHIP, not be discarded for an empty "ran out of budget" (live: it had
+    # computed Google + Amazon ratios then showed nothing). The scripted compute resolved
+    # 'Total net sales'[2022] = 513,983, so the final text must carry that verified value.
+    final_tok = "".join(e.get("text", "") for e in events if e["type"] == "token")
+    c.ok("513,983" in final_tok or "513983" in final_tok,
+         "budget-exhausted run SHOWS verified figures (not an empty abstain)"
+         + (f" [got: {final_tok[:80]!r}]" if "513" not in final_tok else ""))
 
     # ── 3. Tool error → the model adapts ─────────────────────────────────────────
     print("\n── tool error → adapt (error is a RESULT, not a raise) ──────────")

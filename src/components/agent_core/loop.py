@@ -151,9 +151,17 @@ def run_agent(
                    else "token" if budget.tokens_exhausted() else "wall-clock")
             yield {"type": "gate", "name": "budget", "pass": False,
                    "detail": f"{why} budget exhausted at step {budget.steps_used}"}
+            # Don't discard verified work. The ledger holds every figure already traced
+            # to a source cell; render it so the user sees what we DID confirm (e.g.
+            # Google 14.8% + Amazon 14.9% computed before the wall) instead of an empty
+            # "ran out of budget". Deterministic, $0, no extra latency.
+            verified = ledger.partial_answer()
             final_text = (
-                "I ran out of my analysis budget before finishing. Here is only what I "
-                "verified from the sources; I'm not stating anything I couldn't confirm."
+                (verified + "\n\n_I stopped here (analysis budget reached) and did not "
+                 "verify the remaining parts._")
+                if verified else
+                "I ran out of my analysis budget before I could verify any figure for "
+                "this question. Please try narrowing it (one company / one metric)."
             )
             abstained = True
             break

@@ -62,6 +62,23 @@ def _translate(ev: dict) -> dict:
     t = ev.get("type")
     if t == "token":
         return {"type": "token", "content": ev.get("text", "")}
+    if t == "sources":
+        # The ledger emits each source with a `doc` field (the filename), but the
+        # frontend SourceInfo expects `filename` + `source_id` — without the remap every
+        # source rendered as "Unknown" and citations couldn't resolve a name (the live
+        # bug 2026-06-11). Map doc→filename and assign 1-based ids in order so the
+        # [doc p.N] citation chips match a numbered source.
+        mapped = []
+        for i, s in enumerate(ev.get("sources", []) or [], start=1):
+            if not isinstance(s, dict):
+                continue
+            mapped.append({
+                **s,
+                "source_id": s.get("source_id", i),
+                "filename": s.get("filename") or s.get("doc"),
+                "content": s.get("content") or s.get("snippet"),
+            })
+        return {"type": "sources", "sources": mapped}
     return ev
 
 
@@ -139,7 +156,15 @@ async def agentcore_query_stream(
             return load_grids_for_docs(
                 sb, scoped_doc_ids,
                 question=body.question, filename_by_doc=filename_by_doc,
-                per_doc_top=8,
+                # 8 was far too few — a 10-K has ~100 table grids, and the primary
+                # financial statements (where R&D/revenue/net-income live) lost the
+                # lexical ranking to MD&A prose pages, so the kernel never saw them and
+                # every numeric question quietly starved (live 2026-06-11, R&D-ratio).
+                # 20/doc + the statement-priority boost in load_grids_for_docs keeps the
+                # core statements AND the top lexical matches. Grids only enter the
+                # model's context via read_document; compute/list_metrics query them
+                # without dumping JSON — so a higher cap costs memory, not tokens.
+                per_doc_top=20,
             )
         except Exception as exc:  # noqa: BLE001 — grids are best-effort; tools degrade gracefully
             logger.warning("[agentcore] grid preload failed: %s", exc)

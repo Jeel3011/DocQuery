@@ -61,6 +61,42 @@ class EvidenceLedger:
     def is_empty(self) -> bool:
         return not self.entries
 
+    def partial_answer(self) -> str:
+        """Render the verified figures gathered so far into a readable, CITED answer.
+
+        Used when the run ends WITHOUT the model writing a final answer (budget hit,
+        model error). The verified cells/computations are already in the ledger — it is
+        a bug to discard them and show "I ran out of budget" with nothing (observed
+        2026-06-11: the model had computed Google 14.8% + Amazon 14.9%, then the budget
+        cut it off before it could write them, so the user saw an empty abstain). This
+        builds the answer deterministically from the ledger so a long run NEVER returns
+        empty-handed when it verified something. No model call — zero cost, zero latency."""
+        seen = set()
+        lines: List[str] = []
+        for e in self.entries:
+            if e.kind not in ("cell", "result"):
+                continue
+            p = e.payload or {}
+            val = p.get("display") or p.get("raw") or (
+                f"{e.value:,.0f}" if isinstance(e.value, (int, float)) else None)
+            if val is None:
+                continue
+            label = (p.get("label") or p.get("formula") or "").strip()
+            period = str(p.get("period") or "").strip()
+            doc = p.get("doc") or ""
+            page = p.get("page")
+            key = (label, period, doc, str(val))
+            if key in seen or not label:
+                continue
+            seen.add(key)
+            cite = f" [{doc}{(' p.' + str(int(float(page)))) if page not in (None, '') else ''}]" if doc else ""
+            per = f" ({period})" if period else ""
+            lines.append(f"- **{label}**{per}: {val}{cite}")
+        if not lines:
+            return ""
+        return ("Here are the figures I was able to verify before stopping (I'm only "
+                "stating what traces to the source tables):\n\n" + "\n".join(lines[:20]))
+
     def to_sources(self) -> List[Dict[str, Any]]:
         """The `sources` SSE payload (§3.6): the ledger's payloads, de-duplicated."""
         seen = set()

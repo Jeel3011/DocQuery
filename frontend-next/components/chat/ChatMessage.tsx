@@ -21,25 +21,66 @@ interface ChatMessageProps {
   showTrust?: boolean;
 }
 
-// Convert [Source: filename, Page: X] → [n] markers; return cleaned text + cited ids
+// Convert citation markers → [n](#cite-n) links the markdown `a` renderer turns into
+// clickable chips. Handles BOTH formats the system emits:
+//   - the old brain path:  [Source: filename, Page: X]
+//   - the AGENT CORE:       [doc p.N]  e.g. [amzn-20231231.pdf p.45] / [goog-2022 p.41]
+// (Before this, agent-core citations rendered as plain literal text — never clickable —
+// because only the [Source:...] form was recognized. That was the "citations don't work"
+// bug.) Each marker is resolved to a source by matching its doc token (a distinctive
+// substring, ext-insensitive) against the sources list, preferring the same page.
 function parseCitations(text: string, sources: SourceInfo[]): {
   cleaned: string;
   citedIds: Set<number>;
 } {
-  const pattern = /\[Source:\s*([^,\]]+)(?:,\s*Page:\s*(\d+))?\]/gi;
   const citedIds = new Set<number>();
-  const sourceMap = new Map<string, number>();
-  sources.forEach((s, i) => {
-    const key = s.filename?.toLowerCase() ?? "";
-    if (!sourceMap.has(key)) sourceMap.set(key, s.source_id ?? i + 1);
-  });
-  const cleaned = text.replace(pattern, (_, filename) => {
-    const id = sourceMap.get(filename.trim().toLowerCase()) ?? 1;
-    citedIds.add(id);
-    // Emit a recognizable link so the markdown `a` renderer can turn it into a
-    // clickable citation chip (the existing onClick handler reads data-source-id).
-    return `[${id}](#cite-${id})`;
-  });
+
+  const norm = (s: string) =>
+    (s || "").toLowerCase().replace(/\.(pdf|htm|html|docx?|txt)$/i, "").trim();
+
+  // Resolve a (docToken, page?) to the best-matching source id.
+  const resolve = (docToken: string, page?: string): number | null => {
+    const want = norm(docToken);
+    if (!want) return null;
+    let bestId: number | null = null;
+    let bestScore = -1;
+    sources.forEach((s, i) => {
+      const fn = norm(s.filename ?? "");
+      if (!fn) return;
+      const nameMatch = fn === want || fn.includes(want) || want.includes(fn);
+      if (!nameMatch) return;
+      // prefer a source on the same page when the citation names one
+      const pageMatch = page && s.page != null && String(s.page) === String(page);
+      const score = (nameMatch ? 1 : 0) + (pageMatch ? 2 : 0);
+      if (score > bestScore) { bestScore = score; bestId = s.source_id ?? i + 1; }
+    });
+    return bestId;
+  };
+
+  let cleaned = text;
+
+  // 1) old [Source: filename, Page: X]
+  cleaned = cleaned.replace(
+    /\[Source:\s*([^,\]]+)(?:,\s*Page:\s*(\d+))?\]/gi,
+    (m, filename: string, page?: string) => {
+      const id = resolve(filename, page);
+      if (id == null) return m;
+      citedIds.add(id);
+      return `[${id}](#cite-${id})`;
+    }
+  );
+
+  // 2) agent-core [doc p.N] / [doc p. N] / [doc, p.N] / [doc page N]
+  cleaned = cleaned.replace(
+    /\[([A-Za-z0-9][\w./-]*?)[\s,]*p(?:age|\.)?\s*(\d+)\]/gi,
+    (m, docToken: string, page: string) => {
+      const id = resolve(docToken, page);
+      if (id == null) return m;
+      citedIds.add(id);
+      return `[${id}](#cite-${id})`;
+    }
+  );
+
   return { cleaned, citedIds };
 }
 
@@ -166,13 +207,13 @@ export const ChatMessage = memo(function ChatMessage({
       initial={{ opacity: 0, y: 8 }}
       animate={{ opacity: 1, y: 0 }}
       transition={{ duration: 0.22, ease: [0.23, 1, 0.32, 1] }}
-      className={`px-4 md:px-6 py-2 flex ${isUser ? "justify-end" : "justify-start"}`}
+      className="px-4 md:px-6 py-2.5"
     >
-      {/* ── Assistant: avatar left ── */}
+      {/* ── Assistant: flowing full-width answer on the page (Harvey-style), no bubble ── */}
       {!isUser && (
-        <div className="flex items-start gap-2.5 max-w-[82%] lg:max-w-[72%]">
+        <div className="flex items-start gap-3 w-full max-w-3xl mx-auto">
           <div
-            className="w-8 h-8 rounded-full flex-shrink-0 flex items-center justify-center text-[11px] font-bold text-[var(--text-secondary)] mt-0.5"
+            className="w-7 h-7 rounded-full flex-shrink-0 flex items-center justify-center text-[10px] font-bold text-[var(--text-secondary)] mt-0.5"
             aria-hidden="true"
             style={{
               background: "var(--glass-bg-strong)",
@@ -184,23 +225,28 @@ export const ChatMessage = memo(function ChatMessage({
           >
             D
           </div>
-          <div className="flex flex-col gap-1.5 min-w-0">
-            <p className="text-[10px] font-medium text-[var(--text-muted)] ml-1">DocQuery</p>
-            {/* Glass assistant bubble */}
+          <div className="flex flex-col gap-2 min-w-0 flex-1">
+            <p className="text-[10px] font-medium text-[var(--text-muted)]">DocQuery</p>
+            {/* Answer flows directly on the page — no container box. The reasoning timeline
+                (rendered by the page above this) + this open answer = the Harvey transcript. */}
             <div
-              className={`rounded-2xl rounded-tl-sm px-4 py-3 ${isStreaming ? "streaming-cursor" : ""}`}
-              style={{
-                background: "var(--glass-bg-strong)",
-                backdropFilter: "blur(14px)",
-                WebkitBackdropFilter: "blur(14px)",
-                border: "1px solid var(--glass-border)",
-                boxShadow: "var(--glass-shadow), var(--skeu-inset-glass)",
-              }}
+              className={`${isStreaming ? "streaming-cursor" : ""}`}
               onClick={(e) => {
                 const target = e.target as HTMLElement;
                 if (target.classList.contains("citation-chip")) {
                   const id = parseInt(target.dataset.sourceId ?? "0", 10);
-                  if (id) { setSourcesOpen(true); handleSourceHover(id); }
+                  if (id) {
+                    // Open the sources, highlight the cited one, and SCROLL it into view
+                    // so a citation click actually takes the user to the evidence (the
+                    // "verify from the citation" your #2 asked for). The source row is
+                    // tagged data-source-id for the scroll target.
+                    setSourcesOpen(true);
+                    handleSourceHover(id);
+                    requestAnimationFrame(() => {
+                      const el = document.querySelector(`[data-source-row="${id}"]`);
+                      el?.scrollIntoView({ behavior: "smooth", block: "center" });
+                    });
+                  }
                 }
               }}
             >
@@ -250,6 +296,7 @@ export const ChatMessage = memo(function ChatMessage({
                         return (
                           <motion.div
                             key={i}
+                            data-source-row={sourceId}
                             initial={{ opacity: 0, x: -4 }}
                             animate={{ opacity: 1, x: 0 }}
                             transition={{ delay: i * 0.04, ease: [0.23, 1, 0.32, 1] }}
@@ -291,9 +338,9 @@ export const ChatMessage = memo(function ChatMessage({
         </div>
       )}
 
-      {/* ── User: bubble right ── */}
+      {/* ── User: compact bubble, right-aligned within the same centered column ── */}
       {isUser && (
-        <div className="flex items-end gap-2.5 max-w-[78%] lg:max-w-[65%]">
+        <div className="flex items-end gap-2.5 w-full max-w-3xl mx-auto justify-end">
           <div className="flex flex-col items-end gap-1">
             <p className="text-[10px] font-medium text-[var(--text-muted)] mr-1">You</p>
             <div
