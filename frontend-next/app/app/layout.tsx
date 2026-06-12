@@ -49,7 +49,7 @@ import { toast } from "sonner";
 import { CommandPalette } from "@/components/ui/CommandPalette";
 
 const ACCEPTED = ".pdf,.docx,.pptx,.txt,.xlsx";
-const MAX_MB = 10;
+const MAX_MB = 50;
 
 function timeAgo(d: string | null): string {
   if (!d) return "";
@@ -596,7 +596,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
               <span className="text-[10px] text-[var(--text-muted)]">
                 {uploadQueue ? `Uploading… (${uploadQueue.done}/${uploadQueue.total} done)` : "Drop files or click"}
               </span>
-              <span className="text-[9px] text-[var(--text-muted)]/60">PDF · DOCX · PPTX · TXT · XLSX · Max 10MB each</span>
+              <span className="text-[9px] text-[var(--text-muted)]/60">PDF · DOCX · PPTX · TXT · XLSX · Max 50MB each</span>
               <input ref={fileRef} type="file" accept={ACCEPTED} multiple className="hidden"
                 onChange={(e) => { const files = Array.from(e.target.files ?? []); if (files.length) uploadFiles(files); e.target.value = ""; }} />
             </div>

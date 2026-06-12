@@ -226,6 +226,28 @@ def _score_grid(grid: List[List[str]]) -> Tuple[float, Dict[str, float]]:
 _FOOTNOTE_TOK = re.compile(r"^\(\d{1,2}\)$")
 # A value token at the cell level: number, optionally $-prefixed, parens=negative, %.
 _VALUE_TOK = re.compile(r"^\(?\$?-?[\d,]+(?:\.\d+)?\)?%?$")
+# A Notes reference (Indian statements point line-items to notes): a dotted section
+# number "2.18" / "2.4.2", optionally a trailing comma from an enumerated list
+# ("2.2, 2.4.2 and 2.21"). NOT a plain integer or a grouped figure.
+_NOTE_REF = re.compile(r"^\d{1,2}(?:\.\d{1,2}){1,3},?$")
+
+
+def _looks_like_figure(tok: str) -> bool:
+    """A real statement FIGURE vs a note/index number: grouped (has a comma), or a
+    parenthesized negative, or a nil dash, or a magnitude >= 100. Section refs like
+    '2.18' and small ordinals fail this — so a leading note ref is never mistaken
+    for the first period column."""
+    s = (tok or "").strip()
+    if s in ("–", "—", "-"):
+        return True  # a nil cell IS a figure position
+    if "," in s:
+        return True
+    if s.startswith("(") and s.endswith(")"):
+        return True
+    try:
+        return abs(float(s.replace("%", ""))) >= 100
+    except ValueError:
+        return False
 
 
 def _read_geometry_lines(page, y_tol: float = 3.0) -> List[Dict[str, Any]]:
@@ -258,7 +280,7 @@ def _read_geometry_lines(page, y_tol: float = 3.0) -> List[Dict[str, Any]]:
         ws = sorted(bands[top], key=lambda w: w.get("x0", 0.0))
         if not ws:
             continue
-        toks: List[Any] = []  # (token, is_value, x1 right edge)
+        toks: List[Any] = []  # (token, is_value, x1 right edge, is_nil)
         for w in ws:
             tok = (w.get("text") or "").strip()
             if not tok or tok == "$":
@@ -266,8 +288,17 @@ def _read_geometry_lines(page, y_tol: float = 3.0) -> List[Dict[str, Any]]:
             if _FOOTNOTE_TOK.match(tok):
                 continue  # footnote markers never join the label or the values
             stripped = tok.replace("$", "").strip()
+            # A standalone dash / en-dash / em-dash is a NIL cell ("–" = zero) in
+            # Indian and US statements alike ("Employee contribution – – 33 34").
+            # It is NOT a value on its own (a dash in a LABEL — "Business segments –
+            # Consolidated" — must stay label text), so it is marked separately and
+            # only absorbed into the trailing run when a real number sits to its
+            # right (below). This recovers the columns nil-bearing rows otherwise
+            # lost (the dash broke the trailing-value run → row width collapsed →
+            # span dropped).
+            is_nil = tok in ("-", "–", "—", "‒", "―")
             toks.append((tok, bool(_VALUE_TOK.match(tok)) and bool(stripped),
-                         float(w.get("x1", w.get("x0", 0.0)))))
+                         float(w.get("x1", w.get("x0", 0.0))), is_nil))
         # VALUES = the TRAILING maximal run of value tokens. Column cells are
         # right-aligned at the END of a statement row; a number followed by more
         # label text — "…allowance for doubtful accounts of $633 and $751 44,261
@@ -276,12 +307,41 @@ def _read_geometry_lines(page, y_tol: float = 3.0) -> List[Dict[str, Any]]:
         # after the first number is a value") leaked such numbers into the values
         # (off-width row → span break → the row silently vanished from the grid)
         # and silently ate the label text between them.
+        # A NIL dash extends the run only when a real value already sits to its
+        # right (we walk right→left, so seen_value tracks that). A trailing dash
+        # with no number to its right is end-of-row punctuation, not a cell.
         split = len(toks)
-        while split > 0 and toks[split - 1][1]:
-            split -= 1
-        label_toks = [t for t, _, _ in toks[:split]]
-        values = [t.replace("$", "").strip() for t, _, _ in toks[split:]]
-        vx1 = [x for _, _, x in toks[split:]]
+        seen_value = False
+        while split > 0:
+            is_val = toks[split - 1][1]
+            is_nil = toks[split - 1][3]
+            if is_val:
+                seen_value = True
+                split -= 1
+            elif is_nil and seen_value:
+                split -= 1  # interior nil cell between real values
+            else:
+                break
+        label_toks = [t for t, _, _, _ in toks[:split]]
+        # Normalize a nil dash to a canonical "–" cell so the grid/period machinery
+        # and parse_cell ("–" → no value) treat it uniformly across docs.
+        values = [("–" if is_nil else t.replace("$", "").strip())
+                  for t, _, _, is_nil in toks[split:]]
+        vx1 = [x for _, _, x, _ in toks[split:]]
+        # Note-reference column (Indian statements): a LEADING value token that is a
+        # section number ("2.18", "2.4.2") or a comma-separated list of them
+        # ("2.2, 2.4.2 and 2.21") points to the Notes — it is NOT a period cell. It
+        # sits left of the real figures and makes a row over-wide ("Revenue from
+        # operations 2.18 162,990 153,670" → 3 values, while "Total income 166,590
+        # 158,381" → 2), which fragments modal-width segmentation and drops the
+        # noted rows. Peel a leading note token into the LABEL when >=2 real figure
+        # cells follow it, so every row is uniform width. Structural, content-free:
+        # a note ref is a dotted/section number; a real figure is large or grouped.
+        while (len(values) >= 3 and _NOTE_REF.match(values[0])
+               and sum(1 for v in values[1:] if _looks_like_figure(v)) >= 2):
+            label_toks.append(values.pop(0))
+            if vx1:
+                vx1.pop(0)
         label = _clean(" ".join(label_toks))
         if not label and not values:
             continue
@@ -372,6 +432,39 @@ def _is_section_header(label: str) -> bool:
     if s.endswith(".") and not s.endswith(":"):  # "Refer to accompanying notes."
         return False
     if s.startswith("(") and s.endswith(")"):
+        return False
+    return True
+
+
+def _is_lineitem_row_label(label: str, max_words: int = 9) -> bool:
+    """Is a DATA row's label a plausible statement line-item, vs prose-with-a-number?
+
+    Mirrors the kernel/grounding `is_lineitem_label` guard (§5.1) but applied at the
+    SOURCE: on a narrative page (Infosys "performance highlights", an MD&A paragraph)
+    the geometry reader produces pseudo-rows whose "label" is a sentence and whose
+    "value" is a number that leaked out of the prose ("We constantly endeavor to
+    fulfil … 29.0"). Such rows must never become table cells — they pollute the grid
+    the ranker/kernel reads AND inflate the fidelity metric with non-rows.
+
+    Structural (reads form, not content; same discipline as `_is_section_header`):
+    reject a label that is a long sentence (> max_words) OR carries a mid-label comma
+    OR ends with sentence punctuation. max_words is looser than the 6-word header
+    bound because real line-items can be long ("Cost of technical sub-contractors",
+    "Other comprehensive income / (loss), net of tax") — the comma/period/length
+    sentence signals are what separate a clause from a line-item. A label-less row
+    (a value-only fragment kept for a subtotal merge) is NOT prose → accept."""
+    s = (label or "").strip()
+    if not s:
+        return True  # label-less rows are handled elsewhere (subtotal merge); not prose
+    words = s.split()
+    if len(words) > max_words:
+        return False
+    # A mid-label comma signals an enumerated prose clause ("Azure and other cloud
+    # services, Office") — but a number-grouping comma inside the LABEL region is rare
+    # at this stage (cells are already split off). Count only alphabetic commas.
+    if re.search(r"[A-Za-z],", s):
+        return False
+    if s.endswith(".") and not s.endswith(".."):
         return False
     return True
 
@@ -564,6 +657,21 @@ def _geometry_tables_for_page(
         width = max(set(vcounts), key=vcounts.count)
         if width < 1:
             continue
+        # Narrative-page guard: a span whose modal width is ONE value per row is a
+        # column of single stray numbers. On a real statement every row carries >=2
+        # period columns (current + prior — universal to balance sheets, P&L, cash
+        # flow, US and Indian alike); a width-1 span is only a table if its labels are
+        # crisp line-items, never if they read as prose. So reject a width-1 span when
+        # most of its value rows have sentence-like labels (Infosys "performance
+        # highlights": "We constantly endeavor to fulfil … 29.0"). Width>=2 spans are
+        # untouched — this cannot drop any multi-period statement row. Pairing width==1
+        # with the prose test avoids false-dropping a genuine single-column schedule
+        # whose labels are real line-items.
+        if width == 1:
+            val_rows = [r for r in rows_geo if r["nval"] >= 1]
+            prose = sum(1 for r in val_rows if not _is_lineitem_row_label(r["label"]))
+            if val_rows and prose / len(val_rows) >= 0.5:
+                continue
 
         # Wrapped-label FRAGMENTS (marked by the span walk) never carry cells:
         # their numbers re-join the label text, and the joined label is prepended

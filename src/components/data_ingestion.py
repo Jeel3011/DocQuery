@@ -768,38 +768,16 @@ class DocumentProcessor:
         except Exception as exc:  # noqa: BLE001
             _logger.warning("[ingest] fidelity check skipped for %s: %s", pdf_path, exc)
 
-        # ── Discriminative LLM summary per table (the §4b selection fix) ──
-        # The deterministic caption can't tell a $ table from its growth-% twin (same
-        # sections/labels/periods), which is what makes the Analyst mis-pick. A one-line
-        # LLM summary naming the statement type + value-kind separates them, so retrieval
-        # ranks the right grid #1. Generated in a bounded pool (network-bound, not RAM —
-        # local-OOM-safe). Each call is independently try/excepted and returns "" on
-        # failure → that table falls back to its caption; a failure never drops a table,
-        # blocks the others, or breaks ingest.
-        if tables:
-            try:
-                from src.components.table_extraction import summarize_table
-                from langchain_openai import ChatOpenAI
-                from concurrent.futures import ThreadPoolExecutor
-
-                summary_llm = ChatOpenAI(
-                    model=self.config.LLM_MODEL_NAME,
-                    temperature=0.0,
-                    api_key=self.config.OPENAI_API_KEY,
-                    request_timeout=30,
-                )
-                workers = max(1, min(getattr(self.config, "TABLE_SUMMARY_WORKERS", 5), len(tables)))
-                with ThreadPoolExecutor(max_workers=workers) as ex:
-                    summaries = list(ex.map(lambda t: summarize_table(t, summary_llm), tables))
-                for t, summ in zip(tables, summaries):
-                    t.summary = summ or ""
-                _logger.info(
-                    "[ingest] generated %d/%d table summaries (workers=%d)",
-                    sum(1 for s in summaries if s), len(tables), workers,
-                )
-            except Exception as exc:  # whole summary step is best-effort
-                _logger.warning("[ingest] table summarization skipped: %s", exc)
-
+        # ── No per-table LLM summary at ingest (removed 2026-06-12) ──
+        # Per-table gpt-4o-mini summarization was the dominant ingest-latency block
+        # (INFY: ~89s for 311 tables) AND the per-doc cost center (one call per table).
+        # It is OFF the critical path now. Every table embeds with its DETERMINISTIC
+        # caption (`embed_caption = t.summary or t.caption`, and `t.summary` is ""),
+        # which carries the statement type + period axis already. The $-vs-%-twin
+        # disambiguation the summary used to add is recovered downstream by the
+        # kernel's currency>percent / exact>contains filters (analyst.py), not at
+        # ingest — so removing this never produces a wrong answer, only (rarely) an
+        # extra abstain on a twin-table tie, which is the safe direction.
         import json
         out: List[Document] = []
         for t in tables:
