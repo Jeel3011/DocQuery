@@ -144,12 +144,41 @@ def test_amzn_section_scoping():
           f"[Consolidated] Net sales 2023 = 574,785 ({cons_ns[0]['values'][:3] if cons_ns else 'MISSING'})")
 
 
+def test_msft_fy23_split_row_merge():
+    """MSFT FY23 p58: 'Research and development' label and its values sit on
+    baselines 3.0008pt apart — a hair past the fixed y_tol=3.0, so the split-row
+    merge never fired: the values (27,195…) were dropped as noise and the orphaned
+    label became a bogus section header for the EPS rows. The merge bound must be
+    relative to the page's measured row pitch (~12.4pt here), not the band quantum:
+    same-row fragments sit well under half a pitch; a real adjacent row sits a full
+    pitch away. (Same bug class as the GOOG FY23 'Total assets' 0.73pt split.)"""
+    print("MSFT FY23 p58 split row (label/values 3.0008pt apart — pitch-relative merge):")
+    lines = _page("0000950170-23-035122.pdf", 58)
+    rd = [ln for ln in lines if ln["label"].strip().lower() == "research and development"]
+    check(bool(rd), "'Research and development' line present")
+    if rd:
+        check("27,195" in rd[0]["values"],
+              f"R&D values merged onto the label line ({rd[0]['values'][:3] or 'EMPTY'})")
+    # the orphaned label must no longer scope the EPS rows as a section
+    body = _bounded(lines, "Product", ["refer to accompanying"])
+    rows = _assign_sections(body)
+    basic = [r for r in rows if r["label"].lower() == "basic" and "9.72" in r.get("values", [])]
+    if basic:
+        check(basic[0].get("section", "") != "Research and development",
+              f"EPS 'Basic' not mis-scoped to R&D (got {basic[0].get('section', '')!r})")
+    # regression: a real adjacent row is never absorbed — S&M stays its own row
+    sm = _find(lines, "Sales and marketing")
+    check(bool(sm) and "22,759" in sm[0]["values"],
+          "'Sales and marketing' row intact (no over-merge)")
+
+
 def main():
     test_msft_recovers_total_revenue()
     test_amzn_segment_hierarchy()
     test_noise_lines_not_clean_data()
     test_msft_section_scoping()
     test_amzn_section_scoping()
+    test_msft_fy23_split_row_merge()
     print("=" * 60)
     if _fail:
         print(f"  {_fail} CHECK(S) FAILED")

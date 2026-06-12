@@ -18,7 +18,7 @@
       "amzn_net_income": {"2021": 33364, "2022": -2722, "2023": 30425},
       "aws_op_income": {"2020": 13531, "2021": 18532, "2022": 22841, "2023": 24631},
       "aws_net_sales": {"2020": 45370, "2021": 62202, "2022": 80096, "2023": 90757},
-      "msft_largest_acquisition": "Activision Blizzard ~$68.7B, closed fiscal 2023"
+      "msft_largest_acquisition": "Nuance Communications ~$18.8B, closed March 2022 (fiscal 2022). Activision (~$68.7B) was only PENDING in the FY23 filing (closed Oct 2023 = fiscal 2024, outside this corpus); gold corrected 2026-06-12 — was wrong-from-memory, the AWS-$20B lesson again."
     }
   },
 
@@ -60,10 +60,10 @@
   },
   {
     "question": "Across these filings, in the fiscal year Microsoft acquired the largest company it discloses acquiring, what was Microsoft's total revenue that year?",
-    "bridge_fact": "Microsoft's largest disclosed acquisition is Activision Blizzard (~$68.7B), closed in FY2023; bridge year FY2023, MSFT FY2023 revenue ~$211.9B.",
-    "answer_must_include": ["Activision", "2023"],
-    "ground_truth": "Microsoft's largest disclosed acquisition is Activision Blizzard (~$68.7B), completed in fiscal 2023. Microsoft's FY2023 total revenue was ~$211.9B. Bridge: identify the acquisition+year, then read that year's revenue.",
-    "gold_doc_filenames": ["0000950170-23-035122.pdf"],
+    "bridge_fact": "Largest acquisition Microsoft DISCLOSES COMPLETING in these filings is Nuance (~$18.8B, closed Mar-2022 = fiscal 2022); Activision ($68.7B) is disclosed only as PENDING. Bridge year FY2022, MSFT FY2022 revenue $198,270M.",
+    "answer_must_include": ["Nuance", "198"],
+    "ground_truth": "Within these filings Microsoft's largest COMPLETED acquisition is Nuance (~$18.8B, fiscal 2022); Activision ($68.7B) had not closed (pending, extended to Oct-2023 = fiscal 2024). Microsoft's FY2022 total revenue was $198,270M (~$198.3B). An Activision/FY2023 answer is WRONG on these documents.",
+    "gold_doc_filenames": ["0000950170-23-035122.pdf", "msft-10k_20220630.htm.pdf"],
     "min_docs_required": 1,
     "query_type": "extremum_pivot"
   },
@@ -170,9 +170,9 @@
   },
   {
     "question": "In the fiscal year Microsoft completed its largest disclosed acquisition, what was Amazon's total net sales?",
-    "bridge_fact": "Microsoft's largest acquisition (Activision Blizzard) closed in fiscal 2023 → cross-company bridge to Amazon FY2023 net sales $574,785M.",
-    "answer_must_include": ["2023", "574"],
-    "ground_truth": "Microsoft's largest acquisition, Activision Blizzard, closed in fiscal 2023. In fiscal 2023 Amazon's total net sales were $574,785M (~$574.8B). Bridge: resolve the acquisition year from Microsoft, then read Amazon's net sales for it.",
+    "bridge_fact": "Microsoft's largest COMPLETED acquisition in these filings is Nuance (closed fiscal 2022; Activision only pending) → cross-company bridge to Amazon FY2022 net sales $513,983M.",
+    "answer_must_include": ["2022", "513"],
+    "ground_truth": "Microsoft's largest completed acquisition in these filings is Nuance (~$18.8B, fiscal 2022); Activision was still pending. Amazon's FY2022 total net sales were $513,983M (~$514.0B). Bridge: resolve the completed-acquisition year from Microsoft, then read Amazon's net sales for it.",
     "gold_doc_filenames": ["0000950170-23-035122.pdf", "amzn-20231231.pdf"],
     "min_docs_required": 2,
     "query_type": "lookup_pivot"

@@ -85,6 +85,29 @@ CASES = [
         "forbidden": [90757.0],             # AWS net sales — a SEGMENT, not consolidated
         "note": "Amazon consolidated net sales 2023 — must not bind the AWS segment",
     },
+    # ── PRECISION PASS (2026-06-12): $-vs-% twins + prose never grounds ──────────
+    {
+        "doc": "amzn-20231231.pdf",
+        "intent": MetricIntent(metric="technology and infrastructure", period="2023",
+                               section="Operating expenses"),
+        "expect": 85622.0,
+        "forbidden": [14.9, 17.0],          # the % of net sales / YoY growth twins
+        "note": "AMZN tech-and-infra $ opex — never the percent-presentation twins",
+    },
+    {
+        "doc": "amzn-20231231.pdf",
+        "intent": MetricIntent(metric="technology and infrastructure", period="2023"),
+        "expect": None,                      # unscoped is genuinely ambiguous ($ opex vs SBC)
+        "forbidden": [14.9, 17.0],          # but a % twin must NEVER be the bind
+        "note": "AMZN tech-and-infra unscoped — abstain ok; % twin forbidden",
+    },
+    {
+        "doc": "0000950170-23-035122.pdf",
+        "intent": MetricIntent(metric="research and development", period="2023"),
+        "expect": 27195.0,
+        "forbidden": [2.7, 1.0, -1.1, 6958.0],  # prose fragments / % credit / capitalized
+        "note": "MSFT FY23 R&D — income-statement row, never prose or the % credit",
+    },
 ]
 
 

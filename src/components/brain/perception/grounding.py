@@ -26,7 +26,8 @@ import re
 from dataclasses import dataclass, field
 from typing import List, Optional, Literal
 
-from ..analyst import Grid, CellRef, CellError, parse_cell, looks_like_total, _norm_section_match
+from ..analyst import (Grid, CellRef, CellError, parse_cell, looks_like_total,
+                       _norm_section_match, is_lineitem_label, row_value_kind)
 
 
 # ── Intent: what the caller wants grounded (the LLM proposes this, as DATA) ─────
@@ -116,11 +117,18 @@ def _collect(intent: MetricIntent, grids: List[Grid]) -> List[Candidate]:
     aggregation-level check is applied here as a HARD filter for level="total".
     """
     out: List[Candidate] = []
+    kinds: List[str] = []  # parallel to `out` — value-kind per candidate
     for g in grids:
         row = g.find_row(intent.metric, intent.section)
         if row is None:
             continue
         if intent.section and not _norm_section_match(row, intent.section):
+            continue
+        # Prose-fragment guard (§5.1, same as the kernel's resolve()): a row whose
+        # label reads like a narrative sentence is a number leaked out of prose —
+        # grounding must never return it (live: table_lookup returned '= 1' from
+        # 'Kingdom. Refer to Research and Development (Part I, Item)').
+        if not is_lineitem_label(row.get("label", "")):
             continue
         if intent.period not in g.value_columns():
             continue
@@ -154,6 +162,17 @@ def _collect(intent: MetricIntent, grids: List[Grid]) -> List[Candidate]:
                 why += " · is-total"
 
         out.append(Candidate(cell=cell, score=round(score, 4), why=why))
+        kinds.append(row_value_kind(g, row))
+
+    # Value-kind filter (same rule as the kernel's resolve()): a percent-
+    # PRESENTATION candidate is dropped when a currency candidate of equal-or-
+    # better label score exists — a dollar intent never grounds to the 14.9
+    # '% of net sales' twin of an 85,622 row. Percent-only intents (tax rate,
+    # growth credit) keep their candidates untouched. Filter, never picker.
+    if "percent" in kinds and "currency" in kinds:
+        best_cur = max(c.score for c, k in zip(out, kinds) if k == "currency")
+        out = [c for c, k in zip(out, kinds)
+               if k != "percent" or c.score > best_cur]
     return out
 
 

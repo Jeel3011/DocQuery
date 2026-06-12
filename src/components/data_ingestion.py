@@ -749,6 +749,25 @@ class DocumentProcessor:
             _logger.warning("[ingest] table extraction failed for %s: %s", pdf_path, exc)
             return []
 
+        # ── Extraction fidelity self-report (ground-truth-free; ANY doc) ──
+        # Cross-checks the grids against the PDF's own text layer so a silent row
+        # drop on a NEW document is flagged at ingest, not discovered via a wrong/
+        # missing answer later. Log-only; never blocks or alters ingestion.
+        try:
+            from src.components.extraction_fidelity import fidelity_report
+            fid = fidelity_report(pdf_path, tables)
+            if fid.get("uncovered"):
+                _logger.warning(
+                    "[ingest] FIDELITY: %s — %d/%d text-layer data line(s) NOT covered "
+                    "by extracted grids (silent row drops?): %s",
+                    pdf_path, len(fid["uncovered"]), fid.get("data_lines", 0),
+                    [(u["page"], u["line"][:60]) for u in fid["uncovered"][:5]])
+            else:
+                _logger.info("[ingest] fidelity ok: %s — %d data lines across %d pages covered",
+                             pdf_path, fid.get("data_lines", 0), fid.get("pages_checked", 0))
+        except Exception as exc:  # noqa: BLE001
+            _logger.warning("[ingest] fidelity check skipped for %s: %s", pdf_path, exc)
+
         # ── Discriminative LLM summary per table (the §4b selection fix) ──
         # The deterministic caption can't tell a $ table from its growth-% twin (same
         # sections/labels/periods), which is what makes the Analyst mis-pick. A one-line

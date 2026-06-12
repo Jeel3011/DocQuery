@@ -258,22 +258,30 @@ def _read_geometry_lines(page, y_tol: float = 3.0) -> List[Dict[str, Any]]:
         ws = sorted(bands[top], key=lambda w: w.get("x0", 0.0))
         if not ws:
             continue
-        label_toks: List[str] = []
-        values: List[str] = []
+        toks: List[Any] = []  # (token, is_value, x1 right edge)
         for w in ws:
             tok = (w.get("text") or "").strip()
             if not tok or tok == "$":
                 continue  # standalone currency symbol is not a value or a label word
+            if _FOOTNOTE_TOK.match(tok):
+                continue  # footnote markers never join the label or the values
             stripped = tok.replace("$", "").strip()
-            is_value = bool(_VALUE_TOK.match(tok)) and not _FOOTNOTE_TOK.match(tok)
-            if is_value and stripped:
-                values.append(tok.replace("$", "").strip())
-            elif not values:
-                # text BEFORE the first number is part of the label; text AFTER the
-                # numbers (a trailing footnote marker, stray glyph) is ignored so it
-                # can't corrupt the label or be miscounted as a value.
-                if not _FOOTNOTE_TOK.match(tok):
-                    label_toks.append(tok)
+            toks.append((tok, bool(_VALUE_TOK.match(tok)) and bool(stripped),
+                         float(w.get("x1", w.get("x0", 0.0)))))
+        # VALUES = the TRAILING maximal run of value tokens. Column cells are
+        # right-aligned at the END of a statement row; a number followed by more
+        # label text — "…allowance for doubtful accounts of $633 and $751 44,261
+        # 38,043", "Common stock ($0.01 par value; 100,000 shares authorized…" —
+        # is label CONTENT, not a cell. The old forward rule ("everything numeric
+        # after the first number is a value") leaked such numbers into the values
+        # (off-width row → span break → the row silently vanished from the grid)
+        # and silently ate the label text between them.
+        split = len(toks)
+        while split > 0 and toks[split - 1][1]:
+            split -= 1
+        label_toks = [t for t, _, _ in toks[:split]]
+        values = [t.replace("$", "").strip() for t, _, _ in toks[split:]]
+        vx1 = [x for _, _, x in toks[split:]]
         label = _clean(" ".join(label_toks))
         if not label and not values:
             continue
@@ -281,6 +289,7 @@ def _read_geometry_lines(page, y_tol: float = 3.0) -> List[Dict[str, Any]]:
             "label": label,
             "x0": float(ws[0].get("x0", 0.0)),
             "values": values,
+            "vx1": vx1,
             "ntext": len(label_toks),
             "nval": len(values),
             "top": min(float(w.get("top", 0.0)) for w in ws),
@@ -289,15 +298,29 @@ def _read_geometry_lines(page, y_tol: float = 3.0) -> List[Dict[str, Any]]:
     # Reunite a subtotal row split across two adjacent y-bands: a label-only line
     # (e.g. "Total assets", nval=0) whose value tokens ("365,264", "402,392")
     # landed in the very next band as a LABEL-LESS line because their baselines
-    # straddled a round(top/y_tol) bucket boundary (gap < y_tol). Only fires when
-    # the value line carries no label of its own, so it can't merge two real rows.
+    # straddled a round(top/y_tol) bucket boundary. Only fires when the value line
+    # carries no label of its own, so it can't merge two real rows.
+    #
+    # The merge bound is RELATIVE to the page's measured row pitch, not the band
+    # quantum: same-row fragments sit at a small fraction of a pitch (observed
+    # 0.73–4.4pt across AMZN/GOOG/MSFT), while a real adjacent row sits a full
+    # pitch away (observed ≥7.3pt, typically ~12.4pt). A fixed ≤y_tol bound missed
+    # a 3.0008pt split by 0.0008pt (MSFT FY23 R&D row → values dropped, orphan
+    # label became a bogus section header). Floor at y_tol so behaviour is never
+    # stricter than before; cap at 2.5*y_tol so a sparse/prose page whose median
+    # gap is paragraph spacing cannot over-reach.
+    tops = [ln["top"] for ln in raw]
+    gaps = [b - a for a, b in zip(tops, tops[1:]) if b - a > 0.01]
+    pitch = sorted(gaps)[len(gaps) // 2] if gaps else 0.0
+    merge_tol = max(y_tol, min(0.5 * pitch, 2.5 * y_tol)) if pitch else y_tol
     lines: List[Dict[str, Any]] = []
     for ln in raw:
         if (lines and ln["label"] == "" and ln["values"]
                 and lines[-1]["nval"] == 0 and lines[-1]["label"]
-                and abs(ln["top"] - lines[-1]["top"]) <= y_tol):
+                and abs(ln["top"] - lines[-1]["top"]) <= merge_tol):
             prev = lines[-1]
             prev["values"] = ln["values"]
+            prev["vx1"] = ln.get("vx1", [])
             prev["nval"] = len(ln["values"])
             continue
         if not ln["label"]:
@@ -466,12 +489,39 @@ def _segment_table_spans(lines: List[Dict[str, Any]]) -> List[List[Dict[str, Any
             spans.append(cur)
         cur = []
 
+    def _year_or_day(v: str) -> bool:
+        try:
+            f = float(str(v).replace(",", ""))
+        except ValueError:
+            return False
+        return f == int(f) and (1900 <= f <= 2100 or 0 <= f <= 31)
+
     for ln in lines:
         is_header = ln["nval"] == 0 and in_band(ln)
         is_data = ln["nval"] == modal_w and in_band(ln)
         # a row one value short, between data rows, is a partial split → keep it as data
         is_partial = ln["nval"] == modal_w - 1 and modal_w >= 3 and in_band(ln) and bool(cur)
-        if is_header or is_data or is_partial:
+        # a row with EXTRA leading values inside an open span is a label-embedded-
+        # numbers row ("…allowance for doubtful accounts of $633 and $751 44,261
+        # 38,043"): its trailing modal_w values are the real cells; the build step
+        # folds the excess back into the label. A line whose trailing values are
+        # all year/day tokens is a period-header ("Year Ended June 30, 2023 2022
+        # 2021"), not data — it still breaks the span as before.
+        is_overwidth = (ln["nval"] > modal_w and in_band(ln) and bool(cur)
+                        and not all(_year_or_day(v) for v in ln["values"][-modal_w:]))
+        # an UNDER-width value line inside an open span is a wrapped-label FRAGMENT
+        # ("Common stock … shares authorized 24,000; outstanding 7,519" wrapped
+        # before its cells land on the next line). It carries label-numbers, never
+        # cells — marked so the build step folds it into the label instead of
+        # breaking the span (which silently dropped both it AND the continuation
+        # row holding the real cells). All-year lines stay span-breakers.
+        is_fragment = (0 < ln["nval"] < modal_w and not is_partial
+                       and in_band(ln) and bool(cur)
+                       and not all(_year_or_day(v) for v in ln["values"]))
+        if is_fragment:
+            ln = dict(ln)
+            ln["fragment"] = True
+        if is_header or is_data or is_partial or is_overwidth or is_fragment:
             cur.append(ln)
         else:
             flush()  # off-band title / off-width chrome ends the current table
@@ -514,6 +564,61 @@ def _geometry_tables_for_page(
         width = max(set(vcounts), key=vcounts.count)
         if width < 1:
             continue
+
+        # Wrapped-label FRAGMENTS (marked by the span walk) never carry cells:
+        # their numbers re-join the label text, and the joined label is prepended
+        # onto the continuation row that holds the real cells ("Common stock …
+        # outstanding 7,519" + "and 7,571 | 83,111 80,552" → one labeled row).
+        # A fragment with no continuation simply stays cell-less (its trailing
+        # number was label content; there were never cells to recover).
+        joined: List[Dict[str, Any]] = []
+        frag_label = ""
+        for r in rows_geo:
+            if r.get("fragment"):
+                frag_label = _clean(
+                    (frag_label + " " if frag_label else "")
+                    + r["label"] + " " + " ".join(r["values"]))
+                continue
+            if frag_label and r["nval"] >= 1:
+                r = dict(r)
+                r["label"] = _clean(frag_label + " " + r["label"])
+            frag_label = ""
+            joined.append(r)
+        rows_geo = joined
+
+        # Over-width rows carry label-embedded numbers (share-count parentheticals,
+        # allowance/depreciation clauses): the TRAILING `width` values are the real
+        # column cells; the leading excess re-joins the label text. X-GEOMETRY is
+        # the arbiter (right-aligned columns share a right edge): the fold happens
+        # only when the span's modal rows AGREE on per-column right edges AND the
+        # over-width row's trailing values sit ON those columns AND its excess
+        # values sit clearly LEFT of column 0 (the label region). Anything else —
+        # e.g. a wide constant-currency row inside a junk span — keeps its label
+        # but ships NO cells (safe abstain direction; never a misaligned bind).
+        anchors: List[float] = []
+        modal_rows = [r for r in rows_geo
+                      if r["nval"] == width and len(r.get("vx1", [])) == width]
+        if len(modal_rows) >= 2:
+            for k in range(width):
+                xs = sorted(r["vx1"][k] for r in modal_rows)
+                if xs[-1] - xs[0] > 6.0:
+                    anchors = []
+                    break
+                anchors.append(xs[len(xs) // 2])
+        for r in rows_geo:
+            if r["nval"] > width:
+                extra, cells = r["values"][:-width], r["values"][-width:]
+                ex_x = (r.get("vx1") or [])[:-width]
+                cell_x = (r.get("vx1") or [])[-width:]
+                aligned = (bool(anchors) and len(cell_x) == width and len(ex_x) == len(extra)
+                           and all(abs(x - a) <= 6.0 for x, a in zip(cell_x, anchors))
+                           and all(x < anchors[0] - 20.0 for x in ex_x))
+                if aligned:
+                    r["label"] = _clean(r["label"] + " " + " ".join(extra))
+                    r["values"], r["nval"] = cells, len(cells)
+                else:
+                    r["label"] = _clean(r["label"] + " " + " ".join(r["values"]))
+                    r["values"], r["nval"] = [], 0
 
         # Build the raw string grid (label + right-justified value cells) so the
         # existing gate/period/markdown machinery applies unchanged.

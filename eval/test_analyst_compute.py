@@ -13,6 +13,7 @@ from src.components.brain.analyst import Grid, compute, verify_numbers, cells_fr
 
 AMZN = "test docs/amzn-20231231.pdf"
 MSFT = "test docs/msft-10k_20220630.htm.pdf"
+MSFT23 = "test docs/0000950170-23-035122.pdf"
 GOOG = "test docs/goog-20221231.pdf"
 
 
@@ -36,6 +37,17 @@ def grids_for_msft():
         _msft_cache = [Grid(t.to_metadata(), doc="msft-10k_20220630.htm.pdf", page=t.page_number)
                        for t in extract_tables_from_pdf(MSFT)]
     return _msft_cache
+
+
+_doc_cache: dict = {}
+
+
+def grids_for_doc(path, label):
+    """All of one document's grids in one scope (cached across checks)."""
+    if label not in _doc_cache:
+        _doc_cache[label] = [Grid(t.to_metadata(), doc=label, page=t.page_number)
+                             for t in extract_tables_from_pdf(path)]
+    return _doc_cache[label]
 
 
 def multidoc_grids():
@@ -223,6 +235,64 @@ def main():
     h2_ok = (not r.ok) and "label" in (r.error or "")
     passed += h2_ok; failed += (not h2_ok)
     print(f"  [{'PASS' if h2_ok else 'FAIL'}] empty row ref → clean error: {r.error}")
+
+    # ── PRECISION PASS (2026-06-12): label specificity + value-kind filters ─────
+    # Live evidence (cross-issuer R&D probe): generic-metric binds collided with
+    # contains-matching sibling metrics and %-presentation twin rows. Two structural
+    # filters fix the class: (1) an EXACT label match outranks contains-matches
+    # across grids; (2) percent-presentation rows ('%' in cells, or a percent/growth
+    # section with %-scale values) are dropped for a reference that also matches a
+    # currency row of equal specificity. Filters only — they can turn an abstain
+    # into a resolve or a cleaner abstain, never pick among true ambiguity.
+    msft23 = grids_for_doc(MSFT23, "0000950170-23-035122.pdf")
+    amzn23 = grids_for_doc(AMZN, "amzn-20231231.pdf")
+
+    # (p1) exact beats contains: unscoped R&D resolves to the income-statement
+    # 27,195 (exact in two agreeing grids) — 'Capitalized research and development'
+    # (contains) no longer blocks it. Was: ambiguous abstain.
+    r = compute({"op": "value", "row": {"label": "Research and development"},
+                 "period": "2023"}, msft23)
+    p1 = r.ok and r.value == 27195.0
+    passed += p1; failed += (not p1)
+    print(f"  [{'PASS' if p1 else 'FAIL'}] MSFT23 unscoped R&D → 27,195 (exact>contains): "
+          f"{r.display() if r.ok else r.error}")
+
+    # (p2) the longer label still binds its OWN row.
+    r = compute({"op": "value", "row": {"label": "Capitalized research and development"},
+                 "period": "2023"}, msft23)
+    p2 = r.ok and r.value == 6958.0
+    passed += p2; failed += (not p2)
+    print(f"  [{'PASS' if p2 else 'FAIL'}] 'Capitalized R&D' binds its own row 6,958: "
+          f"{r.display() if r.ok else r.error}")
+
+    # (p3) $-vs-%: the 14.9 'Percent of Net Sales' twin never appears in a dollar
+    # bind — the remaining ambiguity (85,622 opex vs 13,434 SBC) is REAL and the
+    # error still names the sections (self-healing).
+    r = compute({"op": "value", "row": {"label": "Technology and infrastructure"},
+                 "period": "2023"}, amzn23)
+    e = r.error or ""
+    p3 = (not r.ok) and "14.9" not in e and "85622" in e.replace(",", "") and "section" in e
+    passed += p3; failed += (not p3)
+    print(f"  [{'PASS' if p3 else 'FAIL'}] AMZN unscoped tech-infra: % twin filtered, real "
+          f"$ ambiguity remains w/ section hint: {e}")
+
+    # (p4) section-scoped dollar bind is exact and never the % twin (regression).
+    r = compute({"op": "value", "row": {"section": "Operating expenses",
+                                        "label": "Technology and infrastructure"},
+                 "period": "2023"}, amzn23)
+    p4 = r.ok and r.value == 85622.0
+    passed += p4; failed += (not p4)
+    print(f"  [{'PASS' if p4 else 'FAIL'}] AMZN section-scoped tech-infra → 85,622: "
+          f"{r.display() if r.ok else r.error}")
+
+    # (p5) a percent row asked for EXACTLY still binds (kind filter must not kill
+    # %-metrics): MSFT tax-table 'Research and development credit' → -1.1(%).
+    r = compute({"op": "value", "row": {"label": "Research and development credit"},
+                 "period": "2023"}, msft23)
+    p5 = r.ok and abs(r.value - (-1.1)) < 1e-9
+    passed += p5; failed += (not p5)
+    print(f"  [{'PASS' if p5 else 'FAIL'}] exact % metric still binds (-1.1): "
+          f"{r.display() if r.ok else r.error}")
 
     # numeric verifier (§4b step 5): grounded answer passes, fabricated figure flagged
     results = [

@@ -32,6 +32,10 @@ KNOWN = [
     # geometry path must label the 198,270 column as 2022, not 2020.
     ("msft-10k_20220630.htm.pdf", "", "Total", "2022", "198,270"),
     ("msft-10k_20220630.htm.pdf", "", "Total", "2020", "143,015"),
+    # Microsoft FY23 — the R&D row whose label/values baselines sit 3.0008pt apart
+    # (a split row past the old fixed y_tol=3.0; pitch-relative merge must reunite it).
+    ("0000950170-23-035122.pdf", "", "Research and development", "2023", "27,195"),
+    ("0000950170-23-035122.pdf", "", "Research and development", "2021", "20,716"),
 ]
 
 

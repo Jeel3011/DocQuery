@@ -62,10 +62,29 @@ Supabase (Postgres + Storage) + Pinecone, Next.js frontend (port 3000).
 
 ## ✅ What's ACHIEVED (verified)
 
-### Extraction foundation — measured & fixed (2026-06-09/10)
-- **The big surprise: extraction was NEVER the bottleneck.** We feared 44–61% table
-  quality; the honest measured number is **100% period detection/order, 100% cell
-  accuracy (112/112)** across 3 issuers × 8 filings × 3 statements.
+### Extraction foundation — measured & fixed (2026-06-09/10, HARDENED 2026-06-12)
+- **Honest framing of "100%": it was SAMPLED-cell accuracy** (112/112 ground-truth
+  cells), NOT row-completeness. On 2026-06-12 a new ground-truth-FREE completeness
+  gate (`eval/test_extraction_completeness.py` — cross-checks grids vs the PDF's own
+  text layer) found **32 silently dropped data lines** hiding behind that 100%:
+  missing rows on EVERY issuer's balance sheet (AR, PP&E, common stock) + MSFT FY23
+  income-statement R&D (27,195; label/values split 3.0008pt — 0.0008pt past y_tol).
+  All fixed STRUCTURALLY in `_read_geometry_lines`/`_segment_table_spans` (typography
+  rules, zero doc-specific code): values = TRAILING run of value tokens (label-
+  embedded numbers stay label text); pitch-relative split-row merge; x1-anchored
+  over-width fold (right-aligned columns share right edges; unplaceable cells are
+  DROPPED, never misaligned — a fixture caught my own fold mis-binding GOOG p65
+  before it shipped); wrapped-label fragment join. Result: **643/643 text-layer data
+  lines covered · benchmark still 112/112 · sections 83%→93.2% · cells gate 9/9**.
+  Side effect: prose pseudo-rows die at the source (~40% fewer gated tables = junk
+  gone; MD&A tables now extract as REAL tables with pct_change columns excluded).
+- **The new-docs answer is a MECHANISM, not a claim:** the same completeness check
+  runs at INGESTION for every doc (`src/components/extraction_fidelity.py`, hooked
+  in `data_ingestion.py` after extract) — a new doc self-reports per-page fidelity
+  at upload (log-only, never blocks). Breakage on unseen layouts is expected; it
+  becomes a visible flag + kernel abstain, never a silent wrong answer.
+- **⚠️ Live grids are STALE again** until Jeel re-ingests the collection with the
+  hardened extractor (same situation as 2026-06-09; re-ingest before live tests).
 - Built `eval/extraction_benchmark.py` + `eval/extraction_ground_truth.json`
   (ground truth transcribed VISUALLY from rendered PDFs = non-circular w.r.t. the
   pdfplumber pipeline). Run: `python -u eval/extraction_benchmark.py`
@@ -91,6 +110,27 @@ Supabase (Postgres + Storage) + Pinecone, Next.js frontend (port 3000).
   summary step, NOT extraction. (Jeel chose to KEEP summaries — they're the §4b
   retrieval signal that separates near-identical twin grids; $ table vs %-change
   twin.)
+
+### Kernel/grounding precision filters (2026-06-12) — abstains→resolves, 0 WRONG
+- Two structural filters in `analyst.resolve()`/`build_series` hosts + grounding
+  `_collect`, applied WITHIN each doc only (never mask cross-doc ambiguity):
+  **exact-label > contains** ('R&D' no longer collides with 'Capitalized R&D';
+  the exact 'R&D credit' row is no longer shadowed — that shadowing was a LIVE
+  kernel confident-wrong: asking for the credit returned the expense) and
+  **currency > percent at equal specificity** (`row_value_kind`: '%' in cells, or
+  percent/growth/rate section + %-scale values — a $ query never binds the 14.9
+  '% of net sales' twin; %-only metrics stay bindable; `parse_cell` now strips a
+  trailing '%' so % rows actually parse). Prose guard now applied in grounding
+  too (the live `=1` Kingdom-row bug class). `resolve()` no-match errors carry
+  did-you-mean closest line-items (difflib over real labels — one-step self-heal).
+- **Cross-doc bind matrix `test_kernel_crossdoc`: 16C/3A/0W → 19/19 CORRECT,
+  0 ABSTAIN, 0 WRONG.** Suite: analyst 31/31 · grounding 8 cases 0-wrong ·
+  tools/loop/gates/selection/descending/executor/planner/meta/verifier/
+  enforcement/comprehension ALL green (16 suites re-run 2026-06-12).
+- Gold fix: `eval_questions_multihop.json` MSFT-largest-acquisition golds were
+  WRONG-from-memory (Activision "closed FY23" — it closed Oct-2023 = MSFT FY24 and
+  is only PENDING in the FY23 filing). Corrected to Nuance/FY2022 (revenue
+  198,270; AMZN bridge 513,983). The agent's live "Nuance" answer had been right.
 
 ### Delete robustness — fixed (2026-06-09)
 - "Won't delete from UI" had TWO causes:

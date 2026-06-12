@@ -88,6 +88,8 @@ def parse_cell(raw: Any) -> float:
     s = str(raw).strip()
     if s in ("", "-", "—", "–", "n/a", "N/A", "NM"):
         raise CellError(f"non-numeric cell: {s!r}")
+    if s.endswith("%"):
+        s = s[:-1].strip()  # '%' is a presentation MARK ('(1.1)%' → '(1.1)'), not the number
     neg = False
     m = _PAREN.match(s)
     if m:
@@ -397,6 +399,60 @@ def is_lineitem_label(label: str, max_words: int = 6) -> bool:
     return True
 
 
+_PCT_SECTION = re.compile(r"\b(percent|percentage|growth|rate)\b", re.I)
+
+
+def row_value_kind(grid: "Grid", row: Dict[str, Any]) -> str:
+    """'percent' if this row's cells are a percentage PRESENTATION, else 'currency'.
+
+    Structural + value-based (§precision): (a) any raw cell carries a '%' mark;
+    (b) the row's SECTION reads as a percent presentation ("Percent of Net Sales",
+    "Year-over-year Percentage Growth", a rate table) AND every numeric value is
+    %-scale (|v| <= 100). Used as a FILTER among same-specificity candidates — a
+    dollar request never binds the 14.9 '% of net sales' twin of an 85,622 row —
+    never as a picker: a reference matching ONLY percent rows still binds them."""
+    pct_marks = 0
+    vals: List[float] = []
+    for p in grid.value_columns():
+        raw = str(row.get(p, "") or "").strip()
+        if not raw:
+            continue
+        if "%" in raw:
+            pct_marks += 1
+        try:
+            vals.append(parse_cell(raw))
+        except CellError:
+            continue
+    if pct_marks:
+        return "percent"
+    sec = str(row.get("section", "") or "")
+    if vals and _PCT_SECTION.search(sec) and all(abs(v) <= 100.0 for v in vals):
+        return "percent"
+    return "currency"
+
+
+def _norm_label_eq(a: str, b: str) -> bool:
+    """Case/space/punct-insensitive label equality (find_row's norm semantics)."""
+    def n(s: str) -> str:
+        s = re.sub(r"[\[\]\"'`()]", " ", (s or "").lower())
+        return re.sub(r"\s+", " ", s).strip()
+    return n(a) == n(b)
+
+
+def _label_suggestions(label: str, grids: List["Grid"], k: int = 3) -> str:
+    """Closest real line-item labels to `label` across `grids` (did-you-mean for
+    self-healing errors; suggestion only — the model must re-issue the call)."""
+    import difflib
+    pool: Dict[str, str] = {}
+    for g in grids:
+        for r in g.rows:
+            lab = (r.get("label") or "").strip()
+            if lab and is_lineitem_label(lab) and lab not in pool:
+                pool[lab] = (r.get("section") or "").strip()
+    best = difflib.get_close_matches(label or "", list(pool), n=k, cutoff=0.5)
+    return "; ".join(f"'{b}' [{pool[b]}]" if pool[b] else f"'{b}'" for b in best)
+
+
 def _section_rows(grid: "Grid", section: str) -> List[Dict[str, Any]]:
     """Rows of `grid` that genuinely belong to `section` (strict, value-bearing)."""
     return [r for r in grid.rows if _norm_section_match(r, section or "")]
@@ -631,8 +687,32 @@ def compute(spec: Dict[str, Any], grids: List[Grid]) -> ComputeResult:
                 continue
             if want_total and looks_like_total(g, r, period) is False:
                 continue  # asked for a total, this row is a component → disqualify
-            matches.append(cell)
-        if not matches:
+            matches.append((cell, _norm_label_eq(r.get("label", ""), label),
+                            row_value_kind(g, r)))
+        # Specificity + value-kind filters, applied WITHIN each document only —
+        # they disambiguate metrics inside a doc, never across docs (an exact
+        # 'Total revenue' must not silently pick MSFT over GOOG's 'Total
+        # revenues'; cross-doc ambiguity stays an explicit doc-scoping abstain).
+        #   exact > contains: 'Research and development' never collides with
+        #   'Capitalized research and development'; the exact 'R&D credit' row is
+        #   never shadowed by the broader expense rows.
+        #   currency > percent at equal specificity: a $ request never binds the
+        #   14.9 '% of net sales' twin of an 85,622 row. Percent-only matches
+        #   survive untouched (rate/credit metrics stay bindable).
+        # Filters, not pickers: survivors that still disagree abstain below.
+        by_doc: Dict[Any, List[Any]] = {}
+        for m in matches:
+            by_doc.setdefault(m[0].doc, []).append(m)
+        matches = []
+        for grp in by_doc.values():
+            if any(ex for _, ex, _ in grp):
+                grp = [m for m in grp if m[1]]
+            if (any(k == "currency" for _, _, k in grp)
+                    and any(k == "percent" for _, _, k in grp)):
+                grp = [m for m in grp if m[2] != "percent"]
+            matches.extend(grp)
+        cells = [c for c, _, _ in matches]
+        if not cells:
             # nothing resolvable — distinguish the structural drops from "no row at all"
             if want_total and last_err is None:
                 raise CellError(
@@ -644,11 +724,14 @@ def compute(spec: Dict[str, Any], grids: List[Grid]) -> ComputeResult:
                     f"no line-item row for {label!r}[{period}] "
                     f"(only prose-fragment matches — abstaining, not a narrative number)"
                 )
-            raise CellError(str(last_err) if last_err else f"cell not resolvable: {label!r} [{period}]")
-        vals = {round(c.value, 4) for c in matches}
+            sugg = _label_suggestions(label, grids_list)
+            raise CellError(
+                (str(last_err) if last_err else f"cell not resolvable: {label!r} [{period}]")
+                + (f" — closest line-items: {sugg}" if sugg else ""))
+        vals = {round(c.value, 4) for c in cells}
         if len(vals) == 1:
-            return matches[0]
-        raise ambiguous(label, "", period, matches)
+            return cells[0]
+        raise ambiguous(label, "", period, cells)
 
     def build_series(spec: Dict[str, Any]) -> Tuple[List[Tuple[str, CellRef]], str]:
         """Resolve a selection spec into an ordered series of (key, CellRef) pairs.
@@ -733,6 +816,27 @@ def compute(spec: Dict[str, Any], grids: List[Grid]) -> ComputeResult:
                 elif text_host is None:
                     text_host = g
             if line_hosts:
+                # same specificity + value-kind filters as resolve(), WITHIN each
+                # doc only (cross-doc ambiguity stays the doc-scoping abstain):
+                # exact-label hosts beat contains-hosts; %-presentation hosts lose
+                # to currency hosts (a first_exceeds over a $ metric must never
+                # scan its '% of net sales' twin series).
+                def _host_row(g: Grid) -> Dict[str, Any]:
+                    return g.find_row(label, section if require_section else "") or {}
+                by_doc: Dict[Any, List[Grid]] = {}
+                for g in line_hosts:
+                    by_doc.setdefault(g.doc, []).append(g)
+                line_hosts = []
+                for grp in by_doc.values():
+                    exact = [g for g in grp
+                             if _norm_label_eq(_host_row(g).get("label", ""), label)]
+                    if exact:
+                        grp = exact
+                    cur_hosts = [g for g in grp
+                                 if row_value_kind(g, _host_row(g)) == "currency"]
+                    if cur_hosts and len(cur_hosts) < len(grp):
+                        grp = cur_hosts
+                    line_hosts.extend(grp)
                 return line_hosts
             return [text_host] if text_host is not None else []
 
