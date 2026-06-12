@@ -43,7 +43,10 @@ def _validate_mime(file_ext: str, header: bytes) -> bool:
         return True   # txt: accept any
     return header.startswith(magic)
 
-MAX_FILE_SIZE_MB = 10
+# Env-overridable (MAX_UPLOAD_MB): real-world annual reports run 10–25MB+
+# (Indian test corpus: 8–25MB). 50MB also matches Supabase Storage's default
+# per-object cap, so anything accepted here can actually land in the bucket.
+MAX_FILE_SIZE_MB = int(os.getenv("MAX_UPLOAD_MB", "50"))
 
 
 @router.post("/upload", status_code=202)
