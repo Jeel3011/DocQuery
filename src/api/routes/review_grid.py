@@ -161,6 +161,8 @@ async def review_grid_stream(
                     model=model,
                     filename_by_doc=filename_by_doc,
                     grids_by_doc=grids_by_doc,
+                    retrieval_manager=retrieval_mgr,
+                    db_client=sb,
                     model_id=model_id,
                 )
                 cells.append(cell)

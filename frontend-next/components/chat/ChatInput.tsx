@@ -5,11 +5,21 @@ import { AnimatePresence, motion } from "framer-motion";
 import { ArrowUp, Square, Loader2, Brain, Sparkles, FolderOpen } from "lucide-react";
 
 const SLASH_COMMANDS = [
-  { cmd: "/compare", desc: "Compare two documents side by side" },
-  { cmd: "/analyze", desc: "Agent: analyze the corpus, cite every figure" },
-  { cmd: "/draft", desc: "Draft a document from findings" },
-  { cmd: "/summarize", desc: "Summarize all documents" },
+  { cmd: "/clauses", desc: "Extract key clauses across the contracts" },
+  { cmd: "/risks", desc: "Flag non-standard or risky clauses" },
+  { cmd: "/compare", desc: "Compare two contracts side by side" },
+  { cmd: "/summarize", desc: "Summarize a contract or matter" },
 ];
+
+// Clicking a slash command inserts a ready-to-send question, not the bare token.
+const SLASH_TEMPLATES: Record<string, string> = {
+  "/clauses": "Extract the key clauses (governing law, term & termination, indemnity, "
+            + "confidentiality, limitation of liability, dispute resolution) and quote each.",
+  "/risks": "Flag any non-standard, one-sided, or unusual clauses a reviewer should look at, "
+          + "and quote the clause for each.",
+  "/compare": "Compare these two contracts clause-by-clause and highlight where the terms differ: ",
+  "/summarize": "Summarize this contract: parties, purpose, key commercial terms, and any red flags.",
+};
 
 interface ChatInputProps {
   onSubmit: (message: string) => void;
@@ -37,7 +47,7 @@ export function ChatInput({
   onSubmit,
   onCancel,
   isStreaming,
-  placeholder = "Ask a question about your documents…",
+  placeholder = "Ask about a clause, term, or risk in your contracts…",
   disabled = false,
   agenticMode = false,
   onToggleAgentic,
@@ -75,7 +85,8 @@ export function ChatInput({
   }
 
   function applySlash(cmd: string) {
-    setValue(cmd + " ");
+    // Insert the full question template when one exists; else fall back to the bare token.
+    setValue(SLASH_TEMPLATES[cmd] ?? cmd + " ");
     setShowSlash(false);
     ref.current?.focus();
   }
@@ -217,7 +228,7 @@ export function ChatInput({
             onBlur={() => setFocused(false)}
             placeholder={
               agentCoreMode
-                ? "Ask anything about your documents — the agent cites every figure…"
+                ? "Ask about a clause, term, or risk — the agent quotes and cites every answer…"
                 : brainMode
                 ? "Ask a cross-document question (Brain synthesis)…"
                 : placeholder

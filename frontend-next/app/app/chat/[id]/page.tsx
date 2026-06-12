@@ -821,22 +821,22 @@ function ChatPageInner() {
               className="text-[14px] text-[var(--text-muted)] mt-3.5 max-w-lg leading-relaxed"
             >
               {vaultName
-                ? <>Scoped to <span className="font-medium text-[var(--text-secondary)]">{vaultName}</span> · pick a prompt below or ask your own. Every figure is computed and cited — or honestly withheld.</>
-                : "Pick a vault and ask. Every figure is computed and cited — or honestly withheld."}
+                ? <>Scoped to <span className="font-medium text-[var(--text-secondary)]">{vaultName}</span> · pick a prompt below or ask your own. Every clause and figure is grounded in a cited source — or honestly withheld.</>
+                : "Pick a matter and ask. Every clause and figure is grounded in a cited source — or honestly withheld."}
             </motion.p>
 
-            {/* Suggestion cards — concrete example questions (richer empty state, like the
-                reference designs). Clicking one submits it. Tuned to financial-filing Q&A. */}
+            {/* Suggestion cards — concrete example questions (richer empty state). Clicking
+                one submits it. Tuned to contract review (law-first). */}
             <motion.div
               variants={{ hidden: { opacity: 0, y: 12 }, show: { opacity: 1, y: 0 } }}
               transition={{ duration: 0.6, ease: [0.23, 1, 0.32, 1] }}
               className="mt-6 grid grid-cols-1 sm:grid-cols-2 gap-3 w-full"
             >
               {[
-                { icon: TrendingUp, title: "Revenue growth", q: "What was the year-over-year total revenue growth from FY2022 to FY2023?" },
-                { icon: BarChart3, title: "Cross-company compare", q: "Which company had the highest R&D-to-revenue ratio in fiscal 2023, and what was it?" },
-                { icon: Search, title: "Find a figure", q: "What was total net income in the most recent fiscal year?" },
-                { icon: GitCompare, title: "Bridge question", q: "In the fiscal year revenue was closest to $200B, what was operating income that year?" },
+                { icon: Search, title: "Key terms", q: "What are the governing law, term, and termination notice period in this contract? Quote each clause." },
+                { icon: GitCompare, title: "Indemnity & liability", q: "Is there an indemnity cap and a limitation of liability? Quote the exact caps, or say if liability is uncapped." },
+                { icon: BarChart3, title: "Risk flags", q: "Flag any non-standard or unusual clauses in this contract that a reviewer should look at." },
+                { icon: TrendingUp, title: "Dispute resolution", q: "How are disputes resolved — arbitration or courts? What is the seat/venue and which rules apply?" },
               ].map((s) => (
                 <button
                   key={s.title}

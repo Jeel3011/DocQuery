@@ -62,12 +62,14 @@ Field to extract: {column.label}
 Instruction: {column.prompt}{risk_line}
 
 RULES (non-negotiable):
-- Read the document with your tools. Ground your answer in the actual text.
-- If you find the fact, QUOTE the exact source text you relied on.
-- If the document genuinely does NOT contain this fact, say so (status "missing") —
-  that is a valid, useful finding, not a failure. Do not guess.
-- If you cannot determine it confidently (ambiguous, conflicting, too little evidence),
-  abstain (status "abstain"). Never invent a value.
+- FIND the relevant text first: call `search_vault(query="...", kind="text")` with words
+  from this field (e.g. for governing law: "governing law jurisdiction"; for a cap:
+  "limitation of liability indemnify cap") to locate the clause in the document. The
+  clause text lives in the document's prose — you must search for and read it.
+- Ground your answer in the ACTUAL text you found. QUOTE the exact source sentence.
+- If, after searching, the document genuinely does NOT contain this clause, say so
+  (status "missing") — that is a valid, useful finding, not a failure. Do not guess.
+- If it's ambiguous or conflicting, status "abstain". Never invent a value.
 
 Answer with ONE JSON object and NOTHING else, in this exact shape:
 {{"status": "found" | "missing" | "abstain",
@@ -236,13 +238,17 @@ def build_cell(
     model,
     filename_by_doc: Dict[str, str],
     grids_by_doc: Optional[Dict[str, Any]] = None,
+    retrieval_manager: Any = None,
+    db_client: Any = None,
     model_id: str = "",
 ) -> GridCell:
     """Run ONE bounded agent for a single (doc, column) and return its GridCell.
 
     `model` is an already-built BaseModel (the caller decides live vs scripted).
     `filename_by_doc` lets the read tool resolve the doc; scope is locked to this one
-    document so the agent cannot read others.
+    document so the agent cannot read others. `retrieval_manager` + `db_client` enable
+    `search_vault` (needed to find clause text in a PROSE document — without them a
+    contract grid abstains every cell).
     """
     doc_name = filename_by_doc.get(doc_id, doc_id)
     scope = RunScope(
@@ -250,10 +256,12 @@ def build_cell(
         doc_ids=[doc_id],
         filenames=[doc_name] if doc_name else [],
         filename_by_doc={doc_id: doc_name} if doc_name else {},
+        # the run's live grid list the tools read (read_document/compute join into this);
+        # seeded with this doc's preloaded table grids (empty for a prose contract).
+        grids=list((grids_by_doc or {}).get(doc_id, []) or []),
+        retrieval_manager=retrieval_manager,
+        db_client=db_client,
     )
-    # Attach preloaded grids for this doc if the caller has them (read/compute reuse).
-    if grids_by_doc is not None:
-        setattr(scope, "grids_by_doc", {doc_id: grids_by_doc.get(doc_id, [])})
 
     budget = Budget(
         mode="grid",

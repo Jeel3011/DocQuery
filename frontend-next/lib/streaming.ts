@@ -592,3 +592,138 @@ export async function streamAgentCoreQuery(
     reader.releaseLock();
   }
 }
+
+
+// ─── Review grid (Phase B2) — POST /api/v1/review-grid/stream ───────────────────
+// Streams grid_start → cell* → grid_done. Self-contained (its own types) so it does
+// not touch the shared StreamEvent union above.
+
+export interface GridCellEvent {
+  doc_id: string;
+  doc_name?: string;
+  column_key: string;
+  status: "found" | "missing" | "abstain" | "error";
+  value?: string | null;
+  quote?: string | null;
+  risk: "standard" | "non_standard" | "missing" | "none";
+  note?: string | null;
+  provenance?: Array<Record<string, unknown>>;
+  verified?: boolean;
+}
+
+export interface GridStart {
+  title: string;
+  rows: number;
+  columns: number;
+  cells: number;
+  doc_names?: string[];
+  column_labels?: string[];
+}
+
+export interface GridDone {
+  coverage?: Record<string, number>;
+  error?: string;
+}
+
+export interface ReviewGridColumnSpec {
+  key: string;
+  label: string;
+  prompt: string;
+  kind?: string;
+  risk_rubric?: string | null;
+}
+
+export interface ReviewGridRequest {
+  title?: string;
+  collection_id: string;
+  doc_ids?: string[];
+  columns: ReviewGridColumnSpec[];
+}
+
+export interface ReviewGridCallbacks {
+  onStart?: (s: GridStart) => void;
+  onCell: (c: GridCellEvent) => void;
+  onDone: (d: GridDone) => void;
+  onError: (message: string) => void;
+}
+
+export async function streamReviewGrid(
+  token: string,
+  body: ReviewGridRequest,
+  callbacks: ReviewGridCallbacks,
+  signal?: AbortSignal
+): Promise<void> {
+  let response: Response;
+  try {
+    response = await fetch(`${API_BASE}/api/v1/review-grid/stream`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "application/json",
+        Accept: "text/event-stream",
+      },
+      body: JSON.stringify(body),
+      signal,
+    });
+  } catch (err) {
+    if ((err as Error).name === "AbortError") return;
+    callbacks.onError("Network error — could not connect to server.");
+    return;
+  }
+
+  if (!response.ok) {
+    const text = await response.text().catch(() => "Unknown error");
+    if (response.status === 404) {
+      callbacks.onError("Review grid is unavailable (agent core is off).");
+      return;
+    }
+    callbacks.onError(`Server error ${response.status}: ${text}`);
+    return;
+  }
+  if (!response.body) {
+    callbacks.onError("No response body — streaming not supported.");
+    return;
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split("\n");
+      buffer = lines.pop() ?? "";
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (!trimmed || !trimmed.startsWith("data: ")) continue;
+        const dataStr = trimmed.slice(6);
+        if (dataStr === "[DONE]") return;
+        try {
+          const ev = JSON.parse(dataStr) as Record<string, unknown>;
+          switch (ev.type) {
+            case "grid_start":
+              callbacks.onStart?.(ev as unknown as GridStart);
+              break;
+            case "cell":
+              callbacks.onCell(ev as unknown as GridCellEvent);
+              break;
+            case "grid_done":
+              callbacks.onDone(ev as unknown as GridDone);
+              break;
+          }
+        } catch {
+          console.warn("[review-grid] malformed SSE line:", dataStr);
+        }
+      }
+    }
+  } catch (err) {
+    if ((err as Error).name !== "AbortError") {
+      callbacks.onError("Stream interrupted. Please try again.");
+    }
+  } finally {
+    reader.releaseLock();
+  }
+}

@@ -23,6 +23,7 @@ import {
   FolderOpen,
   FolderPlus,
   BarChart3,
+  Table2,
 } from "lucide-react";
 
 import { useAuthStore } from "@/stores/auth.store";
@@ -382,13 +383,25 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
         </div>
 
         {/* New Chat */}
-        <div className="p-3 flex-shrink-0">
+        <div className="p-3 pb-1.5 flex-shrink-0">
           <button
             onClick={newChat}
             className={`w-full btn-primary flex items-center gap-2 justify-center ${collapsed ? "!px-2" : ""}`}
           >
             <Plus size={14} />
             {!collapsed && <span>New Chat</span>}
+          </button>
+        </div>
+
+        {/* Review Grid (Phase B2) */}
+        <div className="px-3 pb-2 flex-shrink-0">
+          <button
+            onClick={() => router.push("/app/grid")}
+            className={`w-full flex items-center gap-2 justify-center px-3 py-2 rounded-lg text-[13px] border border-[var(--border)] text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-hover)] transition-colors ${collapsed ? "!px-2" : ""}`}
+            title="Review Grid — extract terms across documents"
+          >
+            <Table2 size={14} />
+            {!collapsed && <span>Review Grid</span>}
           </button>
         </div>
 

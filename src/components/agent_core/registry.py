@@ -53,10 +53,13 @@ _MODE_TOOLS = {
     "standard": ["search_vault", "read_document", "list_metrics", "table_lookup", "compute"],
     "deep": ["search_vault", "read_document", "list_metrics", "table_lookup", "compute"],
     "fast": [],  # fast mode does not loop / call tools
-    # Review-grid cell (B2): the run is already scoped to ONE known document, so there
-    # is no `search_vault` (no world-search to do, and it prevents cross-doc leakage /
-    # wasted cost). The cell agent reads that doc and computes/looks-up within it.
-    "grid": ["read_document", "list_metrics", "table_lookup", "compute"],
+    # Review-grid cell (B2): the run is locked to ONE document via RunScope, so
+    # `search_vault` cannot leak across docs — and a PROSE document (a contract) needs
+    # it: clause text lives in TEXT chunks the agent finds via search_vault(kind="text"),
+    # then reads. (Without it, a contract grid starved on table-only preload and abstained
+    # every cell — the finance-origin bug, fixed 2026-06-12.) Keeps read/compute for the
+    # numeric columns that share the grid.
+    "grid": ["search_vault", "read_document", "list_metrics", "table_lookup", "compute"],
 }
 
 
