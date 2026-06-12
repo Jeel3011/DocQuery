@@ -50,6 +50,7 @@ def process_document_task(
     user_id: str,
     pinecone_namespace: str,
     collection_id: str | None = None,
+    local_path: str | None = None,
 ):
     """
     Celery task: ingest -> chunk -> embed -> save chunks.
@@ -74,18 +75,40 @@ def process_document_task(
     config = Config()
     config.PINECONE_NAMESPACE = pinecone_namespace
 
-    tmp_path = None  # will be set after download
+    tmp_path = None        # the local file the worker reads to process
+    spool_to_clean = None  # the API-spooled file we own and must delete at the end
     try:
-        # Download the file from Supabase Storage into worker's local /tmp
-        logger.info("[%s] Downloading file from storage: %s", doc_id, storage_path)
-        suffix = os.path.splitext(filename)[1]  # e.g. ".pdf"
-        try:
-            tmp_path = sb.download_file_to_temp(storage_path, suffix=suffix)
-        except Exception as dl_exc:
-            logger.error("[%s] Failed to download from storage: %s", doc_id, dl_exc)
-            sb.update_document_status(doc_id, "failed")
-            uploads_total.labels(status="failed").inc()
-            return {"status": "failed", "reason": f"storage download failed: {dl_exc}"}
+        # PREFERRED PATH: the API spooled the file to a shared local path and did NOT
+        # block the user on the slow Supabase upload. Read bytes from there directly
+        # (zero storage round-trip on the request path), and upload to Storage HERE,
+        # off the user's critical path, so the blob is still durable for re-download.
+        if local_path and os.path.exists(local_path):
+            tmp_path = local_path
+            spool_to_clean = local_path
+            logger.info("[%s] Using locally-spooled file: %s", doc_id, local_path)
+            # Upload to Storage in the background (best-effort: a failure here only
+            # costs durability/re-download, NOT processing — the user still gets a
+            # queryable doc). Never fails the task on a slow/broken Storage upload.
+            try:
+                t_up = time.perf_counter()
+                sb.upload_file_from_path(local_path, filename)
+                logger.info("[%s] Background storage upload done in %.1fs",
+                            doc_id, time.perf_counter() - t_up)
+            except Exception as up_exc:
+                logger.warning("[%s] Background storage upload failed (non-fatal, "
+                               "doc still processes): %s", doc_id, up_exc)
+        else:
+            # FALLBACK (e.g. requeue after the spool file was cleaned, or a remote
+            # worker that doesn't share the API's filesystem): download from Storage.
+            logger.info("[%s] No local spool; downloading from storage: %s", doc_id, storage_path)
+            suffix = os.path.splitext(filename)[1]  # e.g. ".pdf"
+            try:
+                tmp_path = sb.download_file_to_temp(storage_path, suffix=suffix)
+            except Exception as dl_exc:
+                logger.error("[%s] Failed to download from storage: %s", doc_id, dl_exc)
+                sb.update_document_status(doc_id, "failed")
+                uploads_total.labels(status="failed").inc()
+                return {"status": "failed", "reason": f"storage download failed: {dl_exc}"}
 
         # -- Stage 1: Parse document (the slowest step) --
         sb.update_document_status(doc_id, "processing", progress_pct=10)

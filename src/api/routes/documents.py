@@ -8,6 +8,7 @@ on redeploy. mkstemp() writes to /tmp which always exists in the container.
 
 import asyncio
 import os
+import uuid
 import logging
 import tempfile
 from pathlib import Path
@@ -113,27 +114,38 @@ async def upload_document(
                 first_chunk = False
             await out.write(chunk)
 
-    # 1. Upload raw file to Supabase Storage immediately.
-    # A2: upload straight from the temp file path so the client streams it —
-    # avoids reading the entire file back into memory just to hand it off.
-    # Run in a thread with a 30s timeout so a slow Supabase connection doesn't
-    # block the request indefinitely and leave the UI stuck on "Uploading…".
-    logger.info("File written to disk (%d bytes), uploading to storage", file_size)
+    # 1. DO NOT upload to Supabase Storage on the request path. The Storage upload
+    # is slow and unreliable (observed: an 18MB file took >141s and still timed out
+    # → 504 → the user waited minutes and the doc never processed). The user must
+    # NEVER wait on Storage. Instead: the file is already on local disk (the chunk
+    # write above, ~0.3s), so we hand the WORKER the local path; the worker uploads
+    # to Storage in the background (for durable re-download / sharing) AND processes.
+    # API and worker share this host's filesystem, so the path is directly readable.
+    #
+    # Move the temp file into a stable spool dir the worker owns (out of the
+    # request-scoped NamedTemporaryFile lifetime), keyed by a fresh id.
+    spool_dir = os.getenv("UPLOAD_SPOOL_DIR", "/tmp/docquery_spool")
+    os.makedirs(spool_dir, exist_ok=True)
+    # file_ext is dot-stripped (line ~68: "pdf"); the parser dispatches on the
+    # extension, so the spool file MUST carry a real ".pdf" suffix.
+    spool_path = os.path.join(spool_dir, f"{uuid.uuid4().hex}.{file_ext}")
     try:
-        loop = asyncio.get_event_loop()
-        storage_path = await asyncio.wait_for(
-            loop.run_in_executor(None, sb.upload_file_from_path, tmp_path, safe_filename),
-            timeout=30.0,
-        )
-    except asyncio.TimeoutError:
-        logger.error("Storage upload timed out for %s", safe_filename)
-        raise HTTPException(status_code=504, detail="Upload timed out. Please try again.")
-    except Exception as e:
-        logger.exception("Storage upload failed for %s", safe_filename)  # S8: log detail server-side
-        raise HTTPException(status_code=500, detail="Failed to upload file to storage.")  # S8: generic message to client
+        os.replace(tmp_path, spool_path)  # atomic on same fs; no re-read of bytes
+    except OSError:
+        # cross-device fallback: copy then remove
+        import shutil
+        shutil.copy2(tmp_path, spool_path)
+        try:
+            os.remove(tmp_path)
+        except OSError:
+            pass
+    logger.info("File spooled locally (%d bytes) → %s; deferring storage upload to worker",
+                file_size, spool_path)
+
+    # The canonical storage_path the worker will upload TO (and later download FROM).
+    storage_path = f"{sb.user_id}/{safe_filename}"
 
     # 2. Create document record with status=processing
-    logger.info("Storage upload done for %s, creating DB record", safe_filename)
     doc_record = sb.create_document_record(
         filename=safe_filename,
         storage_path=storage_path,
@@ -160,15 +172,13 @@ async def upload_document(
             storage_path=storage_path,
             user_id=sb.user_id,
             pinecone_namespace=user_config.PINECONE_NAMESPACE,
+            local_path=spool_path,  # worker reads bytes from here; uploads to storage itself
         ),
         queue=celery_queue,
     )
 
-    # Clean up local temp file — the worker will download from Supabase Storage
-    try:
-        os.remove(tmp_path)
-    except OSError:
-        pass
+    # NOTE: do NOT remove the spooled file here — the worker owns it now (it reads
+    # the bytes for processing and uploads them to Storage, then deletes it).
 
     # Phase 2: Invalidate semantic cache — uploaded docs change what answers are valid
     try:

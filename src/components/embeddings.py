@@ -15,8 +15,17 @@ logger = get_logger(__name__)
 # A3: batch sizes for the embed/upsert stages.
 #   EMBED_BATCH  — texts per OpenAI embed_documents() call; batches run in parallel.
 #   UPSERT_BATCH — vectors per Pinecone upsert; upserts are issued asynchronously.
-EMBED_BATCH = 256
-UPSERT_BATCH = 64
+# Upsert (not embed) dominated ingest on the Indian docs: INFY upsert=53.6s,
+# JIOFIN_2025 upsert=95.3s vs embed 3-32s (worker log 2026-06-12). At UPSERT_BATCH=64
+# an 870-vector doc fires 14 tiny async requests that Pinecone serverless throttles
+# and bunches. The metadata here is small (grids measured <=2.8KB, text chunks far
+# less; 250 * 2.8KB ~= 700KB, well under Pinecone's 2MB/request cap), so a larger
+# batch cuts request count ~4x. Both knobs are env-overridable for the cloud, where
+# a paid Pinecone tier sustains higher write concurrency still.
+EMBED_BATCH = int(os.getenv("EMBED_BATCH", "256"))
+UPSERT_BATCH = int(os.getenv("UPSERT_BATCH", "250"))
+# Concurrency for the OpenAI embed calls (network-bound, not RAM — safe locally).
+EMBED_WORKERS = int(os.getenv("EMBED_WORKERS", "8"))
 
 # Per-batch upsert wait ceiling (seconds). Pinecone serverless can stall a write
 # under burst/throttle, and async_req's res.get() blocks FOREVER with no timeout —
@@ -37,9 +46,17 @@ class EmbeddingManager:
         # Initialize once — reused for all create_vector_store() calls.
         # Previously this was created fresh inside create_vector_store(), wasting
         # HTTP client setup on every ingestion task.
+        # Resilient embedding client: a single dropped connection to OpenAI was
+        # failing the WHOLE ingest (observed: "openai.APIConnectionError: Broken
+        # pipe" mid-batch killed a 2071-chunk job → full re-parse on retry). Give
+        # the SDK an explicit per-request timeout AND its own connection-error
+        # retries with backoff, so a transient blip self-heals INSIDE the call
+        # instead of bubbling up and re-parsing the entire document.
         self.embedding_model = OpenAIEmbeddings(
             model=self.config.EMBEDDING_MODEL_NAME,
             openai_api_key=self.config.OPENAI_API_KEY,
+            timeout=float(os.getenv("EMBED_REQUEST_TIMEOUT_S", "60")),
+            max_retries=int(os.getenv("EMBED_MAX_RETRIES", "5")),
         )
 
     @staticmethod
@@ -149,7 +166,7 @@ class EmbeddingManager:
         if len(batches) <= 1:
             embeddings = self.embedding_model.embed_documents(texts)
         else:
-            with ThreadPoolExecutor(max_workers=min(4, len(batches))) as ex:
+            with ThreadPoolExecutor(max_workers=min(EMBED_WORKERS, len(batches))) as ex:
                 results = list(ex.map(self.embedding_model.embed_documents, batches))
             embeddings = [vec for batch in results for vec in batch]
         t_embed = time.perf_counter() - t0
@@ -164,7 +181,23 @@ class EmbeddingManager:
         index = vector_store.index
         namespace = self.config.PINECONE_NAMESPACE
         vectors = list(zip(ids, embeddings, metadatas))
-        batches = [vectors[i:i + UPSERT_BATCH] for i in range(0, len(vectors), UPSERT_BATCH)]
+        # Size-aware batching: cap each batch at UPSERT_BATCH vectors AND ~1.5MB of
+        # metadata (under Pinecone's 2MB/request limit, leaving headroom for the
+        # vector floats). A doc with many large table grids could otherwise exceed
+        # 2MB at 250 vectors and have the whole batch rejected. Cheap len() estimate
+        # over the metadata strings — no serialization.
+        _MAX_BYTES = 1_500_000
+        batches = []
+        cur, cur_bytes = [], 0
+        for v in vectors:
+            vb = sum(len(str(x)) for x in v[2].values()) if v[2] else 0
+            if cur and (len(cur) >= UPSERT_BATCH or cur_bytes + vb > _MAX_BYTES):
+                batches.append(cur)
+                cur, cur_bytes = [], 0
+            cur.append(v)
+            cur_bytes += vb
+        if cur:
+            batches.append(cur)
 
         # fire them all asynchronously, then drain each with a timeout
         async_results = [
