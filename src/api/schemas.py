@@ -174,3 +174,27 @@ class CollectionListResponse(BaseModel):
 
 class AddDocumentToCollectionRequest(BaseModel):
     document_id: str
+
+
+# ─────────────────────────────────────────
+# REVIEW GRID (Phase B2) — N docs × M columns
+# ─────────────────────────────────────────
+class GridColumnRequest(BaseModel):
+    """One column = one fact to extract from every document."""
+    key: str = Field(..., min_length=1, max_length=64)
+    label: str = Field(..., min_length=1, max_length=120)
+    prompt: str = Field(..., min_length=1, max_length=1000)
+    kind: str = Field(default="clause")           # "clause" | "numeric"
+    risk_rubric: Optional[str] = Field(default=None, max_length=500)
+
+
+class ReviewGridRequest(BaseModel):
+    """Create a review grid over a collection: pick documents + columns.
+
+    `doc_ids` empty → use ALL documents in the collection. Columns are bounded to keep
+    the N×M fan-out (and its cost) sane; the route enforces a hard cell ceiling too.
+    """
+    title: str = Field(default="Review grid", max_length=160)
+    collection_id: str
+    doc_ids: List[str] = Field(default_factory=list)
+    columns: List[GridColumnRequest] = Field(..., min_length=1, max_length=12)

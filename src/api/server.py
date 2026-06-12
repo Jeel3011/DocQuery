@@ -20,6 +20,7 @@ from src.api.routes import analytics as analytics_routes
 from src.api.routes import document_comparison as comparison_routes
 from src.api.routes import audit as audit_routes
 from src.api.routes import agent_core as agent_core_routes  # A4: /query/agentcore/stream (flag-gated)
+from src.api.routes import review_grid as review_grid_routes  # B2: /review-grid/stream (flag-gated)
 from src.api.middleware import CorrelationIDMiddleware, SecurityHeadersMiddleware
 
 from slowapi.errors import RateLimitExceeded
@@ -127,6 +128,7 @@ app.include_router(analytics_routes.router, prefix=API_PREFIX, tags=["Analytics"
 app.include_router(comparison_routes.router, prefix=API_PREFIX, tags=["Comparison"])  # Phase 5
 app.include_router(audit_routes.router, prefix=API_PREFIX, tags=["Audit"])  # Phase 6
 app.include_router(agent_core_routes.router, prefix=API_PREFIX, tags=["AgentCore"])  # A4 (flag-gated)
+app.include_router(review_grid_routes.router, prefix=API_PREFIX, tags=["ReviewGrid"])  # B2 (flag-gated)
 
 
 # -- Prometheus Metrics --
