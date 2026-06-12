@@ -107,9 +107,13 @@ function ChatPageInner() {
   const [messages, setMessages] = useState<LocalMessage[]>([]);
   const [isStreaming, setIsStreaming] = useState(false);
   const [loading, setLoading] = useState(true);
-  const [agenticMode, setAgenticMode] = useState(false);
-  const [brainMode, setBrainMode] = useState(false);
-  const [agentCoreMode, setAgentCoreMode] = useState(false);  // A4: verified tool-loop agent
+  // Law-first pivot (2026-06-12): the verified tool-loop Agent is the ONLY user-facing
+  // smart mode. Brain (cross-doc map-reduce) is kept as the internal Gate-A comparator,
+  // surfaced only when NEXT_PUBLIC_SHOW_DEV_MODES=true. The agentic/multi-hop "Deep"
+  // path was retired (its loop is subsumed by the agent core's tool loop).
+  const [agenticMode, setAgenticMode] = useState(false);   // retired; retained for dead-branch compat
+  const [brainMode, setBrainMode] = useState(false);       // dev-only comparator
+  const [agentCoreMode, setAgentCoreMode] = useState(true); // A4: the default smart path
   const [vaultName, setVaultName] = useState<string | null>(null);  // active collection name → composer vault chip
   const [showVaultPicker, setShowVaultPicker] = useState(false);
   const [vaultOptions, setVaultOptions] = useState<{ id: string; name: string }[]>([]);
@@ -566,15 +570,18 @@ function ChatPageInner() {
       })
       .then((msgs) => {
         // Auto-submit if ?q= param exists and conversation is empty (from the landing).
-        // Honor &mode= so a mode picked on the landing (agent/brain/deep) is applied here
-        // before the run starts — otherwise the landing could only ever do fast mode.
+        // Honor &mode= so a mode picked on the landing is applied here before the run
+        // starts. The Agent is the default; "deep" is now an alias for the Agent (the
+        // retired multi-hop path), "brain" only resolves in dev builds.
         const q = searchParams.get("q");
         if (q && msgs.length === 0 && !autoSubmittedRef.current) {
           autoSubmittedRef.current = true;
           const mode = searchParams.get("mode");
-          if (mode === "agent") { setAgentCoreMode(true); agentCoreModeRef.current = true; }
-          else if (mode === "brain") { setBrainMode(true); brainModeRef.current = true; }
-          else if (mode === "deep") { setAgenticMode(true); agenticModeRef.current = true; }
+          if (mode === "brain" && process.env.NEXT_PUBLIC_SHOW_DEV_MODES === "true") {
+            setBrainMode(true); brainModeRef.current = true;
+            setAgentCoreMode(false); agentCoreModeRef.current = false;
+          }
+          // "agent" | "deep" | anything else → the default Agent (already on).
           // Small delay to let state settle
           setTimeout(() => handleSubmit(q), 200);
         }
@@ -952,12 +959,16 @@ function ChatPageInner() {
         onSubmit={handleSubmit}
         onCancel={handleCancel}
         isStreaming={isStreaming}
-        agenticMode={agenticMode}
-        onToggleAgentic={() => { setAgenticMode((v) => !v); setBrainMode(false); setAgentCoreMode(false); }}
-        brainMode={brainMode}
-        onToggleBrain={() => { setBrainMode((v) => !v); setAgenticMode(false); setAgentCoreMode(false); }}
         agentCoreMode={agentCoreMode}
         onToggleAgentCore={() => { setAgentCoreMode((v) => !v); setBrainMode(false); setAgenticMode(false); }}
+        brainMode={brainMode}
+        // Brain stays reachable ONLY as the internal Gate-A comparator (dev builds). The
+        // agentic/Deep toggle is gone entirely. Normal users see just the Agent pill.
+        onToggleBrain={
+          process.env.NEXT_PUBLIC_SHOW_DEV_MODES === "true"
+            ? () => { setBrainMode((v) => !v); setAgenticMode(false); setAgentCoreMode(false); }
+            : undefined
+        }
         vaultName={vaultName}
         onChooseVault={() => setShowVaultPicker(true)}
         centered={messages.length === 0 && !loading}

@@ -2,11 +2,11 @@
 
 import { useRef, useState, useCallback, KeyboardEvent } from "react";
 import { AnimatePresence, motion } from "framer-motion";
-import { ArrowUp, Square, Loader2, Zap, Brain, Sparkles, FolderOpen } from "lucide-react";
+import { ArrowUp, Square, Loader2, Brain, Sparkles, FolderOpen } from "lucide-react";
 
 const SLASH_COMMANDS = [
   { cmd: "/compare", desc: "Compare two documents side by side" },
-  { cmd: "/analyze", desc: "Deep agentic analysis of the corpus" },
+  { cmd: "/analyze", desc: "Agent: analyze the corpus, cite every figure" },
   { cmd: "/draft", desc: "Draft a document from findings" },
   { cmd: "/summarize", desc: "Summarize all documents" },
 ];
@@ -170,10 +170,10 @@ export function ChatInput({
             <div className="flex items-center gap-2 text-[11px] text-[var(--text-muted)] pb-1 border-b border-[var(--glass-border)]">
               <Loader2 size={11} className="animate-spin" />
               <span>
-                {brainMode
+                {agentCoreMode
+                  ? "Agent working — searching, reading, computing…"
+                  : brainMode
                   ? "Brain synthesizing across documents…"
-                  : agenticMode
-                  ? "Agentic analysis in progress…"
                   : "Generating response…"}
               </span>
             </div>
@@ -202,7 +202,6 @@ export function ChatInput({
             <span className="text-[10px] text-[var(--text-muted)] ml-auto select-none">
               {agentCoreMode ? "Agent · verified tool loop"
                 : brainMode ? "Brain · cross-doc synthesis"
-                : agenticMode ? "Agentic · deep analysis"
                 : "Fast · direct answer"}
             </span>
           </div>
@@ -217,10 +216,10 @@ export function ChatInput({
             onFocus={() => setFocused(true)}
             onBlur={() => setFocused(false)}
             placeholder={
-              brainMode
+              agentCoreMode
+                ? "Ask anything about your documents — the agent cites every figure…"
+                : brainMode
                 ? "Ask a cross-document question (Brain synthesis)…"
-                : agenticMode
-                ? "Ask a complex question (agentic deep analysis)…"
                 : placeholder
             }
             disabled={disabled}
@@ -243,18 +242,14 @@ export function ChatInput({
                 label="Agent" title="Verified tool loop — cites & computes every figure"
               />
             )}
+            {/* Brain (cross-doc synthesis) is the internal Gate-A comparator — surfaced
+                only as a hidden dev toggle, not a normal user mode. The agentic/Deep
+                (multi-hop) pill was retired with the agent-core pivot (2026-06-12). */}
             {onToggleBrain && (
               <ModePill
                 active={brainMode} onClick={onToggleBrain}
                 icon={<Brain size={12} className={brainMode ? "fill-current" : ""} />}
-                label="Brain" title="Cross-document synthesis"
-              />
-            )}
-            {onToggleAgentic && (
-              <ModePill
-                active={agenticMode} onClick={onToggleAgentic}
-                icon={<Zap size={12} className={agenticMode ? "fill-current" : ""} />}
-                label="Deep" title="Agentic deep analysis"
+                label="Brain" title="Cross-document synthesis (internal comparator)"
               />
             )}
           </div>
@@ -301,7 +296,7 @@ export function ChatInput({
         </motion.div>
 
         <p className="text-[10px] text-[var(--text-muted)] mt-2 text-center select-none">
-          ↵ send · ⇧↵ newline · / commands{brainMode ? " · 🧠 brain" : agenticMode ? " · ⚡ agentic" : ""} · always verify sources
+          ↵ send · ⇧↵ newline · / commands{agentCoreMode ? " · ✦ agent" : brainMode ? " · 🧠 brain" : ""} · always verify sources
         </p>
       </div>
     </motion.div>

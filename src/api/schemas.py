@@ -76,10 +76,9 @@ class QueryRequest(BaseModel):
     page_filter: Optional[int] = None
     conversation_id: Optional[str] = None
     collection_id: Optional[str] = None  # Phase 1: scope retrieval to a collection
-    # Phase 4.5: per-request override for the agent endpoints. None = use the server
-    # default (Config.USE_MULTIHOP); true/false = force the sequential multi-hop loop
-    # vs. the parallel-decompose retriever for THIS request. Lets the UI A/B the two
-    # without an env change or restart.
+    # DEPRECATED (2026-06-12): the sequential multi-hop loop was retired with the
+    # law-first agent-core pivot (the agent's tool loop subsumes it). Field retained for
+    # request-shape back-compat but IGNORED by the server.
     multi_hop: Optional[bool] = None
     # A4 (agent core §3.1): per-request mode for /query/agentcore/stream. None defaults
     # to "standard"; "deep" raises the step/wall/token budget. Ignored by other endpoints.

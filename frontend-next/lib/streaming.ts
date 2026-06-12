@@ -487,8 +487,16 @@ export async function streamAgentCoreQuery(
   }
 
   if (!response.ok) {
+    // 404 = USE_AGENT_CORE disabled on the backend. The Agent is the default smart mode,
+    // but until the (paid) flag is turned on the route does not exist — so degrade
+    // SILENTLY to the standard retrieve→generate path instead of erroring at the user.
+    // This keeps the app working today; flip USE_AGENT_CORE=true to get the real loop.
+    if (response.status === 404) {
+      await streamQuery(token, body, callbacks, signal);
+      return;
+    }
     const text = await response.text().catch(() => "Unknown error");
-    // 404 = USE_AGENT_CORE disabled, 400 = collection_id missing — surface clearly.
+    // 400 = collection_id missing — surface clearly.
     callbacks.onError(`Server error ${response.status}: ${text}`);
     return;
   }

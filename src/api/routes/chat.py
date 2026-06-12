@@ -554,20 +554,11 @@ async def query_stream(
 def _make_agentic_retriever(user_config, retrieval_mgr, multi_hop_override=None):
     """Pick the agentic retriever for this request.
 
-    Both retrievers expose the same ``retrieve_and_synthesize`` contract, so the agent
-    endpoints are agnostic. Selection: ``multi_hop_override`` (the per-request
-    ``body.multi_hop`` flag) wins when not None; otherwise the server default
-    ``Config.USE_MULTIHOP``. True = the sequential ReAct/Self-RAG loop (Phase 4.5);
-    False = the proven parallel-decompose path. Per-request override lets the UI A/B
-    the two on the same question without an env change or restart.
+    The sequential ReAct/Self-RAG multi-hop loop was retired (2026-06-12, law-first
+    pivot — the agent core's tool loop subsumes it). Always the parallel-decompose
+    ``AgenticRetriever``. ``multi_hop_override`` is accepted for call-site
+    compatibility but ignored; the ``body.multi_hop`` flag is now a no-op.
     """
-    use_multihop = (
-        multi_hop_override if multi_hop_override is not None
-        else getattr(user_config, "USE_MULTIHOP", False)
-    )
-    if use_multihop:
-        from src.components.multi_hop import MultiHopRetriever
-        return MultiHopRetriever(config=user_config, retrieval_mgr=retrieval_mgr)
     from src.components.agentic_retrieval import AgenticRetriever
     return AgenticRetriever(config=user_config, retrieval_mgr=retrieval_mgr)
 
@@ -1164,39 +1155,6 @@ async def brain_query_stream(
                 api_key=user_config.OPENAI_API_KEY, request_timeout=30,
             )
 
-            # ── Phase 4.6 executive spine (§5.6), opt-in behind USE_EXEC_SPINE ──
-            # For a pivot/bridge/compare question the coordinator binds the pivot and
-            # self-monitors the read (WRONG→ABSTAIN). Its block leads the Analyst output
-            # (higher authority for bridges); a monitor abstain surfaces a clean refusal.
-            # When the flag is off OR the question isn't a spine shape, this is a no-op and
-            # the Analyst path below is byte-identical to today.
-            _spine_block = None
-            _spine_abstain = None
-            if getattr(user_config, "USE_EXEC_SPINE", False):
-                try:
-                    from src.components.brain.meta_reasoner import run_executive_spine
-                    # comprehend is the spine's single LLM call and its measured live
-                    # bottleneck — run it on the strong tier (one call per pivot/bridge
-                    # question; the Analyst spec-writer below stays on the cheap model).
-                    comprehend_llm = ChatOpenAI(
-                        model=getattr(user_config, "COMPREHEND_LLM_MODEL", None)
-                              or user_config.LLM_MODEL_NAME,
-                        temperature=0.0, api_key=user_config.OPENAI_API_KEY,
-                        request_timeout=30,
-                    )
-                    outcome = run_executive_spine(body.question, grids, comprehend_llm)
-                    if outcome.applied and outcome.block:
-                        _spine_block = outcome.block
-                        logger.info("[brain] executive spine applied (pivot=%s)", outcome.binding)
-                    elif outcome.abstained:
-                        # C4 enforcement: the spine RESOLVED a figure but its self-monitor
-                        # flagged the reasoning → carry the reason so REDUCE binary-WITHHOLDS
-                        # instead of letting the old path ship the wrong number (§5.5/§4a).
-                        _spine_abstain = outcome.reason or "self-monitor flagged the reasoning"
-                        logger.info("[brain] executive spine WITHHELD: %s", _spine_abstain)
-                except Exception as exc:
-                    logger.warning("[brain] executive spine skipped: %s", exc)
-
             results = analyze(body.question, grids, spec_llm)
             from src.components.brain.analyst import corroborate_with_prose
             prose = " ".join(
@@ -1209,20 +1167,15 @@ async def brain_query_stream(
                 _block = render_markdown(ok)
                 _count = len(ok)
                 logger.info("[brain] Analyst computed %d figures for the question", _count)
-            # the spine block LEADS (it bound the pivot + self-monitored the bridge); the
-            # Analyst table, if any, follows as corroborating detail. Either alone is fine.
-            if _spine_block:
-                _block = _spine_block + ("\n\n" + _block if _block else "")
-                _count = max(_count, 1)
         except Exception as exc:
             logger.warning("[brain] Analyst step skipped: %s", exc)
-        return _block, _count, _spine_abstain
+        return _block, _count
 
     try:
-        analyst_block, analyst_count, spine_abstain = await asyncio.to_thread(_run_analyst_sync)
+        analyst_block, analyst_count = await asyncio.to_thread(_run_analyst_sync)
     except Exception as exc:
         logger.warning("[brain] Analyst thread failed: %s", exc)
-        analyst_block, analyst_count, spine_abstain = None, 0, None
+        analyst_block, analyst_count = None, 0
 
     # Pass the sync generator straight to StreamingResponse — Starlette iterates it
     # in a worker thread, so the blocking MAP/REDUCE/VERIFY work stays off the event
@@ -1240,7 +1193,6 @@ async def brain_query_stream(
                 conversation_id=conversation_id,
                 analyst_block=analyst_block,
                 analyst_count=analyst_count,
-                spine_abstain=spine_abstain,
             ),
             sb,
             conversation_id,
