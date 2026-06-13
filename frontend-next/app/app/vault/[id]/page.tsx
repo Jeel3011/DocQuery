@@ -1,0 +1,390 @@
+"use client";
+
+// /app/vault/[id] — Inside a Vault, the workspace (G2 Step C).
+// Harvey's vault-detail shape, adapted (plan §8): top→bottom, NOT a 3-column split.
+//   header → action row (Review · Draft) → HERO composer + suggested chips → files table.
+// The vault screen IS the ask surface (Harvey's key move): submitting the composer opens
+// an Ask conversation scoped to this vault. Re-homing Ask/Review under this route is
+// Steps D/E — for now the composer opens the existing /app/chat/[id] and Review opens
+// /app/grid?collection=<id>, both already scoped to this vault via VaultScopeSync.
+//
+// Scope rule (G2 §9 risk #1): the route [id] is the AUTHORITATIVE vault scope. We read it
+// from useParams and pass it explicitly to every collection_id call site here (upload,
+// review link, doc fetch) — never reach into the store for it.
+//
+// doc_type / fidelity / clause-counts come from Step F; until then the table shows
+// Name · Type · Last modified · Size · status, with neutral Category/Fidelity placeholders.
+
+import { useCallback, useEffect, useRef, useState } from "react";
+import { useParams, useRouter } from "next/navigation";
+import { motion, AnimatePresence } from "framer-motion";
+import {
+  ArrowLeft, FolderOpen, Table2, FileEdit, FileText, CheckCircle, AlertCircle,
+  RefreshCw, Search, Trash2,
+} from "lucide-react";
+import { toast } from "sonner";
+import { useAuthStore } from "@/stores/auth.store";
+import {
+  listCollections, getCollectionDocuments, createConversation, deleteDocument,
+  CollectionResponse, DocumentResponse,
+} from "@/lib/api";
+import { ChatInput } from "@/components/chat/ChatInput";
+import { UploadZone } from "@/components/app/UploadZone";
+import { PipelineTrack } from "@/components/app/PipelineTrack";
+import { DocTypeChip, FidelityDot } from "@/components/app/DocMeta";
+import { EmptyState } from "@/components/ui/EmptyState";
+
+const ease = [0.23, 1, 0.32, 1] as const;
+
+// Doc-type-aware suggested prompts. Until Step F surfaces a vault-level type, we default
+// to the legal-contract set (DocQuery is law-first); a finance-typed vault swaps these in F.
+const CONTRACT_PROMPTS = [
+  "Find the change-of-control provisions across these contracts",
+  "Summarize governing law, term & termination for each",
+  "Flag any non-standard indemnity or liability caps",
+  "Which agreements auto-renew, and on what notice?",
+];
+
+function timeAgo(d: string | null): string {
+  if (!d) return "—";
+  const m = Math.floor((Date.now() - new Date(d).getTime()) / 60000);
+  if (m < 1) return "just now";
+  if (m < 60) return `${m}m ago`;
+  const h = Math.floor(m / 60);
+  if (h < 24) return `${h}h ago`;
+  return `${Math.floor(h / 24)}d ago`;
+}
+
+function fmtSize(bytes: number | null): string {
+  if (bytes == null) return "—";
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1048576) return `${(bytes / 1024).toFixed(0)} KB`;
+  return `${(bytes / 1048576).toFixed(1)} MB`;
+}
+
+function fileFormat(d: DocumentResponse): string {
+  const ext = d.file_type || d.filename.split(".").pop() || "";
+  return ext.replace(/^\./, "").toUpperCase() || "—";
+}
+
+export default function VaultWorkspacePage() {
+  const params = useParams();
+  const router = useRouter();
+  const { token } = useAuthStore();
+  const vaultId = (params?.id as string) ?? "";
+
+  const [vault, setVault] = useState<CollectionResponse | null>(null);
+  const [docs, setDocs] = useState<DocumentResponse[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [creating, setCreating] = useState(false);
+  const [query, setQuery] = useState("");
+  const [lastSync, setLastSync] = useState<number | null>(null);
+  const [confirmDel, setConfirmDel] = useState<string | null>(null); // doc id pending confirm
+  const pollRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const loadVault = useCallback(async () => {
+    if (!token || !vaultId) return;
+    try {
+      const cols = await listCollections(token);
+      setVault(cols.find((c) => c.id === vaultId) ?? null);
+    } catch { /* non-fatal — header just shows "Vault" */ }
+  }, [token, vaultId]);
+
+  const loadDocs = useCallback(async () => {
+    if (!token || !vaultId) return;
+    try {
+      setDocs(await getCollectionDocuments(token, vaultId));
+      setLastSync(Date.now());
+    } catch {
+      toast.error("Failed to load documents");
+    } finally {
+      setLoading(false);
+    }
+  }, [token, vaultId]);
+
+  useEffect(() => {
+    loadVault();
+    loadDocs();
+  }, [loadVault, loadDocs]);
+
+  // Live status poll: while any doc is still processing, refetch every 3s so the row's
+  // parse→chunk→embed progress advances and flips to ready/failed (same logic the old
+  // sidebar used). Clears itself when nothing is processing.
+  useEffect(() => {
+    // Poll faster (1.2s) while anything is processing so the pipeline track catches the
+    // intermediate Parse→Chunk→Embed bands rather than snapping straight to Ready; the
+    // poll stops itself once nothing is processing.
+    if (docs.some((d) => d.status === "processing")) {
+      pollRef.current = setTimeout(loadDocs, 1200);
+    }
+    return () => { if (pollRef.current) clearTimeout(pollRef.current); };
+  }, [docs, loadDocs]);
+
+  // Submitting the composer opens an Ask conversation scoped to this vault (the route id
+  // is already mirrored into the store by VaultScopeSync, so streamAgentCoreQuery picks up
+  // collection_id). Re-homed under this route in Step D.
+  async function ask(q: string) {
+    if (!token || creating || !q.trim()) return;
+    setCreating(true);
+    try {
+      const c = await createConversation(token, q.slice(0, 50));
+      router.push(`/app/chat/${c.id}?q=${encodeURIComponent(q)}`);
+    } catch {
+      toast.error("Failed to start conversation");
+      setCreating(false);
+    }
+  }
+
+  // Delete a document (optimistic; deleteDocument treats 404 as success — the delete-
+  // robustness fix). Restores the row on a real failure.
+  async function handleDelete(id: string) {
+    if (!token) return;
+    setConfirmDel(null);
+    const prev = docs;
+    setDocs((p) => p.filter((d) => d.id !== id));
+    setVault((v) => (v ? { ...v, document_count: Math.max(0, (v.document_count ?? 1) - 1) } : v));
+    try {
+      await deleteDocument(token, id);
+      toast.success("Document deleted");
+    } catch {
+      setDocs(prev);
+      toast.error("Failed to delete document");
+    }
+  }
+
+  const filtered = query.trim()
+    ? docs.filter((d) => d.filename.toLowerCase().includes(query.toLowerCase()))
+    : docs;
+  // Processing docs walk the pipeline tracks (the live verification view); settled docs
+  // (ready/failed) live in the table below. Both come from the same polled list.
+  const processing = filtered.filter((d) => d.status === "processing");
+  const settled = filtered.filter((d) => d.status !== "processing");
+
+  return (
+    <div className="flex-1 overflow-y-auto scrollbar-thin relative">
+      <div className="absolute inset-0 dot-grid opacity-[0.10] pointer-events-none" />
+
+      <div className="relative max-w-5xl mx-auto px-6 py-8">
+        {/* Back */}
+        <button
+          onClick={() => router.push("/app")}
+          className="inline-flex items-center gap-1.5 text-[12px] text-[var(--text-muted)] hover:text-[var(--text-primary)] transition-colors mb-5"
+        >
+          <ArrowLeft size={13} /> All vaults
+        </button>
+
+        {/* Header */}
+        <div className="flex items-center gap-3 mb-8">
+          <span
+            className="w-11 h-11 rounded-xl flex items-center justify-center flex-shrink-0"
+            style={{ background: "var(--surface-3)", border: "1px solid var(--line)", color: "var(--ink-2)" }}
+          >
+            <FolderOpen size={19} />
+          </span>
+          <div className="min-w-0">
+            <h1
+              className="truncate"
+              style={{ fontFamily: "Fraunces, Georgia, serif", fontSize: 27, fontWeight: 500, letterSpacing: "-0.025em", color: "var(--ink)" }}
+            >
+              {loading && !vault ? "…" : vault?.name ?? "Vault"}
+            </h1>
+            <p className="text-[12px] text-[var(--text-muted)]">
+              {docs.length} file{docs.length === 1 ? "" : "s"}
+            </p>
+          </div>
+        </div>
+
+        {/* Action row — Review · Draft as siblings above the composer (plan §8.1). */}
+        <div className="flex items-center justify-center gap-2.5 mb-4">
+          <button
+            onClick={() => router.push(`/app/grid?collection=${encodeURIComponent(vaultId)}`)}
+            className="flex items-center gap-2 px-4 py-2 rounded-xl text-[13px] font-medium card hover:shadow-[var(--shadow-md)] transition-shadow"
+          >
+            <Table2 size={14} className="text-[var(--text-muted)]" /> Review table
+          </button>
+          <button
+            onClick={() => toast("Draft document arrives in a later phase (G6).")}
+            className="flex items-center gap-2 px-4 py-2 rounded-xl text-[13px] font-medium card transition-shadow opacity-60 cursor-default"
+            title="Coming in G6"
+          >
+            <FileEdit size={14} className="text-[var(--text-muted)]" /> Draft document
+          </button>
+        </div>
+
+        {/* HERO composer — the vault screen IS the ask surface (plan §8.1). */}
+        <ChatInput
+          onSubmit={ask}
+          isStreaming={creating}
+          placeholder="Ask about a clause, term, or risk across this vault…"
+          vaultName={vault?.name ?? null}
+          centered
+        />
+
+        {/* Suggested-prompt chips (doc-type-aware; legal default until Step F). */}
+        <div className="flex flex-wrap items-center justify-center gap-2 -mt-1 mb-10 px-4">
+          {CONTRACT_PROMPTS.map((p, i) => (
+            <motion.button
+              key={p}
+              initial={{ opacity: 0, y: 6 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ delay: 0.05 + i * 0.04, ease }}
+              onClick={() => ask(p)}
+              disabled={creating}
+              className="px-3 py-1.5 rounded-full text-[12px] transition-colors disabled:opacity-50"
+              style={{ background: "var(--surface)", border: "1px solid var(--line)", color: "var(--ink-2)" }}
+            >
+              {p}
+            </motion.button>
+          ))}
+        </div>
+
+        {/* ── Files section ── */}
+        <div className="flex items-center justify-between mb-3">
+          <h2 className="text-[14px] font-semibold" style={{ color: "var(--ink)" }}>Files</h2>
+          <div className="flex items-center gap-2.5">
+            {lastSync && (
+              <span className="text-[11px] text-[var(--text-muted)] hidden sm:inline">
+                Last synced {timeAgo(new Date(lastSync).toISOString())}
+              </span>
+            )}
+            <div
+              className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg"
+              style={{ background: "var(--surface)", border: "1px solid var(--line)" }}
+            >
+              <Search size={12} className="text-[var(--text-muted)]" />
+              <input
+                value={query}
+                onChange={(e) => setQuery(e.target.value)}
+                placeholder="Search files"
+                className="bg-transparent outline-none text-[12px] w-28 text-[var(--text-primary)] placeholder:text-[var(--text-muted)]"
+              />
+            </div>
+            <button
+              onClick={loadDocs}
+              title="Refresh"
+              className="p-1.5 rounded-lg hover:bg-[var(--bg-hover)] text-[var(--text-muted)] hover:text-[var(--text-primary)] transition-colors"
+            >
+              <RefreshCw size={13} />
+            </button>
+          </div>
+        </div>
+
+        {/* Ingress — slim command bar + full-page drag overlay (the NEW hybrid UX). */}
+        <div className="mb-3">
+          <UploadZone token={token ?? ""} collectionId={vaultId} onUploaded={loadDocs} />
+        </div>
+
+        {/* Live pipeline tracks — processing docs visibly walk Parse→Chunk→Embed→Ready.
+            This is our differentiator: the verification pipeline is SEEN, not hidden. */}
+        <AnimatePresence>
+          {processing.length > 0 && (
+            <motion.div
+              initial={{ opacity: 0, height: 0 }}
+              animate={{ opacity: 1, height: "auto" }}
+              exit={{ opacity: 0, height: 0 }}
+              className="space-y-2 mb-3 overflow-hidden"
+            >
+              {processing.map((d) => (
+                <PipelineTrack key={d.id} doc={d} fidelity={null} />
+              ))}
+            </motion.div>
+          )}
+        </AnimatePresence>
+
+        {/* Settled files table (ready / failed) */}
+        <div className="rounded-2xl overflow-hidden mb-5" style={{ background: "var(--surface)", border: "1px solid var(--line)" }}>
+          {loading ? (
+            <div className="p-8 text-center text-[13px] text-[var(--text-muted)]">Loading files…</div>
+          ) : settled.length === 0 ? (
+            processing.length === 0 ? (
+              <EmptyState
+                icon={<FileText size={18} />}
+                title={query ? "No files match" : "No files yet"}
+                description={query ? "Try a different search." : "Add documents above — drag them anywhere on this page, or use the bar."}
+              />
+            ) : null
+          ) : (
+            <table className="w-full text-left" style={{ borderCollapse: "collapse" }}>
+              <thead>
+                <tr className="text-[11px] uppercase tracking-wide text-[var(--text-muted)]">
+                  <th className="font-medium px-4 py-2.5">Name</th>
+                  <th className="font-medium px-3 py-2.5 hidden md:table-cell">Category</th>
+                  <th className="font-medium px-3 py-2.5 hidden sm:table-cell">Type</th>
+                  <th className="font-medium px-3 py-2.5 hidden lg:table-cell">Fidelity</th>
+                  <th className="font-medium px-3 py-2.5 hidden md:table-cell">Modified</th>
+                  <th className="font-medium px-3 py-2.5 hidden sm:table-cell">Size</th>
+                  <th className="font-medium px-4 py-2.5">Status</th>
+                  <th className="font-medium px-3 py-2.5 w-px" aria-label="Actions" />
+                </tr>
+              </thead>
+              <tbody>
+                {settled.map((d) => (
+                  <tr
+                    key={d.id}
+                    className="group text-[13px] border-t hover:bg-[var(--bg-hover)] transition-colors"
+                    style={{ borderColor: "var(--line)" }}
+                  >
+                    <td className="px-4 py-3">
+                      <div className="flex items-center gap-2.5 min-w-0">
+                        <FileText size={14} className="text-[var(--text-muted)] flex-shrink-0" />
+                        <span className="truncate text-[var(--text-primary)] max-w-[280px]">{d.filename}</span>
+                      </div>
+                    </td>
+                    {/* Category = G1d doc_type (domain) — neutral placeholder until Step F */}
+                    <td className="px-3 py-3 hidden md:table-cell"><DocTypeChip type={null} /></td>
+                    {/* Type = file format (distinct from Category) */}
+                    <td className="px-3 py-3 hidden sm:table-cell text-[var(--text-muted)] text-[12px]">{fileFormat(d)}</td>
+                    {/* Fidelity = trust dot — neutral placeholder until Step F */}
+                    <td className="px-3 py-3 hidden lg:table-cell"><FidelityDot fidelity={null} /></td>
+                    <td className="px-3 py-3 hidden md:table-cell text-[var(--text-muted)] text-[12px]">{timeAgo(d.created_at)}</td>
+                    <td className="px-3 py-3 hidden sm:table-cell text-[var(--text-muted)] text-[12px]">{fmtSize(d.file_size_bytes)}</td>
+                    <td className="px-4 py-3">
+                      {d.status === "ready" ? (
+                        <span className="inline-flex items-center gap-1.5 text-[12px]" style={{ color: "var(--fidelity-good)" }}>
+                          <CheckCircle size={13} /> Ready
+                        </span>
+                      ) : (
+                        <span className="inline-flex items-center gap-1.5 text-[12px]" style={{ color: "var(--status-failed)" }}>
+                          <AlertCircle size={13} /> Failed
+                        </span>
+                      )}
+                    </td>
+                    {/* Delete — hover-revealed trash that flips to an inline confirm */}
+                    <td className="px-3 py-3 text-right whitespace-nowrap">
+                      {confirmDel === d.id ? (
+                        <span className="inline-flex items-center gap-1.5">
+                          <button
+                            onClick={() => handleDelete(d.id)}
+                            className="text-[11px] px-2 py-1 rounded-md font-medium"
+                            style={{ background: "var(--status-failed)", color: "#fff" }}
+                          >
+                            Delete
+                          </button>
+                          <button
+                            onClick={() => setConfirmDel(null)}
+                            className="text-[11px] px-2 py-1 rounded-md text-[var(--text-muted)] hover:text-[var(--text-primary)]"
+                          >
+                            Cancel
+                          </button>
+                        </span>
+                      ) : (
+                        <button
+                          onClick={() => setConfirmDel(d.id)}
+                          title="Delete document"
+                          aria-label={`Delete ${d.filename}`}
+                          className="p-1.5 rounded-lg text-[var(--text-muted)] opacity-0 group-hover:opacity-100 hover:text-[var(--status-failed)] hover:bg-[var(--bg-hover)] transition-[color,opacity] focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)]"
+                        >
+                          <Trash2 size={14} />
+                        </button>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}

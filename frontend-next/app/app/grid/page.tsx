@@ -7,6 +7,7 @@
 // clause grounded in a quoted source, or flagged — no silent wrong cell."
 
 import { useEffect, useMemo, useRef, useState } from "react";
+import { useSearchParams } from "next/navigation";
 import { useAuthStore } from "@/stores/auth.store";
 import { listCollections, getCollectionDocuments, CollectionResponse, DocumentResponse } from "@/lib/api";
 import {
@@ -53,8 +54,12 @@ const STATUS_STYLE: Record<string, { bg: string; fg: string; label: string }> = 
 
 export default function ReviewGridPage() {
   const { token } = useAuthStore();
+  const searchParams = useSearchParams();
+  // A vault workspace links here with ?collection=<id> to pre-scope the grid (G2 Step C).
+  // The route-supplied id wins over the first-collection default below.
+  const scopedCollection = searchParams.get("collection");
   const [collections, setCollections] = useState<CollectionResponse[]>([]);
-  const [collectionId, setCollectionId] = useState<string>("");
+  const [collectionId, setCollectionId] = useState<string>(scopedCollection ?? "");
   const [docs, setDocs] = useState<DocumentResponse[]>([]);
   const [columns, setColumns] = useState<ReviewGridColumnSpec[]>(PRESETS.slice(0, 3));
 
@@ -71,7 +76,11 @@ export default function ReviewGridPage() {
     if (!token) return;
     listCollections(token).then((cs) => {
       setCollections(cs);
-      if (cs.length && !collectionId) setCollectionId(cs[0].id);
+      // Honor a route-scoped collection if it exists in the list; else fall back to first.
+      if (cs.length && !collectionId) {
+        const scoped = scopedCollection && cs.some((c) => c.id === scopedCollection) ? scopedCollection : null;
+        setCollectionId(scoped ?? cs[0].id);
+      }
     }).catch(() => {});
   }, [token]); // eslint-disable-line react-hooks/exhaustive-deps
 

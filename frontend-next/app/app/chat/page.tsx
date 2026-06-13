@@ -10,7 +10,6 @@ import { useState, useEffect } from "react";
 import { ChatInput } from "@/components/chat/ChatInput";
 import { FolderOpen, ArrowRight, FileText, Brain, Zap } from "lucide-react";
 import { useProfileStore } from "@/stores/profile.store";
-import { NamePrompt } from "@/components/app/NamePrompt";
 import { getMe } from "@/lib/api";
 
 const ease = [0.16, 1, 0.3, 1] as const;
@@ -79,8 +78,7 @@ export default function ChatIndexPage() {
 
   return (
     <div className="flex flex-col h-full" style={{ background: "var(--canvas)" }}>
-      {/* First-run: ask what the assistant should call the user */}
-      <NamePrompt fallback={fallbackName} />
+      {/* NamePrompt now lives in the app shell (layout.tsx) — app-wide, not per-page. */}
 
       {/* Dot grid background */}
       <div className="absolute inset-0 dot-grid opacity-[0.12] pointer-events-none" />
@@ -215,7 +213,7 @@ export default function ChatIndexPage() {
               className="text-center text-[12px]"
               style={{ color: "var(--ink-3)" }}
             >
-              ← Upload documents in the sidebar to get started
+              Open a vault and upload documents to get started
             </p>
           )}
         </motion.div>

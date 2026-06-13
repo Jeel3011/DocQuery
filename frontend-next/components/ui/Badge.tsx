@@ -15,7 +15,7 @@ const variants: Record<BadgeVariant, string> = {
   success: "bg-green-50 text-[var(--status-ready)] border-green-200",
   warning: "bg-amber-50 text-[var(--status-processing)] border-amber-200",
   error: "bg-red-50 text-[var(--status-failed)] border-red-200",
-  warm: "bg-[var(--warm-50)] text-[var(--warm-700)] border-[var(--warm-300)]",
+  warm: "bg-[var(--surface-3)] text-[var(--ink-2)] border-[var(--line-2)]",
 };
 
 export function Badge({ variant = "default", className, children, ...props }: BadgeProps) {

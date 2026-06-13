@@ -23,12 +23,12 @@
   --z-dialog: 400;
   --z-toast: 500;
 
-  /* ── Pure monochrome canvas ──
-     Neutral off-white canvas; surfaces graduate toward pure white.
-     No warmth — true black / white / grey only. */
-  --canvas:    #F4F4F4;     /* page canvas — light grey */
-  --surface:   #FFFFFF;     /* card / modal surfaces */
-  --surface-2: #FAFAFA;     /* near-white */
+  /* ── Clean black-and-white canvas (G2 §0.5, law aesthetic) ──
+     Faint-grey page canvas so pure-white surfaces keep a visible edge;
+     true black / white / grey only — no warmth anywhere. */
+  --canvas:    #FAFAFA;     /* page canvas — faint grey (cards float on it) */
+  --surface:   #FFFFFF;     /* card / modal surfaces — pure white */
+  --surface-2: #F7F7F7;     /* near-white inset */
   --surface-3: #EFEFEF;     /* recessed panels / code blocks */
 
   /* ── Ink scale (neutral grey) ── */
@@ -53,7 +53,7 @@
   --bg-surface:  var(--surface);
   --bg-elevated: var(--surface);
   --bg-hover:    var(--surface-3);
-  --bg-active:   #EAE4D9;
+  --bg-active:   #EAEAEA;
   --bg-sidebar:  var(--canvas);
   --text-primary:   var(--ink);
   --text-secondary: var(--ink-2);
@@ -61,12 +61,20 @@
   --text-inverse:   var(--on-ink);
   --border:        var(--line);
   --border-strong: var(--line-2);
-  --border-dotted: #C8BFB0;
+  --border-dotted: #D4D4D4;   /* neutral grey dotted (was warm taupe #C8BFB0) */
+  --accent-subtle: var(--surface-3);  /* faint neutral hover wash for dotted cards */
 
   /* Status — monochrome; red retained only for genuine risk/failure */
   --status-ready: #2E2E2E;
   --status-processing: #6B6B6B;
   --status-failed: #C0392B;
+
+  /* Trust trichrome — the ONLY semantic color in the B&W system. Used solely on
+     fidelity dots, review verdict chips, and the agent gate (meaning, never decor).
+     green = traced/good · amber = partial/needs-review · red = withheld/risk. */
+  --fidelity-good:    #2E7D32;   /* green — high-fidelity / traced / found */
+  --fidelity-partial: #B7791F;   /* amber — partial coverage / needs review */
+  --fidelity-failed:  var(--status-failed);  /* red — withheld / abstain / risk */
 
   /* Thinking-stream step states */
   --step-pending: var(--line-2);
@@ -91,8 +99,8 @@
   --glass-shadow:    0 8px 32px -8px rgba(0,0,0,0.14), 0 2px 6px -2px rgba(0,0,0,0.08), inset 0 1px 0 rgba(255,255,255,0.80);
   --glass-shadow-lg: 0 24px 64px -16px rgba(0,0,0,0.20), 0 6px 16px -6px rgba(0,0,0,0.10), inset 0 1px 0 rgba(255,255,255,0.85);
 
-  /* ── Skeuomorphic depth ───────────────────────────────────────────────────── */
-  --skeu-paper:      #FEFEFE;
+  /* ── Skeuomorphic depth (neutral shadows only; no warm paper) ─────────────── */
+  --skeu-paper:      #FFFFFF;
   --skeu-paper-edge: rgba(0, 0, 0, 0.07);
   --skeu-paper-shadow: 0 2px 0 rgba(0,0,0,0.04), 0 4px 12px rgba(0,0,0,0.06);
   --skeu-inset:      inset 0 1px 0 rgba(255,255,255,0.95), inset 0 -1px 0 rgba(0,0,0,0.04);
@@ -100,8 +108,8 @@
      so this only adds the subtle bottom hairline — avoids a doubled/muddy edge. */
   --skeu-inset-glass: inset 0 -1px 0 rgba(0,0,0,0.04);
   --skeu-raised:     0 1px 0 rgba(255,255,255,0.95), 0 2px 4px rgba(0,0,0,0.08);
-  /* SVG fractal-noise grain for paper realism (inlined, no external asset) */
-  --paper-noise: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.06'/%3E%3C/svg%3E");
+  /* (G2 §0.5) warm-paper grain texture removed for the clean B&W system.
+     Neutral skeu shadows above are kept for depth. */
 
   /* ── Artifact panel ───────────────────────────────────────────────────────── */
   --artifact-w: 50%;
@@ -184,7 +192,7 @@ body {
   }
 
   /* ── Aurora mesh background ──
-     Multiple soft radial gradients in warm-neutral tones. This is what the
+     Multiple soft radial gradients in neutral greys. This is what the
      glass blurs against — without it, glass reads as flat white. */
   .aurora {
     position: absolute;
@@ -234,20 +242,10 @@ body {
   .aurora-fixed::before { opacity: 0.85; }
   .aurora-fixed::after  { opacity: 0.5; }
 
-  /* Subtle paper grain — multiply-blended noise for skeuomorphic surfaces */
+  /* (G2 §0.5) .paper-grain noise texture removed — clean B&W has no grain.
+     Kept as a no-op positioning context so existing class usages don't break. */
   .paper-grain {
     position: relative;
-  }
-  .paper-grain::after {
-    content: "";
-    position: absolute;
-    inset: 0;
-    border-radius: inherit;
-    pointer-events: none;
-    opacity: 0.5;
-    mix-blend-mode: multiply;
-    background-image: var(--paper-noise);
-    background-size: 160px 160px;
   }
 
   /* ── Skeuomorphic paper stack ── */

@@ -155,10 +155,10 @@ export function ChatInput({
           )}
         </AnimatePresence>
 
-        {/* Main composer — a warm 'sheet of paper' with layered depth + focus glow.
-            Editorial/warm-paper direction: warm off-white gradient, a hairline warm
-            border, a soft stacked shadow (paper lifting off the page), and a faint top
-            highlight. On focus/typing it gently lifts + warms its ring. */}
+        {/* Main composer — a crisp white 'sheet of paper' with layered depth + focus glow.
+            Clean B&W direction: white→faint-grey gradient, a hairline neutral border, a
+            soft stacked shadow (paper lifting off the page), and a faint top highlight.
+            On focus/typing it gently lifts + tightens its ring. */}
         <motion.div
           animate={{
             scale: focused ? 1.006 : 1,

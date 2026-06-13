@@ -23,7 +23,7 @@ const variants: Record<ChipVariant, string> = {
   argument:
     "text-[var(--accent)] border-[var(--accent)] bg-transparent",
   strategy:
-    "text-[var(--warm-700)] border-[var(--warm-300)] bg-[var(--warm-50)]",
+    "text-[var(--ink-2)] border-[var(--line-2)] bg-[var(--surface-3)]",
 };
 
 export function Chip({ variant = "default", num, className, children, ...props }: ChipProps) {
