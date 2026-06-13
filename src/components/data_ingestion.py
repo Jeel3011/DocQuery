@@ -531,6 +531,12 @@ def chunk_legal_prose(text_elements: List, max_chars: int) -> List:
 class DocumentProcessor:
     def __init__(self, config: Config):
         self.config = config
+        # G1d / G2 Step F: the last-processed doc's structural class and coarse
+        # extraction-fidelity grade, exposed for the worker to persist on the doc row.
+        # doc_type is set in build_langchain_documents; fidelity in _build_table_chunks
+        # (legal docs skip the table pass, so they stay None — honest "unknown").
+        self._last_doc_type = None
+        self._last_fidelity = None
 
     def _detect_strategy(self, file_path: str, file_ext: str, page_count: Optional[int] = None) -> str:
         """
@@ -1037,12 +1043,19 @@ class DocumentProcessor:
             from src.components.extraction_fidelity import fidelity_report
             fid = fidelity_report(pdf_path, tables)
             if fid.get("uncovered"):
+                # G2 Step F: any uncovered text-layer data line → 'partial' (the trust
+                # dot flags it for a reviewer). Full coverage → 'good'. The report ran
+                # (pages_checked may be 0 if there were no table pages — then leave the
+                # grade unset rather than claim 'good' on no evidence).
+                self._last_fidelity = "partial"
                 _logger.warning(
                     "[ingest] FIDELITY: %s — %d/%d text-layer data line(s) NOT covered "
                     "by extracted grids (silent row drops?): %s",
                     pdf_path, len(fid["uncovered"]), fid.get("data_lines", 0),
                     [(u["page"], u["line"][:60]) for u in fid["uncovered"][:5]])
             else:
+                if fid.get("pages_checked"):
+                    self._last_fidelity = "good"
                 _logger.info("[ingest] fidelity ok: %s — %d data lines across %d pages covered",
                              pdf_path, fid.get("data_lines", 0), fid.get("pages_checked", 0))
         except Exception as exc:  # noqa: BLE001

@@ -164,9 +164,11 @@ export default function VaultHomePage() {
                   >
                     <FolderOpen size={17} />
                   </span>
-                  {/* Type-mix indicator — neutral until Step F surfaces per-doc doc_type.
-                      A single quiet dot stands in for "documents present"; it stays neutral
-                      (no fake green) until real classification lands. */}
+                  {/* Type-mix indicator — kept a single neutral "documents present" dot.
+                      listCollections returns only document_count, not per-doc doc_type, so a
+                      real type-mix would cost an extra getCollectionDocuments per card on the
+                      home grid. The real type/fidelity surfacing (Step F) lives in the vault
+                      doc table where the data is already fetched; the home dot stays neutral. */}
                   {(c.document_count ?? 0) > 0 && (
                     <span
                       className="w-2 h-2 rounded-full mt-1.5"

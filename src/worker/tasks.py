@@ -173,7 +173,13 @@ def process_document_task(
         # -- Done: the vectors are now in Pinecone, so the document is queryable.
         # Mark it ready immediately (Fix #3) — the user shouldn't wait on the Supabase
         # chunk bookkeeping below, which adds ~2s and nothing reads for retrieval.
-        sb.update_document_status(doc_id, "ready", len(chunks), progress_pct=100)
+        # G2 Step F: persist the G1d class + coarse fidelity grade computed during
+        # chunking/extraction so the doc table can show the type chip + trust dot.
+        sb.update_document_status(
+            doc_id, "ready", len(chunks), progress_pct=100,
+            doc_type=getattr(processor, "_last_doc_type", None),
+            fidelity=getattr(processor, "_last_fidelity", None),
+        )
         uploads_total.labels(status="success").inc()
 
         total_time = time.perf_counter() - t_start

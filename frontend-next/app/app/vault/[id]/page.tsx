@@ -4,16 +4,17 @@
 // Harvey's vault-detail shape, adapted (plan §8): top→bottom, NOT a 3-column split.
 //   header → action row (Review · Draft) → HERO composer + suggested chips → files table.
 // The vault screen IS the ask surface (Harvey's key move): submitting the composer opens
-// an Ask conversation scoped to this vault. Re-homing Ask/Review under this route is
-// Steps D/E — for now the composer opens the existing /app/chat/[id] and Review opens
-// /app/grid?collection=<id>, both already scoped to this vault via VaultScopeSync.
+// an Ask conversation scoped to this vault. Ask (Step D) and Review (Step E) are now
+// re-homed under this route: the composer opens /app/vault/[id]/ask/[cid] and Review
+// opens /app/vault/[id]/review — both pre-scoped to this vault by the route [id].
 //
 // Scope rule (G2 §9 risk #1): the route [id] is the AUTHORITATIVE vault scope. We read it
 // from useParams and pass it explicitly to every collection_id call site here (upload,
 // review link, doc fetch) — never reach into the store for it.
 //
-// doc_type / fidelity / clause-counts come from Step F; until then the table shows
-// Name · Type · Last modified · Size · status, with neutral Category/Fidelity placeholders.
+// doc_type / fidelity come from the Step F backend slice and are now rendered as the
+// Category chip + Fidelity dot (real values; null degrades to a neutral placeholder for
+// legacy docs ingested before Step F / legal docs that skip the table-fidelity pass).
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
@@ -198,7 +199,7 @@ export default function VaultWorkspacePage() {
         {/* Action row — Review · Draft as siblings above the composer (plan §8.1). */}
         <div className="flex items-center justify-center gap-2.5 mb-4">
           <button
-            onClick={() => router.push(`/app/grid?collection=${encodeURIComponent(vaultId)}`)}
+            onClick={() => router.push(`/app/vault/${encodeURIComponent(vaultId)}/review`)}
             className="flex items-center gap-2 px-4 py-2 rounded-xl text-[13px] font-medium card hover:shadow-[var(--shadow-md)] transition-shadow"
           >
             <Table2 size={14} className="text-[var(--text-muted)]" /> Review table
@@ -331,12 +332,12 @@ export default function VaultWorkspacePage() {
                         <span className="truncate text-[var(--text-primary)] max-w-[280px]">{d.filename}</span>
                       </div>
                     </td>
-                    {/* Category = G1d doc_type (domain) — neutral placeholder until Step F */}
-                    <td className="px-3 py-3 hidden md:table-cell"><DocTypeChip type={null} /></td>
+                    {/* Category = G1d doc_type (domain) — real value (Step F); null → neutral chip */}
+                    <td className="px-3 py-3 hidden md:table-cell"><DocTypeChip type={d.doc_type ?? null} /></td>
                     {/* Type = file format (distinct from Category) */}
                     <td className="px-3 py-3 hidden sm:table-cell text-[var(--text-muted)] text-[12px]">{fileFormat(d)}</td>
-                    {/* Fidelity = trust dot — neutral placeholder until Step F */}
-                    <td className="px-3 py-3 hidden lg:table-cell"><FidelityDot fidelity={null} /></td>
+                    {/* Fidelity = trust dot — real value (Step F); null → hollow neutral dot */}
+                    <td className="px-3 py-3 hidden lg:table-cell"><FidelityDot fidelity={d.fidelity ?? null} /></td>
                     <td className="px-3 py-3 hidden md:table-cell text-[var(--text-muted)] text-[12px]">{timeAgo(d.created_at)}</td>
                     <td className="px-3 py-3 hidden sm:table-cell text-[var(--text-muted)] text-[12px]">{fmtSize(d.file_size_bytes)}</td>
                     <td className="px-4 py-3">

@@ -289,7 +289,8 @@ class SupabaseManager:
         return res.data[0] if res.data else {}
 
     def update_document_status(self, doc_id: str, status: str,
-                               chunk_count: int = 0, progress_pct: int = None):
+                               chunk_count: int = 0, progress_pct: int = None,
+                               doc_type: str = None, fidelity: str = None):
         """Update document processing status.
 
         Args:
@@ -297,6 +298,10 @@ class SupabaseManager:
             status: 'processing', 'ready', or 'failed'.
             chunk_count: Number of chunks (set when status='ready').
             progress_pct: Optional 0-100 progress percentage shown during processing.
+            doc_type: G2 Step F — G1d structural class (financial_filing|legal_contract|
+                mixed|generic), persisted when the doc flips to 'ready'.
+            fidelity: G2 Step F — coarse extraction-fidelity grade (good|partial),
+                persisted when the doc flips to 'ready'.
         """
         update_data = {
             "status": status,
@@ -305,15 +310,24 @@ class SupabaseManager:
         # C6: persist the progress percentage so the UI can show real progress.
         if progress_pct is not None:
             update_data["processing_progress"] = max(0, min(100, int(progress_pct)))
+        # G2 Step F: persist G1d class + fidelity grade so the doc table can show the
+        # type chip + trust dot. These columns are added by migration 007; the retry
+        # below keeps status updating if that migration isn't applied yet.
+        if doc_type is not None:
+            update_data["doc_type"] = doc_type
+        if fidelity is not None:
+            update_data["fidelity"] = fidelity
         try:
             self.client.table("documents").update(
                 update_data
             ).eq("id", doc_id).eq("user_id", self.user_id).execute()
         except Exception:
-            # Forward-compat: if the processing_progress column isn't present yet
-            # (migration 005 not applied), retry without it so status still updates.
-            if "processing_progress" in update_data:
-                update_data.pop("processing_progress")
+            # Forward-compat: if the newer columns aren't present yet (migration 005 /
+            # 007 not applied), retry without them so status still updates.
+            forward_compat_keys = ("processing_progress", "doc_type", "fidelity")
+            if any(k in update_data for k in forward_compat_keys):
+                for k in forward_compat_keys:
+                    update_data.pop(k, None)
                 self.client.table("documents").update(
                     update_data
                 ).eq("id", doc_id).eq("user_id", self.user_id).execute()

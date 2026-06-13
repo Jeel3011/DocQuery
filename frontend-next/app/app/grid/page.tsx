@@ -6,7 +6,7 @@
 // absent (itself a finding); ABSTAIN / ERROR are honestly flagged. The headline: "every
 // clause grounded in a quoted source, or flagged — no silent wrong cell."
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { Suspense, useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import { useAuthStore } from "@/stores/auth.store";
 import { listCollections, getCollectionDocuments, CollectionResponse, DocumentResponse } from "@/lib/api";
@@ -52,12 +52,35 @@ const STATUS_STYLE: Record<string, { bg: string; fg: string; label: string }> = 
   error:   { bg: "rgba(220,38,38,0.08)", fg: "#b3261e", label: "error" },
 };
 
-export default function ReviewGridPage() {
+// Props let this page be RE-HOMED under /app/vault/[id]/review (G2 Step E) without
+// forking the grid logic into a second, drift-prone copy. When the vault route mounts
+// it, `scopedCollectionId` is the route's [id] — the AUTHORITATIVE vault scope (§9
+// risk #1: the URL wins). On that path the in-page collection picker is dropped (the
+// route IS the scope) and streamReviewGrid binds to the route-derived id. The legacy
+// /app/grid route passes nothing and behaves byte-identically (picker + ?collection=).
+export interface ReviewGridProps {
+  scopedCollectionId?: string; // route-authoritative vault id (vault route only)
+}
+
+export default function ReviewGridPage(props: ReviewGridProps = {}) {
+  return (
+    <Suspense fallback={<div className="flex-1" />}>
+      <ReviewGridInner {...props} />
+    </Suspense>
+  );
+}
+
+// Exported so the vault route can render the grid directly with props.
+export { ReviewGridPage as ReviewGrid };
+
+function ReviewGridInner({ scopedCollectionId }: ReviewGridProps) {
   const { token } = useAuthStore();
   const searchParams = useSearchParams();
-  // A vault workspace links here with ?collection=<id> to pre-scope the grid (G2 Step C).
-  // The route-supplied id wins over the first-collection default below.
-  const scopedCollection = searchParams.get("collection");
+  // Two scope sources: the route-authoritative vault id (vault route, §9 risk #1) takes
+  // precedence; otherwise the legacy ?collection=<id> deep-link (used by old /app/grid
+  // links). Either wins over the first-collection default below.
+  const scopedCollection = scopedCollectionId ?? searchParams.get("collection");
+  const routeScoped = !!scopedCollectionId; // vault route: hide the picker
   const [collections, setCollections] = useState<CollectionResponse[]>([]);
   const [collectionId, setCollectionId] = useState<string>(scopedCollection ?? "");
   const [docs, setDocs] = useState<DocumentResponse[]>([]);
@@ -71,13 +94,21 @@ export default function ReviewGridPage() {
   const [err, setErr] = useState<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
 
-  // Load collections once.
+  // On the vault route the URL is the source of truth: lock the scope to the route id
+  // regardless of what's loaded, so a deep-link / back-button / second tab can never
+  // bind the grid to the wrong vault (§9 risk #1). Re-runs if the route id changes.
+  useEffect(() => {
+    if (routeScoped && scopedCollectionId) setCollectionId(scopedCollectionId);
+  }, [routeScoped, scopedCollectionId]);
+
+  // Load collections once (needed for the legacy picker; harmless on the vault route).
   useEffect(() => {
     if (!token) return;
     listCollections(token).then((cs) => {
       setCollections(cs);
-      // Honor a route-scoped collection if it exists in the list; else fall back to first.
-      if (cs.length && !collectionId) {
+      // Legacy route only: honor a ?collection= scoped id if present, else first collection.
+      // The vault route is locked by the effect above and must not fall back to first.
+      if (!routeScoped && cs.length && !collectionId) {
         const scoped = scopedCollection && cs.some((c) => c.id === scopedCollection) ? scopedCollection : null;
         setCollectionId(scoped ?? cs[0].id);
       }
@@ -176,16 +207,24 @@ export default function ReviewGridPage() {
         </div>
 
         <div className="flex items-center gap-3 flex-wrap">
-          {/* Collection picker */}
-          <select
-            value={collectionId}
-            onChange={(e) => setCollectionId(e.target.value)}
-            className="text-[13px] px-3 py-1.5 rounded-lg border border-[var(--glass-border)] bg-white"
-          >
-            {collections.map((c) => (
-              <option key={c.id} value={c.id}>{c.name} ({c.document_count ?? "?"})</option>
-            ))}
-          </select>
+          {/* Collection picker — legacy /app/grid only. On the vault route the [id]
+              segment IS the scope (§9 risk #1), so the picker is dropped and we show the
+              locked vault name instead. */}
+          {routeScoped ? (
+            <span className="text-[13px] px-3 py-1.5 rounded-lg border border-[var(--glass-border)] bg-white text-[var(--text-secondary)]">
+              {collections.find((c) => c.id === collectionId)?.name ?? "This vault"}
+            </span>
+          ) : (
+            <select
+              value={collectionId}
+              onChange={(e) => setCollectionId(e.target.value)}
+              className="text-[13px] px-3 py-1.5 rounded-lg border border-[var(--glass-border)] bg-white"
+            >
+              {collections.map((c) => (
+                <option key={c.id} value={c.id}>{c.name} ({c.document_count ?? "?"})</option>
+              ))}
+            </select>
+          )}
 
           {/* Column presets */}
           <div className="flex items-center gap-1.5 flex-wrap">

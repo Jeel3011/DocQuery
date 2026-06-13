@@ -19,6 +19,10 @@ export interface DocumentResponse {
   file_size_bytes: number | null;
   created_at: string | null;
   processing_progress?: number | null;
+  // G2 Step F: G1d structural class + coarse extraction-fidelity grade, persisted at
+  // ingest. null = unknown/legacy → the UI shows a neutral chip/dot.
+  doc_type?: "legal_contract" | "financial_filing" | "mixed" | "generic" | null;
+  fidelity?: "good" | "partial" | null;
 }
 
 export interface ConversationResponse {

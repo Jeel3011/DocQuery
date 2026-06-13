@@ -52,6 +52,11 @@ class DocumentResponse(BaseModel):
     file_size_bytes: Optional[int] = None
     created_at: Optional[str] = None
     processing_progress: Optional[int] = 0   # C6: 0–100 ingest progress
+    # G2 Step F: G1d structural class (financial_filing|legal_contract|mixed|generic)
+    # and coarse extraction-fidelity grade (good|partial). None = unknown/legacy → the
+    # UI shows a neutral chip/dot. Persisted at ingest (migration 007).
+    doc_type: Optional[str] = None
+    fidelity: Optional[str] = None
 
 
 class DocumentListResponse(BaseModel):

@@ -223,6 +223,8 @@ async def list_documents(sb=Depends(get_current_user)):
                 file_size_bytes=d.get("file_size_bytes"),
                 created_at=d.get("created_at"),
                 processing_progress=d.get("processing_progress", 0),
+                doc_type=d.get("doc_type"),
+                fidelity=d.get("fidelity"),
             )
             for d in docs
         ],
