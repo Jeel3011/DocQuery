@@ -1,5 +1,6 @@
 import os
 import io
+import re
 import json
 import sys
 import math
@@ -291,6 +292,242 @@ def _process_pdf_page_range(
 
 
 
+# ── GRAND_PLAN G1a — boilerplate strip ───────────────────────────────────────
+# Repeated page chrome (running headers/footers, "Page 3 of 7", the source URL,
+# a print timestamp) recurs on every page of an EDGAR .htm→PDF and DOMINATES the
+# embedding of whatever clause shares its chunk — so a search for "governing law"
+# ranks the header/footer chunks above the one that actually holds the clause
+# (measured: 4/4 contract chunks polluted, 7× each of page-no/URL/timestamp).
+# Dropping it before chunking unburies the clause signal. Helps financial filings
+# too (cleaner prose chunks); the finance TABLE pass is geometry-based and never
+# sees these elements, so the moat is untouched. Structural, conservative,
+# never-raises — a parse error degrades to "no strip", identical to pre-G1a.
+
+# Standalone-chrome line patterns (matched on SHORT elements only, so a real
+# clause that merely mentions a URL is never dropped).
+_BP_PAGE_N_OF_M = re.compile(r"\bpage\s+\d+\s+of\s+\d+\b", re.IGNORECASE)
+_BP_BARE_URL = re.compile(r"https?://\S+", re.IGNORECASE)
+_BP_PRINT_TS = re.compile(
+    r"\b\d{1,2}/\d{1,2}/\d{2,4},?\s+\d{1,2}:\d{2}(:\d{2})?\s*[ap]\.?m\.?\b",
+    re.IGNORECASE,
+)
+# unstructured element categories that ARE page chrome — drop outright.
+_BP_CHROME_CATEGORIES = {"header", "footer", "pagenumber", "page_number"}
+# A short element whose text, after removing the chrome patterns, is (near-)empty
+# is itself chrome. Length ceiling guards real content from regex over-reach.
+_BP_SHORT_CEILING = 140
+_BP_RESIDUAL_FLOOR = 8  # chars of real text that must remain to KEEP a short element
+
+
+def _is_boilerplate_text(text: str) -> bool:
+    """True if a SHORT standalone element is page chrome (page-no / URL / timestamp).
+
+    Removes the three chrome signatures; if what remains is shorter than
+    ``_BP_RESIDUAL_FLOOR`` (i.e. the element was basically just chrome), it's
+    boilerplate. Long elements are never judged here — they're real content even
+    if they contain a URL.
+    """
+    if not text:
+        return True
+    stripped = text.strip()
+    if len(stripped) > _BP_SHORT_CEILING:
+        return False
+    residual = _BP_PRINT_TS.sub(" ", stripped)
+    residual = _BP_BARE_URL.sub(" ", residual)
+    residual = _BP_PAGE_N_OF_M.sub(" ", residual)
+    # collapse leftover separators/whitespace that framed the chrome
+    residual = re.sub(r"[\s|·•\-–—,:;]+", "", residual)
+    return len(residual) < _BP_RESIDUAL_FLOOR
+
+
+def _strip_boilerplate(text_elements: List) -> tuple:
+    """Drop page-chrome elements before chunking. Returns (kept, stats).
+
+    Two tiers: (1) unstructured-classified Header/Footer/PageNumber categories;
+    (2) short standalone elements that are nothing but page-no / URL / timestamp
+    chrome. Conservative by construction — only removes elements that are wholly
+    chrome, never trims inside a real element. Never raises.
+    """
+    stats = {"by_category": 0, "by_pattern": 0, "kept": 0, "total": len(text_elements)}
+    if not text_elements:
+        return text_elements, stats
+    kept: List = []
+    for el in text_elements:
+        try:
+            cat = _get_element_type(el).lower()
+            if cat in _BP_CHROME_CATEGORIES:
+                stats["by_category"] += 1
+                continue
+            text = getattr(el, "text", None) or ""
+            if _is_boilerplate_text(text):
+                stats["by_pattern"] += 1
+                continue
+        except Exception:  # noqa: BLE001 — never let a stray element break ingestion
+            pass
+        kept.append(el)
+    stats["kept"] = len(kept)
+    return kept, stats
+
+
+# ── GRAND_PLAN G1d — document classification at ingest ───────────────────────
+# Decide a coarse doc class so the right extraction path runs: a prose CONTRACT
+# wants clause-aware chunking (G1b) and NO financial-table pass (G1c), while a
+# FILING wants the geometry table moat untouched. Structural/deterministic v1
+# (no LLM — $0, reproducible): the signals separate cleanly in measurement
+# (contract: numbered-clause-heading ratio ~0.7, ~0 '$'; 10-K: heading ratio
+# <0.01, dense '$'). A small LLM tiebreak is a documented future hook (the
+# design note's 2d), NOT needed for the clear cases. Stored on the doc + each
+# chunk's metadata as `doc_type` so the grid/agent can use it too.
+
+# A numbered clause/section heading: "1.", "2.1", "9.1 Governing Law", "8. Indemnification".
+_CLAUSE_HEADING = re.compile(r"^\s*\d+(\.\d+){0,3}\.?\s+[A-Z(\"']")
+# A bare numbered heading line (the heading on its own short element).
+_CLAUSE_HEADING_BARE = re.compile(r"^\s*\d+(\.\d+){0,3}\.?\s+\S")
+
+DOC_TYPE_LEGAL = "legal_contract"
+DOC_TYPE_FINANCIAL = "financial_filing"
+DOC_TYPE_MIXED = "mixed"
+DOC_TYPE_GENERIC = "generic"
+
+# Filename hints (cheap, high-precision signal). EDGAR contract exhibits are EX-10.x.
+_LEGAL_NAME_HINTS = ("ex-10", "ex10", "agreement", "contract", "nda", "lease",
+                     "deed", "amendment", "addendum", "msa", "sow")
+_FINANCIAL_NAME_HINTS = ("10-k", "10k", "10-q", "10q", "20-f", "8-k", "annual",
+                         "financial", "balance", "income")
+
+
+def _heading_count(text_elements: List) -> int:
+    """Count elements that BEGIN with a numbered clause heading."""
+    n = 0
+    for el in text_elements:
+        try:
+            t = (getattr(el, "text", None) or "").strip()
+            if t and _CLAUSE_HEADING.match(t):
+                n += 1
+        except Exception:  # noqa: BLE001
+            pass
+    return n
+
+
+def classify_document(text_elements: List, filename: Optional[str] = None) -> str:
+    """Return one of DOC_TYPE_* from cheap structural signals. Never raises.
+
+    Decision (measured-threshold, structural):
+      - numbered-clause-heading ratio (headings / text-elements) — high for contracts
+      - '$' density (dollar signs / text-element) — high for filings
+      - filename hints as a precise tiebreak / booster
+    A document with a strong clause-heading ratio AND low '$' density is a legal
+    contract; strong '$' density with negligible headings is a financial filing;
+    a doc showing both signals is 'mixed' (treated as financial — keep the table
+    moat, don't risk a 10-K's tables); neither → 'generic' (default path).
+    """
+    try:
+        name = (filename or "").lower()
+        name_legal = any(h in name for h in _LEGAL_NAME_HINTS)
+        name_fin = any(h in name for h in _FINANCIAL_NAME_HINTS)
+
+        n_text = max(1, len(text_elements))
+        n_head = _heading_count(text_elements)
+        dollars = 0
+        for el in text_elements:
+            try:
+                dollars += (getattr(el, "text", None) or "").count("$")
+            except Exception:  # noqa: BLE001
+                pass
+
+        head_ratio = n_head / n_text
+        dollar_density = dollars / n_text
+
+        # Strong structural signals (thresholds from the measured gap: contract
+        # head_ratio ~0.72 / $density ~0.03 ; 10-K head_ratio ~0.007 / $density ~0.19).
+        legal_struct = head_ratio >= 0.15 and dollar_density < 0.08
+        fin_struct = dollar_density >= 0.10 and head_ratio < 0.05
+
+        # Combine structure + name. Name hints break near-threshold ties.
+        legal = legal_struct or (name_legal and head_ratio >= 0.05 and dollar_density < 0.10)
+        fin = fin_struct or (name_fin and dollar_density >= 0.05)
+
+        if legal and not fin:
+            result = DOC_TYPE_LEGAL
+        elif fin and not legal:
+            result = DOC_TYPE_FINANCIAL
+        elif legal and fin:
+            result = DOC_TYPE_MIXED
+        else:
+            result = DOC_TYPE_GENERIC
+
+        _logger.info(
+            "[ingest] doc class: %s (file=%s, head_ratio=%.3f, $density=%.3f, "
+            "headings=%d/%d, name_legal=%s, name_fin=%s)",
+            result, filename, head_ratio, dollar_density, n_head, len(text_elements),
+            name_legal, name_fin)
+        return result
+    except Exception as exc:  # noqa: BLE001 — classification never breaks ingestion
+        _logger.warning("[ingest] doc classification failed (%s) — generic", exc)
+        return DOC_TYPE_GENERIC
+
+
+# ── GRAND_PLAN G1b — clause-aware chunking for prose/legal docs ──────────────
+# Contracts are numbered ("1. Engagement", "9.1 Governing Law"). chunk_by_title
+# splits on SIZE, cutting a clause mid-sentence so neither half retrieves well
+# (the live failure). chunk_legal_prose starts a new chunk at each numbered
+# heading and keeps the heading WITH its body (so "Governing Law" embeds with the
+# clause it heads), only splitting a single clause if it exceeds a hard ceiling.
+# Returns a list of (text, page_number, heading) tuples; the caller builds Documents.
+
+def chunk_legal_prose(text_elements: List, max_chars: int) -> List:
+    """Chunk prose at numbered clause/section boundaries. Returns list of
+    {"text", "page", "heading"} dicts. Never raises (caller falls back to
+    chunk_by_title on empty)."""
+    chunks: List[Dict[str, Any]] = []
+    if not text_elements:
+        return chunks
+    try:
+        cur_parts: List[str] = []
+        cur_page = None
+        cur_heading = None
+
+        def _flush():
+            nonlocal cur_parts, cur_heading, cur_page
+            if cur_parts:
+                text = "\n".join(p for p in cur_parts if p).strip()
+                if len(text) >= 10:
+                    chunks.append({"text": text, "page": cur_page, "heading": cur_heading})
+            cur_parts = []
+            cur_heading = None
+
+        for el in text_elements:
+            t = (getattr(el, "text", None) or "").strip()
+            if not t:
+                continue
+            page = _get_page_number(el)
+            is_heading = bool(_CLAUSE_HEADING_BARE.match(t))
+
+            # A new top-or-sub clause heading starts a new chunk (unless the current
+            # chunk is still tiny — keep a heading-only line attached to what follows).
+            if is_heading and cur_parts:
+                cur_len = sum(len(p) for p in cur_parts)
+                if cur_len >= 40:  # don't split off a lone heading with no body yet
+                    _flush()
+
+            if cur_page is None:
+                cur_page = page
+            if is_heading and cur_heading is None:
+                cur_heading = t[:120]
+            cur_parts.append(t)
+
+            # Size ceiling: a single over-long clause is split (with the heading kept
+            # as the first chunk's lead; continuation chunks carry the same heading).
+            if sum(len(p) for p in cur_parts) >= max_chars:
+                _flush()
+
+        _flush()
+    except Exception as exc:  # noqa: BLE001
+        _logger.warning("[ingest] clause chunking failed (%s) — caller falls back", exc)
+        return []
+    return chunks
+
+
 class DocumentProcessor:
     def __init__(self, config: Config):
         self.config = config
@@ -562,45 +799,80 @@ class DocumentProcessor:
 
         docs: List[Document] = []
 
+        # ── G1a: strip page-chrome before chunking (config-gated; pure-text path) ──
+        if getattr(self.config, "STRIP_BOILERPLATE", False) and text_elements:
+            text_elements, bp_stats = _strip_boilerplate(text_elements)
+            dropped = bp_stats["by_category"] + bp_stats["by_pattern"]
+            if dropped:
+                _logger.info(
+                    "[ingest] boilerplate strip: dropped %d/%d text elements "
+                    "(%d chrome-category, %d pattern); %d kept",
+                    dropped, bp_stats["total"], bp_stats["by_category"],
+                    bp_stats["by_pattern"], bp_stats["kept"])
+
+        # ── G1d: classify the document so the right extraction path runs ──
+        # Resolve the user-facing filename from the elements (process_documents
+        # stamps it). Used by the classifier (name hints) and by G1c (skip-tables).
+        _fname = None
+        _ftype = None
+        for el in text_elements + table_elements:
+            md = getattr(el, "metadata", None)
+            if md is not None:
+                _fname = _fname or getattr(md, "filename", None)
+                _ftype = _ftype or getattr(md, "filetype", None)
+        doc_type = DOC_TYPE_GENERIC
+        if getattr(self.config, "CLASSIFY_DOCS", False) and text_elements:
+            doc_type = classify_document(text_elements, _fname)
+        self._last_doc_type = doc_type  # exposed for callers/tests
+        is_legal_prose = doc_type == DOC_TYPE_LEGAL
+
         if text_elements:
-            print("Chunking TEXT elements by title...")
+            # ── G1b: clause-aware chunking for prose contracts; chunk_by_title else ──
+            prose_chunks = []
+            if is_legal_prose:
+                prose_chunks = chunk_legal_prose(text_elements, self.config.CHUNK_SIZE)
 
-            text_chunks = chunk_by_title(
-                elements=text_elements,
-                max_characters=self.config.CHUNK_SIZE,
-                new_after_n_chars=self.config.NEW_AFTER_N_CHARS,
-                combine_text_under_n_chars=self.config.COMBINE_TEXT_UNDER_N_CHARS, 
-            )
+            normalized = []  # list of (text, page, filename, filetype)
+            if prose_chunks:
+                print(f"Chunking TEXT by CLAUSE (legal prose) → {len(prose_chunks)} chunks...")
+                for pc in prose_chunks:
+                    normalized.append((pc["text"], pc.get("page"), _fname, _ftype))
+            else:
+                print("Chunking TEXT elements by title...")
+                text_chunks = chunk_by_title(
+                    elements=text_elements,
+                    max_characters=self.config.CHUNK_SIZE,
+                    new_after_n_chars=self.config.NEW_AFTER_N_CHARS,
+                    combine_text_under_n_chars=self.config.COMBINE_TEXT_UNDER_N_CHARS,
+                )
+                for chunk in text_chunks:
+                    chunk_text = chunk.text.strip() if chunk.text else ""
+                    if hasattr(chunk, "metadata") and chunk.metadata:
+                        page_number = getattr(chunk.metadata, "page_number", None)
+                        filepath = getattr(chunk.metadata, "filepath", None)
+                        filename = getattr(chunk.metadata, "filename", None)
+                        filetype = getattr(chunk.metadata, "filetype", None)
+                    else:
+                        page_number = filepath = filename = filetype = None
+                    normalized.append((chunk_text, page_number, filename or filepath, filetype))
 
-            for i, chunk in enumerate(text_chunks, start=1):
-                chunk_text = chunk.text.strip() if chunk.text else ""
-                if not chunk_text or len(chunk_text) < 10:  
+            for i, (chunk_text, page_number, filename, filetype) in enumerate(normalized, start=1):
+                chunk_text = (chunk_text or "").strip()
+                if not chunk_text or len(chunk_text) < 10:
                     continue
-
-                # Safe metadata extraction - handle both object and dict
-                if hasattr(chunk, 'metadata') and chunk.metadata:
-                    page_number = getattr(chunk.metadata, "page_number", None)
-                    filepath = getattr(chunk.metadata, "filepath", None)
-                    filename = getattr(chunk.metadata, "filename", None)
-                    filetype = getattr(chunk.metadata, "filetype", None)
-                else:
-                    page_number = None
-                    filepath = None
-                    filename = None
-                    filetype = None
 
                 metadata = {
                     "chunk_type": "text",
-                    "source": filepath if filepath else filename,
+                    "source": filename,
                     "filename": filename,
                     "filetype": filetype,
                     "page_number": page_number,
                     "chunk_index": i,
-                    # B7: removed bogus "has_overlap" field (was checking for literal "..." in text)
+                    "doc_type": doc_type,  # G1d — surfaced for the grid/agent + filtering
                 }
 
                 metadata["chunk_id"] = _stable_id(
-                    file_path=str(filepath) if filepath else "unknown",
+                    file_path=str(filename) if filename else "unknown",
                     chunk_type="text",
                     index=i,
                     text=chunk_text,
@@ -608,7 +880,7 @@ class DocumentProcessor:
 
                 docs.append(Document(page_content=chunk_text, metadata=metadata))
 
-            print(f"Created {len(text_chunks)} TEXT chunks.")
+            print(f"Created {len(normalized)} TEXT chunks (doc_type={doc_type}).")
 
         if table_elements:
             print("Creating TABLE chunks...")
@@ -713,7 +985,15 @@ class DocumentProcessor:
                 if fp and str(fp).lower().endswith(".pdf"):
                     resolved_pdf = str(fp)
                     break
-        if resolved_pdf and str(resolved_pdf).lower().endswith(".pdf"):
+        # ── G1c: skip the financial-table pass on a prose contract ──
+        # On a contract the geometry pass only hallucinates a table from a footer
+        # (e.g. "[p5_g0] Financial table … sec.gov … Page 5 of") — pure boilerplate
+        # masquerading as structured data, which then pollutes table retrieval. The
+        # moat (geometry reader) stays fully on for financial/mixed/generic docs.
+        skip_tables = getattr(self.config, "CLASSIFY_DOCS", False) and is_legal_prose
+        if skip_tables:
+            _logger.info("[ingest] G1c: skipping financial-table pass (doc_type=%s)", doc_type)
+        elif resolved_pdf and str(resolved_pdf).lower().endswith(".pdf"):
             docs.extend(self._build_table_chunks(resolved_pdf, elements))
 
         print(f"Total LangChain Documents created: {len(docs)}")

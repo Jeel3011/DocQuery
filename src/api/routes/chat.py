@@ -574,7 +574,12 @@ async def query_agent(
     generator=Depends(get_generator),
 ):
     """
-    Agentic query endpoint (Phase 6) — Harvey-level accuracy.
+    ⚠️ DEPRECATED (A6, 2026-06-12). The agent core (`POST /query/agentcore/stream`,
+    `USE_AGENT_CORE`) subsumes this decompose→parallel-retrieve→self-review path. This
+    route stays until the Phase B5 cleanup (then → 410 Gone). New clients must use the
+    agent core; the frontend no longer calls this.
+
+    Agentic query endpoint (Phase 6) — legacy.
 
     Slower than /query but higher accuracy for complex questions:
       1. Semantic cache check (repeated complex queries served in <50ms).
@@ -690,7 +695,11 @@ async def agent_query_stream(
     generator=Depends(get_generator),
 ):
     """
-    Agentic query with SSE streaming (Phase 6).
+    ⚠️ DEPRECATED (A6, 2026-06-12) — superseded by `POST /query/agentcore/stream`
+    (the agent core). Kept until Phase B5 cleanup (then → 410 Gone); the frontend no
+    longer calls it. New clients must use the agent core.
+
+    Agentic query with SSE streaming (Phase 6) — legacy.
 
     Same decompose → parallel retrieve → self-review pipeline as /query/agent,
     but streams the answer token-by-token via SSE for better UX.

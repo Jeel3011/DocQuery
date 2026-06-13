@@ -62,6 +62,35 @@ Supabase (Postgres + Storage) + Pinecone, Next.js frontend (port 3000).
 
 ## ✅ What's ACHIEVED (verified)
 
+### G1 — prose/legal ingestion correctness (2026-06-13) — COMPLETE, fence-green
+- The GRAND_PLAN's G1 (the unblock: every surface reads ingestion; prose contracts
+  were ingesting as un-retrievable garbage). All four sub-tasks built in
+  `data_ingestion.py`, gated by two new config flags (both default on, env-overridable,
+  both OFF ⇒ byte-identical to pre-G1):
+  **G1a `_strip_boilerplate`** (flag `STRIP_BOILERPLATE`) — drops Header/Footer/
+  PageNumber element categories + short standalone page-chrome (Page N of M / URL /
+  print-timestamp) BEFORE chunking. **G1d `classify_document`** (flag `CLASSIFY_DOCS`)
+  — structural, **no LLM** ($0): numbered-clause-heading ratio + '$' density + filename
+  hints → `financial_filing|legal_contract|mixed|generic`. **G1b `chunk_legal_prose`**
+  — clause-aware chunking (new chunk per numbered heading, heading kept with body, size
+  = ceiling) for legal docs; `chunk_by_title` unchanged otherwise. **G1c** — skip the
+  financial-table pass on legal docs (kills footer-hallucinated fake tables).
+- **Measured on the Sezzle contract (`test_law/Document.pdf`, $0 local parse):**
+  boilerplate pollution **4/4 chunks → 0**; class = legal_contract (head_ratio 0.724 vs
+  a 10-K's 0.007); text chunks **3 coarse → 22 clause-sized**; fake table chunks
+  **1 → 0**; all 5 probe clauses survive WHOLE.
+- **Fence held (finance NOT regressed):** all 8 finance docs classify `financial_filing`
+  (never legal → table moat never skipped); `extraction_benchmark` **112/112 cells**,
+  `test_table_extraction` 9/9, `test_extraction_completeness` 643/643, `test_geometry_lines`
+  all pass. New committed gate **`eval/test_legal_extraction.py` 11/11**. Instrument:
+  `eval/measure_legal_chunks.py`. Full findings + the WHY: `plans/G1_INGESTION_FINDINGS.md`.
+- **⚠️ The contract review GRID still shows 3/3 "unclear" — but that is NOT ingestion
+  (G1 is done) and NOT the gate.** Traced live: the agent FINDS each clause correctly,
+  grounds a quote, the output gate PASSES — then `grid_engine._extract_envelope` discards
+  it because gpt-5.4 returns a custom JSON shape (`{"governing_law_and_seat":…}`) instead
+  of the required `{"status","value","quote",…}` envelope (status=None → ABSTAIN). This
+  is a **G4 grid bug** (parser/prompt), deferred. Don't blame ingestion for it.
+
 ### Extraction foundation — measured & fixed (2026-06-09/10, HARDENED 2026-06-12)
 - **Honest framing of "100%": it was SAMPLED-cell accuracy** (112/112 ground-truth
   cells), NOT row-completeness. On 2026-06-12 a new ground-truth-FREE completeness

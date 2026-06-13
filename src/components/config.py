@@ -23,6 +23,22 @@ class Config:
     COMBINE_TEXT_UNDER_N_CHARS: int = 500
     CHUNK_OVERLAP: int = 500
 
+    # GRAND_PLAN G1a — boilerplate strip. Drop repeated page chrome (Header/Footer/
+    # PageNumber element categories + standalone "Page N of M"/URL/print-timestamp
+    # lines) BEFORE text chunking so it stops dominating clause embeddings. Helps
+    # both prose contracts AND financial filings (cleaner chunks). Pure-text path;
+    # the finance TABLE pass (table_extraction reads PDF geometry) is untouched.
+    # Off ⇒ byte-identical to pre-G1a chunking.
+    STRIP_BOILERPLATE: bool = os.getenv("STRIP_BOILERPLATE", "true").lower() != "false"
+
+    # GRAND_PLAN G1b/c/d — classify the doc at ingest (financial_filing | legal_contract
+    # | mixed | generic) and run the matching extraction path: a legal contract gets
+    # clause-aware chunking (G1b) + NO financial-table pass (G1c); everything else keeps
+    # the proven finance path (geometry table moat untouched). Structural classifier
+    # ($0, no LLM in v1). Off ⇒ byte-identical to pre-G1bcd (always chunk_by_title +
+    # always run the table pass). G1a (STRIP_BOILERPLATE) is independent of this.
+    CLASSIFY_DOCS: bool = os.getenv("CLASSIFY_DOCS", "true").lower() != "false"
+
     # ── Document Processing ──
     # PDF_STRATEGY: used for explicit overrides or non-PDF files.
     # For PDFs, _detect_strategy() in data_ingestion.py auto-selects based on page count.
