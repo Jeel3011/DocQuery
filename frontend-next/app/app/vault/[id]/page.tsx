@@ -120,15 +120,16 @@ export default function VaultWorkspacePage() {
     return () => { if (pollRef.current) clearTimeout(pollRef.current); };
   }, [docs, loadDocs]);
 
-  // Submitting the composer opens an Ask conversation scoped to this vault (the route id
-  // is already mirrored into the store by VaultScopeSync, so streamAgentCoreQuery picks up
-  // collection_id). Re-homed under this route in Step D.
+  // Submitting the composer opens an Ask conversation scoped to this vault. Step D
+  // re-homed Ask under /app/vault/[id]/ask/[cid] — the route [id] is the authoritative
+  // scope (§9 risk #1), so the conversation reads collection_id from the URL, not the
+  // store. ?q= auto-submits on mount.
   async function ask(q: string) {
     if (!token || creating || !q.trim()) return;
     setCreating(true);
     try {
       const c = await createConversation(token, q.slice(0, 50));
-      router.push(`/app/chat/${c.id}?q=${encodeURIComponent(q)}`);
+      router.push(`/app/vault/${vaultId}/ask/${c.id}?q=${encodeURIComponent(q)}`);
     } catch {
       toast.error("Failed to start conversation");
       setCreating(false);

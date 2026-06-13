@@ -19,6 +19,11 @@ interface ThinkingStreamProps {
   steps: ThinkingStep[];
   totalMs?: number;
   collapsed?: boolean;
+  // When true, the timeline stays fully expanded even after every step finishes
+  // (it does NOT fold to the "Reasoned over N steps" pill). Used by the Ask screen,
+  // where the live agent run reads as an inline transcript that remains in the
+  // conversation (G2 Step D). `collapsed` still forces the pill if explicitly set.
+  keepExpanded?: boolean;
 }
 
 const statusIcon: Record<StepStatus, React.ReactNode> = {
@@ -35,11 +40,13 @@ const statusLineColor: Record<StepStatus, string> = {
   failed: "bg-[var(--step-failed)]",
 };
 
-export function ThinkingStream({ steps, totalMs, collapsed = false }: ThinkingStreamProps) {
+export function ThinkingStream({ steps, totalMs, collapsed = false, keepExpanded = false }: ThinkingStreamProps) {
   const shouldReduceMotion = useReducedMotion();
   const allDone = steps.every((s) => s.status === "done" || s.status === "failed");
 
-  if (collapsed || allDone) {
+  // Collapse to the summary pill only when explicitly asked, or (legacy default) when
+  // everything is done — UNLESS keepExpanded keeps the full inline transcript visible.
+  if (collapsed || (allDone && !keepExpanded)) {
     const doneCount = steps.filter((s) => s.status === "done").length;
     const secs = totalMs != null ? (totalMs / 1000).toFixed(1) : null;
     return (
@@ -87,13 +94,14 @@ export function ThinkingStream({ steps, totalMs, collapsed = false }: ThinkingSt
             )}
           </div>
 
-          {/* Text */}
+          {/* Text — clean, readable action phrase (Harvey-style): a checkmark + a plain
+              gerund describing what the agent is doing, with source/doc chips below. */}
           <div className={`pb-2 flex-1 min-w-0 ${step.status === "active" ? "opacity-100" : step.status === "pending" ? "opacity-40" : "opacity-80"}`}>
-            <p className={`text-xs font-medium ${step.status === "active" ? "text-[var(--text-primary)]" : "text-[var(--text-secondary)]"}`}>
+            <p className={`text-[13px] ${step.status === "active" ? "text-[var(--text-primary)] font-medium" : "text-[var(--text-secondary)]"}`}>
               {step.label}
             </p>
             {step.detail && step.status !== "pending" && (
-              <p className="text-[11px] text-[var(--text-secondary)] mt-0.5 leading-snug">{step.detail}</p>
+              <p className="text-[11px] text-[var(--text-muted)] mt-0.5 leading-snug">{step.detail}</p>
             )}
             {/* Source/doc chips surfaced under the step as it works (Harvey-style) */}
             {step.chips && step.chips.length > 0 && step.status !== "pending" && (

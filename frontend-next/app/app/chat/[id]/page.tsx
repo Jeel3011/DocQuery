@@ -53,25 +53,51 @@ function _chipsFrom(text?: string): string[] {
   }
   return chips.slice(0, 4);
 }
-function richToolLabel(name: string): string {
-  return name === "compute" ? "Computing"
-    : name === "table_lookup" ? "Looking up a cell"
-    : name === "read_document" ? "Reading"
-    : name === "list_metrics" ? "Listing metrics"
-    : name === "search_vault" ? "Searching" : name;
+// ── Harvey-style action phrasing (G2 Step D) ──
+// The timeline reads as clean, human-readable actions (✓ "Searching documents for …",
+// ✓ "Looking up research & development") — NOT raw tool signatures. Each agent tool call
+// maps to a plain gerund phrase, with the query/metric/doc pulled out of the args for
+// specificity. Source/doc chips appear beneath (parsed separately via _chipsFrom).
+function _argVal(argsSummary: string | undefined, key: string): string | null {
+  if (!argsSummary) return null;
+  // args arrive as a JSON-ish string: {"query": "…", "metric": "…", "doc": "…"}
+  const m = argsSummary.match(new RegExp(`"${key}"\\s*:\\s*"([^"]+)"`));
+  return m ? m[1] : null;
 }
-function describeToolCall(name: string, argsSummary?: string): { label: string; chips: string[] } {
-  return { label: richToolLabel(name), chips: _chipsFrom(argsSummary) };
+function _short(s: string, n = 52): string {
+  const t = s.trim();
+  return t.length > n ? t.slice(0, n).trimEnd() + "…" : t;
 }
-function describeToolResult(name: string, summary?: string, nProv?: number):
-  { detail?: string; chips: string[] } {
-  // The tool summary already states the OUTCOME (e.g. "compute growth_pct = 18.0%",
-  // "search_vault '…' (table): 8 chunk(s)") — surface it verbatim, trimmed, + cite count.
-  const base = (summary || "").replace(/^\w+\s+/, "").trim();   // drop the leading tool name
-  const detail = base
-    ? `${base.charAt(0).toUpperCase()}${base.slice(1)}${nProv ? ` · ${nProv} cited` : ""}`
-    : undefined;
-  return { detail, chips: _chipsFrom(summary) };
+// The live phrase while a tool is RUNNING (present continuous).
+function toolPhrase(name: string, argsSummary?: string): { label: string; chips: string[] } {
+  const chips = _chipsFrom(argsSummary);
+  const query = _argVal(argsSummary, "query");
+  const metric = _argVal(argsSummary, "metric");
+  const docLabel = _docLabel(_argVal(argsSummary, "doc") ?? undefined);
+  let label: string;
+  switch (name) {
+    case "search_vault":
+      label = query ? `Searching documents for “${_short(query)}”` : "Searching uploaded documents";
+      break;
+    case "read_document":
+      label = docLabel ? `Reading ${docLabel}` : "Reading the document";
+      break;
+    case "table_lookup":
+      label = metric ? `Looking up ${_short(metric, 40)}` : "Looking up a figure in the tables";
+      break;
+    case "compute":
+      label = "Computing the figure from source cells";
+      break;
+    case "list_metrics":
+      label = "Surveying available metrics";
+      break;
+    case "verify_numbers":
+      label = "Verifying every figure against its source";
+      break;
+    default:
+      label = name.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+  }
+  return { label, chips };
 }
 
 interface LocalMessage {
@@ -90,19 +116,42 @@ interface LocalMessage {
   answerMeta?: AnswerMeta;
 }
 
-export default function ChatPage() {
+// Props let this page be RE-HOMED under /app/vault/[id]/ask/[cid] (G2 Step D) without
+// forking the 1,150-line conversation logic into a second, drift-prone copy. When the
+// vault route mounts it, `scopedCollectionId` is the route's [id] — the AUTHORITATIVE
+// vault scope (§9 risk #1: the URL wins, the store is just its cache). The legacy
+// /app/chat/[id] route passes nothing and behaves byte-identically to before (scope
+// read from the store). `conversationId` likewise overrides the route param so the
+// vault route's [cid] segment drives the conversation.
+export interface ChatConversationProps {
+  scopedCollectionId?: string;   // route-authoritative vault id (vault route only)
+  conversationId?: string;       // override for the [cid] segment (vault route only)
+}
+
+export default function ChatPage(props: ChatConversationProps = {}) {
   return (
     <Suspense fallback={<div className="flex-1" />}>
-      <ChatPageInner />
+      <ChatPageInner {...props} />
     </Suspense>
   );
 }
 
-function ChatPageInner() {
-  const { id: convId } = useParams<{ id: string }>();
+// Exported so the vault route can render the conversation directly with props.
+export { ChatPage as ChatConversation };
+
+function ChatPageInner({ scopedCollectionId, conversationId }: ChatConversationProps) {
+  const routeParams = useParams<{ id: string }>();
+  // When re-homed under the vault route, the conversation id arrives as a prop ([cid]);
+  // otherwise it's the [id] segment of /app/chat/[id].
+  const convId = conversationId ?? routeParams.id;
   const searchParams = useSearchParams();
   const { token, user } = useAuthStore();
-  const { activeCollectionId, setActiveCollectionId } = useCollectionStore();
+  const { activeCollectionId: storeCollectionId, setActiveCollectionId } = useCollectionStore();
+  // Scope source of truth: the vault route's [id] (scopedCollectionId) when present,
+  // else the store. VaultScopeSync keeps the store mirrored to the route, so on the
+  // vault route both agree — but the page DEPENDS on the route prop, never the store,
+  // closing the deep-link / second-tab desync window (§9 risk #1).
+  const activeCollectionId = scopedCollectionId ?? storeCollectionId;
 
   const [messages, setMessages] = useState<LocalMessage[]>([]);
   const [isStreaming, setIsStreaming] = useState(false);
@@ -268,7 +317,7 @@ function ChatPageInner() {
         // The agent loop's steps are emergent (the model decides), so the timeline is
         // built live from tool_call / gate events rather than a fixed pipeline.
         let steps: ThinkingStep[] = [
-          { id: "plan", label: "Reasoning", detail: "Deciding which tools to call", status: "active" },
+          { id: "plan", label: "Planning", detail: "Choosing which tools to call", status: "active" },
         ];
         const pushSteps = () => {
           const snapshot = steps.map((s) => ({ ...s }));
@@ -307,34 +356,47 @@ function ChatPageInner() {
               callbacks.onDone();
             },
             onAgentThought: (text) => {
-              if (text) upsert("plan", { id: "plan", label: "Reasoning", detail: text.slice(0, 80), status: "active" });
+              // The backend streams the model's reasoning here, but it can include
+              // answer-shaped prose (e.g. "Alphabet's R&D was 31,562…"). Echoing that
+              // into the timeline leaks a half-formed answer above the verified one. A
+              // harness log shows the ACTION, not the draft — so keep a stable planning
+              // label; the real, accurate signal comes from the tool steps below.
+              if (text) upsert("plan", { id: "plan", label: "Planning", detail: "Choosing which tools to call", status: "active" });
             },
             onToolCall: (name, argsSummary) => {
-              upsert("plan", { id: "plan", label: "Reasoning", status: "done" });
-              // Each tool call is its OWN step (id unique per call), so the timeline reads
-              // as a real sequence — "Read goog p.53 → Computed growth 18.0%" — not one
-              // re-used "Reading documents" row. The doc + result are parsed for chips.
+              upsert("plan", { id: "plan", label: "Planning the analysis", status: "done" });
+              // Each tool call is its OWN step (id unique per call), rendered as a clean,
+              // readable action phrase (Harvey-style) — "Searching documents for …",
+              // "Looking up research & development" — with source/doc chips beneath.
               const stepId = `tool-${toolStepSeq.current++}`;
               lastToolStepId.current = stepId;
-              const { label, chips } = describeToolCall(name, argsSummary);
+              const { label, chips } = toolPhrase(name, argsSummary);
               upsert(stepId, { id: stepId, label, chips, status: "active" });
             },
             onToolResult: ({ name, ok, summary, nProvenance }) => {
               const stepId = lastToolStepId.current ?? `tool-${name}`;
-              const { detail, chips } = describeToolResult(name, summary, nProvenance);
-              upsert(stepId, {
+              // upsert MERGES, so the readable call-time label (which carries the query/
+              // metric) is preserved — we only set the outcome here: a short human detail
+              // (N sources cited / withheld) plus any source chips parsed from the result.
+              const chips = _chipsFrom(summary);
+              const detail = ok
+                ? (nProvenance ? `${nProvenance} source${nProvenance !== 1 ? "s" : ""} cited` : undefined)
+                : "withheld — could not trace to a source";
+              const patch: Partial<ThinkingStep> & { id: string } = {
                 id: stepId,
-                label: richToolLabel(name),
-                detail,
-                chips,
                 status: ok ? "done" : "failed",
-              });
+              };
+              if (detail) patch.detail = detail;
+              if (chips.length) patch.chips = chips;
+              upsert(stepId, patch as ThinkingStep);
             },
             onGate: ({ name, pass, detail }) => {
+              // The verify gate is the trust step — one clean line. Pass = every claim
+              // traced; fail = the gate withheld something (the honest-abstain path).
               upsert(`gate-${name}`, {
                 id: `gate-${name}`,
-                label: "Verifying answer",
-                detail: detail || (pass ? "all claims traced" : `${name} flagged`),
+                label: pass ? "Verified — every figure traces to a source" : "Verifying — withheld unverifiable claims",
+                detail: detail || undefined,
                 status: pass ? "done" : "failed",
               });
             },
@@ -873,20 +935,55 @@ function ChatPageInner() {
             <AnimatePresence initial={false}>
               {messages.map((msg) => (
                 <div key={msg.id}>
-                  {/* Brain thinking stream — real, driven by SSE step events */}
+                  {/* ── Live agent run — the CENTERPIECE of Ask (G2 Step D). ──
+                      An INLINE transcript in the conversation flow (no boxed card): the
+                      agent's real tool actions stream as they happen — Searching →
+                      Reading goog 2021 → Computing R&D → Verifying against sources — each
+                      line completing in place, source/doc chips appearing under it. It
+                      STAYS expanded after the answer lands (keepExpanded) so the run reads
+                      like a harness log, not a folded summary. The verify gate carries the
+                      one meaningful accent (green traced / red withheld) via the step's
+                      done/failed state — the only color on this surface. */}
                   {msg.role === "assistant" && msg.isBrain && msg.thinkingSteps && msg.thinkingSteps.length > 0 && (
                     <motion.div
-                      initial={{ opacity: 0, height: 0 }}
-                      animate={{ opacity: 1, height: "auto" }}
-                      className="max-w-3xl mx-auto px-4 md:px-8 mb-3"
+                      initial={{ opacity: 0, y: 6 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      transition={{ duration: 0.3, ease: [0.23, 1, 0.32, 1] }}
+                      className="max-w-3xl mx-auto px-4 md:px-8 mb-2"
                     >
-                      <div className="card-dotted p-4">
-                        <ThinkingStream
-                          steps={msg.thinkingSteps}
-                          totalMs={msg.thinkingTotalMs}
-                          collapsed={!msg.isStreaming}
-                        />
+                      {/* Slim inline header — a live pulse + state label, no surface/border */}
+                      <div className="flex items-center gap-2 mb-2.5 pl-0.5">
+                        <span className="relative flex items-center justify-center w-1.5 h-1.5">
+                          {msg.isStreaming && (
+                            <span
+                              className="absolute inline-flex h-full w-full rounded-full animate-ping"
+                              style={{ background: "var(--step-active)", opacity: 0.6 }}
+                            />
+                          )}
+                          <span
+                            className="relative inline-flex rounded-full w-1.5 h-1.5"
+                            style={{ background: msg.isStreaming ? "var(--step-active)" : "var(--step-done)" }}
+                          />
+                        </span>
+                        {/* Harvey-style state label: Working… while running tools →
+                            Answering… once the answer starts streaming → done summary. */}
+                        <span className="text-[12px] font-medium" style={{ color: "var(--text-secondary)" }}>
+                          {msg.isStreaming
+                            ? (msg.content ? "Answering…" : "Working…")
+                            : "Reasoned through your question"}
+                        </span>
+                        {!msg.isStreaming && msg.thinkingTotalMs != null && (
+                          <span className="text-[11px] tabular-nums" style={{ color: "var(--text-muted)" }}>
+                            · {(msg.thinkingTotalMs / 1000).toFixed(1)}s
+                          </span>
+                        )}
                       </div>
+                      {/* The inline live timeline — stays expanded after completion */}
+                      <ThinkingStream
+                        steps={msg.thinkingSteps}
+                        totalMs={msg.thinkingTotalMs}
+                        keepExpanded
+                      />
                     </motion.div>
                   )}
                   {/* Agentic thinking stream — mock fixture while streaming */}
