@@ -98,11 +98,17 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
 
   async function newChat() {
     if (!token) return;
+    // Step H: Ask is now vault-scoped (/app/vault/[id]/ask). A "New chat" needs a vault to
+    // honour the scope source-of-truth (§9 risk #1). If a vault is active, start there;
+    // otherwise send the user to Vault Home to pick one — never a vault-less conversation.
+    if (!activeCollectionId) {
+      router.push("/app");
+      return;
+    }
     try {
       const c = await createConversation(token, "New Chat");
       setConvs((p) => [c, ...p]);
-      // Old chat route stays reachable until parity (Step H retires it).
-      router.push(`/app/chat/${c.id}`);
+      router.push(`/app/vault/${activeCollectionId}/ask/${c.id}`);
     } catch {
       toast.error("Failed to create conversation");
     }

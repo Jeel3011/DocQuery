@@ -338,7 +338,7 @@ export default function SettingsPage() {
           className="flex items-center gap-3 mb-8"
         >
           <button
-            onClick={() => router.push("/app/chat")}
+            onClick={() => router.push("/app")}
             className="p-1.5 rounded-lg hover:bg-[var(--bg-hover)] transition-colors"
             style={{ color: "var(--ink-3)" }}
           >

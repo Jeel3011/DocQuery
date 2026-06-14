@@ -21,7 +21,7 @@ import { useParams, useRouter } from "next/navigation";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   ArrowLeft, FolderOpen, Table2, FileEdit, FileText, CheckCircle, AlertCircle,
-  RefreshCw, Search, Trash2,
+  RefreshCw, Search, Trash2, Telescope,
 } from "lucide-react";
 import { toast } from "sonner";
 import { useAuthStore } from "@/stores/auth.store";
@@ -196,13 +196,21 @@ export default function VaultWorkspacePage() {
           </div>
         </div>
 
-        {/* Action row — Review · Draft as siblings above the composer (plan §8.1). */}
+        {/* Action row — Review · Deep Analysis · Draft as siblings above the composer
+            (plan §8.1). Ask is the hero composer below; these are the other vault modes.
+            Deep Analysis is the G5 stub (Step G); Draft is the G6 stub. */}
         <div className="flex items-center justify-center gap-2.5 mb-4">
           <button
             onClick={() => router.push(`/app/vault/${encodeURIComponent(vaultId)}/review`)}
             className="flex items-center gap-2 px-4 py-2 rounded-xl text-[13px] font-medium card hover:shadow-[var(--shadow-md)] transition-shadow"
           >
             <Table2 size={14} className="text-[var(--text-muted)]" /> Review table
+          </button>
+          <button
+            onClick={() => router.push(`/app/vault/${encodeURIComponent(vaultId)}/deep`)}
+            className="flex items-center gap-2 px-4 py-2 rounded-xl text-[13px] font-medium card hover:shadow-[var(--shadow-md)] transition-shadow"
+          >
+            <Telescope size={14} className="text-[var(--text-muted)]" /> Deep Analysis
           </button>
           <button
             onClick={() => toast("Draft document arrives in a later phase (G6).")}

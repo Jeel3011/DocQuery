@@ -40,7 +40,7 @@ export default function LoginPage() {
   // Auto-redirect 3s after signup (#18)
   useEffect(() => {
     if (!signedUp) return;
-    if (countdown <= 0) { router.push("/app/chat"); return; }
+    if (countdown <= 0) { router.push("/app"); return; }
     const t = setTimeout(() => setCountdown((c) => c - 1), 1000);
     return () => clearTimeout(t);
   }, [signedUp, countdown, router]);
@@ -52,7 +52,7 @@ export default function LoginPage() {
         const { error } = await supabase.auth.signInWithPassword(data);
         if (error) throw error;
         toast.success("Welcome back!");
-        router.push("/app/chat");
+        router.push("/app");
       } else {
         const { error } = await supabase.auth.signUp(data);
         if (error) throw error;

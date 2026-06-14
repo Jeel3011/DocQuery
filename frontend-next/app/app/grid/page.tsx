@@ -7,7 +7,7 @@
 // clause grounded in a quoted source, or flagged — no silent wrong cell."
 
 import { Suspense, useEffect, useMemo, useRef, useState } from "react";
-import { useSearchParams } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import { useAuthStore } from "@/stores/auth.store";
 import { listCollections, getCollectionDocuments, CollectionResponse, DocumentResponse } from "@/lib/api";
 import {
@@ -62,7 +62,11 @@ export interface ReviewGridProps {
   scopedCollectionId?: string; // route-authoritative vault id (vault route only)
 }
 
-export default function ReviewGridPage(props: ReviewGridProps = {}) {
+// The review-grid component. Exported as `ReviewGrid` so the vault route
+// (/app/vault/[id]/review, Step E) renders it directly with the route-scoped vault id —
+// ONE source of truth, no forked copy (plan §6 #6). This is no longer the default export:
+// the legacy /app/grid route is retired (Step H) and now redirects to Vault Home (below).
+export function ReviewGrid(props: ReviewGridProps = {}) {
   return (
     <Suspense fallback={<div className="flex-1" />}>
       <ReviewGridInner {...props} />
@@ -70,8 +74,18 @@ export default function ReviewGridPage(props: ReviewGridProps = {}) {
   );
 }
 
-// Exported so the vault route can render the grid directly with props.
-export { ReviewGridPage as ReviewGrid };
+// /app/grid — RETIRED (G2 Step H). Review now lives at /app/vault/[id]/review, scoped to
+// a vault by the route [id]. A vault-less /app/grid can't honour that scope (and its old
+// in-page collection picker is gone), so the legacy route redirects to Vault Home — the
+// user picks a vault, then opens Review. Redirect (not 404) so old links degrade
+// gracefully (plan §4b). The named `ReviewGrid` export above keeps the vault route working.
+export default function GridRouteRedirect() {
+  const router = useRouter();
+  useEffect(() => {
+    router.replace("/app");
+  }, [router]);
+  return null;
+}
 
 function ReviewGridInner({ scopedCollectionId }: ReviewGridProps) {
   const { token } = useAuthStore();

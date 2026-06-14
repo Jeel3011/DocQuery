@@ -68,16 +68,20 @@ export function CommandPalette({ onNewChat, onUpload, conversations = [], collec
       label: c.title || "Untitled",
       description: "Jump to conversation",
       icon: <MessageSquare size={14} />,
+      // Historical conversations don't carry their vault id here, so we open them on the
+      // legacy /app/chat/[id] route, which survives Step H as the graceful store-scoped
+      // fallback for deep-links (plan §4b) — it reads scope from VaultScopeSync, not 404s.
       action: () => { close(); router.push(`/app/chat/${c.id}`); },
       keywords: [c.title?.toLowerCase() ?? ""],
     })),
     ...collections.slice(0, 6).map((c) => ({
       id: `coll-${c.id}`,
       label: c.name,
-      description: "Open collection",
+      description: "Open vault",
       icon: <FolderOpen size={14} />,
-      action: () => { close(); },
-      keywords: [c.name.toLowerCase()],
+      // Step H: route to the re-homed vault workspace (was a dead no-op).
+      action: () => { close(); router.push(`/app/vault/${c.id}`); },
+      keywords: [c.name.toLowerCase(), "vault", "collection"],
     })),
   ];
 
