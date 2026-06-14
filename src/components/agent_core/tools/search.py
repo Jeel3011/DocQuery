@@ -35,6 +35,14 @@ SCHEMA: Dict[str, Any] = {
                     "collection_id": {"type": "string"},
                     "doc_ids": {"type": "array", "items": {"type": "string"}},
                     "filenames": {"type": "array", "items": {"type": "string"}},
+                    "filters": {
+                        "type": "object",
+                        "description": (
+                            "Optional metadata narrowing (e.g. {\"doc_type\": "
+                            "\"legal_contract\", \"fiscal_year\": {\"$in\": [2023]}}). "
+                            "Conjunctive — narrows the vault scope, never replaces it."
+                        ),
+                    },
                 },
             },
             "k": {"type": "integer", "description": "How many chunks to return (default 8)."},
@@ -72,15 +80,28 @@ def search_vault(
 
     scope = scope or {}
     collection_id = scope.get("collection_id")
-    filenames: Optional[List[str]] = scope.get("filenames") or scope.get("doc_ids")
+    # G3: doc_id is the stable, ingest-stamped scope axis (vault isolation as a DATA
+    # property). The retriever filters `doc_id $in` when given; the per-USER namespace
+    # already isolates users, this isolates VAULTS. `filenames` stays as the legacy
+    # fallback for any un-stamped vector — the retriever's scope cascade prefers doc_ids.
+    doc_ids: Optional[List[str]] = scope.get("doc_ids")
+    filenames: Optional[List[str]] = scope.get("filenames")
+    # G3 Step B: doc_type / fiscal_year / … narrowing — CONJUNCTIVE on top of scope,
+    # never a replacement (a bug there would be a cross-vault leak).
+    metadata_filter: Optional[Dict[str, Any]] = scope.get("filters") or None
 
     docs: List[Any] = []
 
     if kind in ("text", "both"):
+        # `retrieve` handles the doc_ids axis end-to-end: len>1 balances per-doc, len==1
+        # becomes a scalar doc_id filter. Filenames are the legacy fallback only when no
+        # doc_ids are present (un-stamped vectors).
         text_docs = retrieval_manager.retrieve(
             query,
-            filename_filters=filenames if filenames and len(filenames) > 1 else None,
-            filename_filter=filenames[0] if filenames and len(filenames) == 1 else None,
+            doc_ids=doc_ids or None,
+            filename_filters=(filenames if filenames and len(filenames) > 1 else None) if not doc_ids else None,
+            filename_filter=(filenames[0] if filenames and len(filenames) == 1 else None) if not doc_ids else None,
+            metadata_filter=metadata_filter,
             top_k=k,
             apply_threshold=False,
             use_reranker=True,
@@ -88,17 +109,14 @@ def search_vault(
         docs.extend(text_docs or [])
 
     if kind in ("table", "both"):
-        # Filter table chunks by FILENAME, not collection_id. Ingest stamps `filename`
-        # + `chunk_type` on every chunk but NEVER `collection_id` (verified
-        # 2026-06-11) — and `retrieve_table_chunks` filters collection_id FIRST when
-        # present, so passing it made the Pinecone filter
-        # {chunk_type:table, collection_id:<id>} match ZERO chunks. Live result: every
-        # `search_vault(kind='table')` returned 0, the model's primary "find the right
-        # table" tool was dead, and it burned steps on text-search / read_document
-        # workarounds. Pass filenames (which ARE on the metadata), like the text branch.
+        # G3: scope table chunks by doc_id (stable, ingest-stamped) when present, else
+        # fall back to FILENAME. (Never collection_id — ingest never stamps it on
+        # chunks, so {chunk_type:table, collection_id:<id>} matched ZERO; BUG-F 2026-06-11.)
         table_docs = retrieval_manager.retrieve_table_chunks(
             query,
+            doc_ids=doc_ids if doc_ids else None,
             filename_filters=filenames,
+            metadata_filter=metadata_filter,
             k=k,
         )
         docs.extend(table_docs or [])

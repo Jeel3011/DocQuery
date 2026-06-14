@@ -60,6 +60,8 @@ class RetrievalManager:
         collection_id: str = None,
         filename_filters: list[str] = None,
         doc_id: str = None,
+        doc_ids: list[str] = None,
+        metadata_filter: dict = None,
         k: int = 8,
     ) -> list:
         """Semantically retrieve TABLE chunks for a numeric/tabular query.
@@ -70,14 +72,27 @@ class RetrievalManager:
         document the Brain encounters. Returns the table chunks (metadata carries
         ``table_json`` for the Analyst). Never raises; returns [] on failure so the
         Analyst path degrades to prose-only synthesis.
+
+        Scope priority (G3): ``doc_id``/``doc_ids`` (the stable, ingest-stamped axis —
+        vault isolation as a data property) win over the legacy filename fallback. The
+        per-USER Pinecone namespace already isolates users; this filter isolates VAULTS.
+        ``metadata_filter`` (G3 Step B) is a conjunctive narrowing merged on top — it
+        NEVER replaces the scope (a bug there would be a cross-vault leak).
         """
         f: dict = {"chunk_type": "table"}
         if doc_id:
             f["doc_id"] = doc_id
+        elif doc_ids:
+            f["doc_id"] = {"$in": doc_ids}
         elif collection_id:
             f["collection_id"] = collection_id
         elif filename_filters:
             f["filename"] = {"$in": filename_filters}
+        if metadata_filter:
+            # Conjunctive narrowing on top of vault scope; never replaces scope keys.
+            for mk, mv in metadata_filter.items():
+                if mk not in ("doc_id", "collection_id", "filename", "chunk_type"):
+                    f[mk] = mv
         try:
             docs_and_scores = self.vectorstore.similarity_search_with_score(
                 query, k=k, filter=f,
@@ -91,25 +106,39 @@ class RetrievalManager:
 
     # ── Private helper: raw vector search (shared by retrieve & retrieve_multi_query) ──
 
-    @staticmethod
+    # Scope keys we never let a metadata_filter overwrite (it NARROWS, never REPLACES,
+    # the vault scope — overwriting one would be a cross-vault leak; G3 §5 risk #4).
+    _SCOPE_KEYS = frozenset({"doc_id", "collection_id", "filename"})
+
+    @classmethod
     def _build_filter(
+        cls,
         filename_filter: str = None,
         page_filter: str = None,
         filename_filters: list[str] = None,
         collection_id: str = None,
         doc_id: str = None,
+        doc_ids: list[str] = None,
+        metadata_filter: dict = None,
     ) -> dict | None:
         """Build a Pinecone metadata filter dict from the supplied scope parameters.
 
-        Priority (most selective wins):
+        Scope priority (most selective wins — G3 makes doc_id the stable axis):
           doc_id        → single-doc scalar filter (most efficient)
+          doc_ids       → $in over the vault's docs (vault isolation as a DATA property)
           collection_id → scalar filter on the stamped collection_id field (Phase 1+)
           filename_filters → $in list (legacy fallback for un-stamped vectors)
           filename_filter  → single filename scalar
+
+        ``metadata_filter`` (G3 Step B: doc_type / fiscal_year / …) is merged CONJUNCTIVELY
+        on top of the scope — it can only NARROW, never replace a scope key (that would be
+        a cross-vault leak). Scope keys present in metadata_filter are dropped.
         """
         f: dict = {}
         if doc_id:
             f["doc_id"] = doc_id
+        elif doc_ids:
+            f["doc_id"] = {"$in": doc_ids}
         elif collection_id:
             f["collection_id"] = collection_id
         elif filename_filters:
@@ -118,6 +147,10 @@ class RetrievalManager:
             f["filename"] = filename_filter
         if page_filter:
             f["page_number"] = page_filter
+        if metadata_filter:
+            for mk, mv in metadata_filter.items():
+                if mk not in cls._SCOPE_KEYS:
+                    f[mk] = mv
         return f if f else None
 
     def _raw_retrieve(
@@ -129,6 +162,8 @@ class RetrievalManager:
         apply_threshold: bool = True,
         collection_id: str = None,
         doc_id: str = None,
+        doc_ids: list[str] = None,
+        metadata_filter: dict = None,
         fetch_k_override: int = None,
     ) -> list[Document]:
         """Run similarity search against Pinecone and return docs above threshold.
@@ -160,6 +195,8 @@ class RetrievalManager:
                 filename_filters=filename_filters,
                 collection_id=collection_id,
                 doc_id=doc_id,
+                doc_ids=doc_ids,
+                metadata_filter=metadata_filter,
             )
 
             docs_and_scores = self.vectorstore.similarity_search_with_score(
@@ -190,6 +227,8 @@ class RetrievalManager:
         apply_threshold: bool = True,
         collection_id: str = None,
         doc_id: str = None,
+        doc_ids: list[str] = None,
+        metadata_filter: dict = None,
     ) -> list[Document]:
         """Run similarity search using a pre-computed embedding vector.
 
@@ -215,6 +254,8 @@ class RetrievalManager:
                 filename_filters=filename_filters,
                 collection_id=collection_id,
                 doc_id=doc_id,
+                doc_ids=doc_ids,
+                metadata_filter=metadata_filter,
             )
 
             docs_and_scores = self.vectorstore.similarity_search_by_vector_with_score(
@@ -248,6 +289,8 @@ class RetrievalManager:
         top_k: int = None,
         apply_threshold: bool = True,
         use_reranker: bool = True,
+        doc_ids: list[str] = None,
+        metadata_filter: dict = None,
     ) -> list[Document]:
         """Retrieve relevant docs with optional hybrid BM25+RRF fusion and/or reranking.
 
@@ -267,9 +310,18 @@ class RetrievalManager:
         reaching MAP). Skipping it removes the timeout source; on the cloud (GPU/hosted
         rerank) it can be re-enabled via env.
         """
-        # Collection scope spanning multiple files → guarantee each file is represented.
+        # Vault scope spanning multiple docs → guarantee each doc is represented.
+        # G3: prefer the stable doc_id axis; fall back to the legacy filename balance.
+        if doc_ids and len(doc_ids) > 1:
+            return self.retrieve_across_files(
+                query, page_filter=page_filter, doc_ids=doc_ids,
+                metadata_filter=metadata_filter,
+            )
         if filename_filters and len(filename_filters) > 1:
-            return self.retrieve_across_files(query, filename_filters, page_filter=page_filter)
+            return self.retrieve_across_files(
+                query, filename_filters, page_filter=page_filter,
+                metadata_filter=metadata_filter,
+            )
 
         rerank_on = use_reranker and self._reranker is not None
         # Widen the candidate pool when a large top_k is requested so rerank has enough
@@ -283,6 +335,7 @@ class RetrievalManager:
             query, filename_filter, page_filter,
             filename_filters=filename_filters, fetch_k_override=fetch_override,
             apply_threshold=apply_threshold,
+            doc_ids=doc_ids, metadata_filter=metadata_filter,
         )
 
         # Step 1: Hybrid BM25 + RRF fusion
@@ -410,12 +463,18 @@ class RetrievalManager:
     def retrieve_across_files(
         self,
         query: str,
-        filenames: list[str],
+        filenames: list[str] = None,
         page_filter: str = None,
         per_file_k: int = None,
         query_embedding: list = None,
+        doc_ids: list[str] = None,
+        metadata_filter: dict = None,
     ) -> list[Document]:
         """Collection retrieval that GUARANTEES every file is represented.
+
+        G3: when ``doc_ids`` is supplied it is the balance axis (the stable, ingest-
+        stamped vault scope); otherwise we balance over ``filenames`` (legacy). Either
+        way each in-scope doc keeps its best chunks so no document silently vanishes.
 
         The normal path reranks one merged pool and keeps the global top-k, which for
         a cross-file question ("compare A and B", "difference between both") can
@@ -432,35 +491,44 @@ class RetrievalManager:
         """
         from concurrent.futures import ThreadPoolExecutor
 
-        max_fanout = self.config.ROUTING_MAX_FANOUT
-        if len(filenames) > max_fanout:
-            self.logger.warning(
-                "retrieve_across_files: %d files exceeds ROUTING_MAX_FANOUT=%d — "
-                "truncating to first %d. Deploy Stage-1 router (Phase 3) to fix this properly.",
-                len(filenames), max_fanout, max_fanout,
-            )
-            filenames = filenames[:max_fanout]
+        # G3: balance over the stable doc_id axis when given, else legacy filenames.
+        # `by_doc_id` decides which scalar scope key each per-doc fetch uses.
+        by_doc_id = bool(doc_ids)
+        scope_items = list(doc_ids) if by_doc_id else list(filenames or [])
 
-        n = len(filenames)
+        max_fanout = self.config.ROUTING_MAX_FANOUT
+        if len(scope_items) > max_fanout:
+            self.logger.warning(
+                "retrieve_across_files: %d docs exceeds ROUTING_MAX_FANOUT=%d — "
+                "truncating to first %d. Deploy Stage-1 router (Phase 3) to fix this properly.",
+                len(scope_items), max_fanout, max_fanout,
+            )
+            scope_items = scope_items[:max_fanout]
+
+        n = len(scope_items)
         if per_file_k is None:
             # Keep total context bounded (~8-12 chunks) regardless of collection size.
             per_file_k = 4 if n <= 2 else (3 if n <= 4 else 2)
 
-        def _fetch_raw(fname: str) -> list[Document]:
+        def _fetch_raw(item: str) -> list[Document]:
+            # Scope this single fetch to ONE doc — by doc_id (G3) or filename (legacy).
+            scalar = {"doc_id": item} if by_doc_id else {"filename_filter": item}
             if query_embedding is not None:
                 return self._raw_retrieve_by_vector(
-                    query_embedding, filename_filter=fname,
+                    query_embedding, **scalar,
                     page_filter=page_filter, apply_threshold=False,
+                    metadata_filter=metadata_filter,
                 )
             return self._raw_retrieve(
-                query, filename_filter=fname,
+                query, **scalar,
                 page_filter=page_filter, apply_threshold=False,
+                metadata_filter=metadata_filter,
             )
 
         # Parallel Pinecone fetch (I/O-bound). Rerank sequentially afterwards — the
         # cross-encoder model isn't safe to call from multiple threads at once.
         with ThreadPoolExecutor(max_workers=min(n, 4)) as pool:
-            raw_per_file = list(pool.map(_fetch_raw, filenames))
+            raw_per_file = list(pool.map(_fetch_raw, scope_items))
 
         merged: list[Document] = []
         for docs in raw_per_file:
@@ -471,7 +539,8 @@ class RetrievalManager:
             merged.extend(docs)
 
         self.logger.info(
-            "Cross-file retrieve: %d files x ~%d/file -> %d chunks", n, per_file_k, len(merged)
+            "Cross-file retrieve: %d %s x ~%d/doc -> %d chunks",
+            n, "doc_ids" if by_doc_id else "files", per_file_k, len(merged)
         )
         return merged
 

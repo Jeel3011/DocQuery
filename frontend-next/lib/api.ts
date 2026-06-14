@@ -23,6 +23,8 @@ export interface DocumentResponse {
   // ingest. null = unknown/legacy → the UI shows a neutral chip/dot.
   doc_type?: "legal_contract" | "financial_filing" | "mixed" | "generic" | null;
   fidelity?: "good" | "partial" | null;
+  // G3 Step C: structurally-derived fiscal year. null = unknown → FY filter doesn't exclude.
+  fiscal_year?: number | null;
 }
 
 export interface ConversationResponse {

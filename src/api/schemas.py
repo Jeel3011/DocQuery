@@ -57,6 +57,9 @@ class DocumentResponse(BaseModel):
     # UI shows a neutral chip/dot. Persisted at ingest (migration 007).
     doc_type: Optional[str] = None
     fidelity: Optional[str] = None
+    # G3 Step C: structurally-derived fiscal year (int). None = unknown/legacy → the FY
+    # filter treats it as "don't exclude". Persisted at ingest (migration 008).
+    fiscal_year: Optional[int] = None
 
 
 class DocumentListResponse(BaseModel):

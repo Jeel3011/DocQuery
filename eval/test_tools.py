@@ -227,7 +227,9 @@ def main() -> int:
     class _StubRM:
         def __init__(self):
             self.table_kwargs = None
+            self.text_kwargs = None
         def retrieve(self, query, **kw):
+            self.text_kwargs = kw  # capture what search_vault passed to text retrieval
             return [_Doc("net sales rose", {"filename": "amzn.pdf", "page_number": 41,
                                             "chunk_id": "c1", "score": 0.9})]
         def retrieve_table_chunks(self, query, **kw):
@@ -253,6 +255,59 @@ def main() -> int:
          and stub.table_kwargs.get("filename_filters") == ["amzn.pdf", "msft.pdf"]
          and not stub.table_kwargs.get("collection_id"),
          "search_vault(table): filters by FILENAME, not collection_id (BUG-F)")
+    # ── G3 Step A: doc_id is the stable scope axis (vault isolation as DATA) ──────
+    # When the scope carries real doc_ids, search_vault scopes by doc_id (NOT filename),
+    # and the retriever turns a multi-doc scope into a `doc_id $in` filter.
+    from src.components.retrieval import RetrievalManager
+    stub = _StubRM()
+    search_vault("net sales", stub,
+                 scope={"collection_id": "x", "doc_ids": ["docA1", "docA2"],
+                        "filenames": ["amzn.pdf"]},  # filenames must NOT win over doc_ids
+                 k=4, kind="both")
+    c.ok(stub.text_kwargs is not None
+         and stub.text_kwargs.get("doc_ids") == ["docA1", "docA2"]
+         and not stub.text_kwargs.get("filename_filters")
+         and not stub.text_kwargs.get("filename_filter"),
+         "search_vault(text): doc_ids scope wins over filename fallback (G3 Step A)")
+    c.ok(stub.table_kwargs is not None and stub.table_kwargs.get("doc_ids") == ["docA1", "docA2"],
+         "search_vault(table): scopes by doc_id $in when doc_ids present (G3 Step A)")
+    # The doc_ids actually become a `doc_id $in` Pinecone filter in the retriever.
+    f = RetrievalManager._build_filter(doc_ids=stub.text_kwargs.get("doc_ids"))
+    c.ok(f == {"doc_id": {"$in": ["docA1", "docA2"]}},
+         "search_vault → retriever builds `doc_id $in` filter (data-property isolation)")
+
+    # ── G3 Step B: scope.filters → conjunctive metadata_filter on BOTH branches ──
+    stub = _StubRM()
+    search_vault("contracts", stub,
+                 scope={"doc_ids": ["docA1", "docA2"],
+                        "filters": {"doc_type": "legal_contract",
+                                    "fiscal_year": {"$in": [2023]}}},
+                 k=4, kind="both")
+    mf = {"doc_type": "legal_contract", "fiscal_year": {"$in": [2023]}}
+    c.ok(stub.text_kwargs.get("metadata_filter") == mf,
+         "search_vault(text): scope.filters threads through as metadata_filter (Step B)")
+    c.ok(stub.table_kwargs.get("metadata_filter") == mf,
+         "search_vault(table): scope.filters threads through as metadata_filter (Step B)")
+    # The merged Pinecone filter is the scope (doc_id $in) AND the narrowing — CONJUNCTIVE.
+    merged = RetrievalManager._build_filter(
+        doc_ids=stub.text_kwargs.get("doc_ids"),
+        metadata_filter=stub.text_kwargs.get("metadata_filter"),
+    )
+    c.ok(merged == {"doc_id": {"$in": ["docA1", "docA2"]},
+                    "doc_type": "legal_contract", "fiscal_year": {"$in": [2023]}},
+         "Step B: merged filter = vault scope AND metadata narrowing (conjunctive)")
+    # A metadata_filter can NEVER overwrite the scope key (no cross-vault widening).
+    leak = RetrievalManager._build_filter(
+        doc_ids=["docA1"], metadata_filter={"doc_id": "docB1", "doc_type": "x"},
+    )
+    c.ok(leak.get("doc_id") == {"$in": ["docA1"]} and leak.get("doc_type") == "x",
+         "Step B: metadata_filter cannot replace the doc_id scope key (no leak)")
+    # No filters → no metadata_filter key forced on (clean omission).
+    stub = _StubRM()
+    search_vault("x", stub, scope={"doc_ids": ["docA1"]}, k=4, kind="both")
+    c.ok(not stub.text_kwargs.get("metadata_filter"),
+         "search_vault: no scope.filters → metadata_filter is absent (no empty {})")
+
     # No manager → error, not raise.
     r = search_vault("x", None)
     c.ok(is_envelope(r) and not r["ok"] and "error" in r, "search_vault: no manager → error envelope")

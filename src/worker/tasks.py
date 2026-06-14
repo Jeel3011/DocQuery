@@ -179,6 +179,8 @@ def process_document_task(
             doc_id, "ready", len(chunks), progress_pct=100,
             doc_type=getattr(processor, "_last_doc_type", None),
             fidelity=getattr(processor, "_last_fidelity", None),
+            # G3 Step C: persist the structural fiscal_year for the FY filter chip.
+            fiscal_year=getattr(processor, "_last_fiscal_year", None),
         )
         uploads_total.labels(status="success").inc()
 

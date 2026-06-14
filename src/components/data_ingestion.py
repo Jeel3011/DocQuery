@@ -467,6 +467,77 @@ def classify_document(text_elements: List, filename: Optional[str] = None) -> st
         return DOC_TYPE_GENERIC
 
 
+# ── G3 Step C — structural fiscal_year derivation ($0, NULL when unsure) ─────────
+# A doc's fiscal year drives the FY filter chip. We derive it STRUCTURALLY only — no
+# LLM, no guess — from two signals, in precedence order:
+#   1. FILENAME (highest precision): EDGAR/issuer names carry the period-end date,
+#      e.g. "amzn-20221231" → 2022, "msft-10k_20220630" → 2022 (FY end June 30),
+#      "goog-20231231" → 2023; also "FY2023" / "fy23".
+#   2. PERIOD HEADERS the extractor already read off the statements (grid.periods like
+#      ["2021","2022","2023"]) → the filing's primary FY is its LATEST reported year.
+# If neither yields a year in a sane window, return None — the filter treats NULL as
+# "unknown, don't exclude" (a mis-derived FY would silently hide the right doc; §5 risk #3).
+
+_FY_MIN, _FY_MAX = 1990, 2099  # sanity window — reject stray 4-digit tokens outside it
+
+# YYYYMMDD anywhere in the filename (the EDGAR period-end), e.g. amzn-20221231.
+_RE_YYYYMMDD = re.compile(r"(?<!\d)(19|20)\d{2}(0[1-9]|1[0-2])(0[1-9]|[12]\d|3[01])(?!\d)")
+# Explicit fiscal-year tag: FY2023 / FY 2023 / fy23.
+_RE_FY_TAG = re.compile(r"\bfy[\s_-]?((?:19|20)\d{2}|\d{2})\b", re.IGNORECASE)
+# Bare 4-digit year token (lowest-precision filename signal).
+_RE_YEAR = re.compile(r"(?<!\d)(19|20)\d{2}(?!\d)")
+
+
+def _fy_from_filename(filename: Optional[str]) -> Optional[int]:
+    name = (filename or "").lower()
+    if not name:
+        return None
+    # 1. period-end date YYYYMMDD → the YEAR is the fiscal year.
+    m = _RE_YYYYMMDD.search(name)
+    if m:
+        yr = int(m.group(0)[:4])
+        if _FY_MIN <= yr <= _FY_MAX:
+            return yr
+    # 2. explicit FY tag (handles 2-digit fy23 → 2023).
+    m = _RE_FY_TAG.search(name)
+    if m:
+        raw = m.group(1)
+        yr = int(raw) if len(raw) == 4 else 2000 + int(raw)
+        if _FY_MIN <= yr <= _FY_MAX:
+            return yr
+    # 3. bare year token (e.g. "annual-report-2022").
+    m = _RE_YEAR.search(name)
+    if m:
+        yr = int(m.group(0))
+        if _FY_MIN <= yr <= _FY_MAX:
+            return yr
+    return None
+
+
+def derive_fiscal_year(filename: Optional[str], periods: Optional[List[str]] = None) -> Optional[int]:
+    """Return the doc's fiscal year as an int, or None when not structurally certain.
+
+    Filename wins (it carries the precise period-end); period headers are the fallback
+    (the latest reported year on the statements). Never raises, never guesses.
+    """
+    try:
+        fy = _fy_from_filename(filename)
+        if fy is not None:
+            return fy
+        # Period headers: take the MAX year (the filing's primary/most-recent FY).
+        years = []
+        for p in (periods or []):
+            mm = _RE_YEAR.search(str(p))
+            if mm:
+                yr = int(mm.group(0))
+                if _FY_MIN <= yr <= _FY_MAX:
+                    years.append(yr)
+        return max(years) if years else None
+    except Exception as exc:  # noqa: BLE001 — derivation never breaks ingestion
+        _logger.warning("[ingest] fiscal_year derivation failed (%s) — None", exc)
+        return None
+
+
 # ── GRAND_PLAN G1b — clause-aware chunking for prose/legal docs ──────────────
 # Contracts are numbered ("1. Engagement", "9.1 Governing Law"). chunk_by_title
 # splits on SIZE, cutting a clause mid-sentence so neither half retrieves well
@@ -537,6 +608,7 @@ class DocumentProcessor:
         # (legal docs skip the table pass, so they stay None — honest "unknown").
         self._last_doc_type = None
         self._last_fidelity = None
+        self._last_fiscal_year = None  # G3 Step C — structural FY (None = unknown)
 
     def _detect_strategy(self, file_path: str, file_ext: str, page_count: Optional[int] = None) -> str:
         """
@@ -832,6 +904,11 @@ class DocumentProcessor:
         self._last_doc_type = doc_type  # exposed for callers/tests
         is_legal_prose = doc_type == DOC_TYPE_LEGAL
 
+        # G3 Step C: structural fiscal_year from the filename (refined from grid period
+        # headers after the table pass below). Stamped on every chunk at the end so the
+        # FY filter chip can narrow retrieval. None = unknown → never excludes the doc.
+        self._last_fiscal_year = derive_fiscal_year(_fname)
+
         if text_elements:
             # ── G1b: clause-aware chunking for prose contracts; chunk_by_title else ──
             prose_chunks = []
@@ -1001,6 +1078,29 @@ class DocumentProcessor:
             _logger.info("[ingest] G1c: skipping financial-table pass (doc_type=%s)", doc_type)
         elif resolved_pdf and str(resolved_pdf).lower().endswith(".pdf"):
             docs.extend(self._build_table_chunks(resolved_pdf, elements))
+
+        # ── G3 Step C: refine fiscal_year from the extracted statements' period headers
+        # (only when the filename gave nothing), then stamp the final FY on EVERY chunk
+        # so the FY filter can scope retrieval. doc_type is already on each chunk (G1d);
+        # this keeps fiscal_year on the same footing. None = unknown → never excludes.
+        if self._last_fiscal_year is None:
+            periods: List[str] = []
+            for d in docs:
+                tj = d.metadata.get("table_json")
+                if not tj:
+                    continue
+                try:
+                    grid = json.loads(tj) if isinstance(tj, str) else tj
+                    periods.extend(grid.get("periods") or [])
+                except Exception:  # noqa: BLE001 — best-effort; FY stays None on parse error
+                    pass
+            if periods:
+                self._last_fiscal_year = derive_fiscal_year(None, periods)
+        if self._last_fiscal_year is not None:
+            for d in docs:
+                d.metadata["fiscal_year"] = self._last_fiscal_year
+            _logger.info("[ingest] fiscal_year=%s stamped on %d chunks",
+                         self._last_fiscal_year, len(docs))
 
         print(f"Total LangChain Documents created: {len(docs)}")
         return docs

@@ -290,7 +290,8 @@ class SupabaseManager:
 
     def update_document_status(self, doc_id: str, status: str,
                                chunk_count: int = 0, progress_pct: int = None,
-                               doc_type: str = None, fidelity: str = None):
+                               doc_type: str = None, fidelity: str = None,
+                               fiscal_year: int = None):
         """Update document processing status.
 
         Args:
@@ -302,6 +303,8 @@ class SupabaseManager:
                 mixed|generic), persisted when the doc flips to 'ready'.
             fidelity: G2 Step F — coarse extraction-fidelity grade (good|partial),
                 persisted when the doc flips to 'ready'.
+            fiscal_year: G3 Step C — structurally-derived fiscal year (int), persisted
+                when the doc flips to 'ready'. None = unknown (never guessed).
         """
         update_data = {
             "status": status,
@@ -317,14 +320,18 @@ class SupabaseManager:
             update_data["doc_type"] = doc_type
         if fidelity is not None:
             update_data["fidelity"] = fidelity
+        # G3 Step C: persist the fiscal_year so the FY filter chip can read it (migration
+        # 008). Forward-compat retry below drops it if the column isn't present yet.
+        if fiscal_year is not None:
+            update_data["fiscal_year"] = fiscal_year
         try:
             self.client.table("documents").update(
                 update_data
             ).eq("id", doc_id).eq("user_id", self.user_id).execute()
         except Exception:
             # Forward-compat: if the newer columns aren't present yet (migration 005 /
-            # 007 not applied), retry without them so status still updates.
-            forward_compat_keys = ("processing_progress", "doc_type", "fidelity")
+            # 007 / 008 not applied), retry without them so status still updates.
+            forward_compat_keys = ("processing_progress", "doc_type", "fidelity", "fiscal_year")
             if any(k in update_data for k in forward_compat_keys):
                 for k in forward_compat_keys:
                     update_data.pop(k, None)

@@ -120,13 +120,29 @@ class ToolRegistry:
                 # Merge the model's scope arg over the run scope (model may narrow it).
                 model_scope = args.get("scope") or {}
                 merged = {**scope.scope_dict(), **model_scope}
-                # The retriever filters by FILENAME. The model may scope by doc_ids —
-                # usually the filenames it saw in results, but possibly real UUIDs;
-                # translate via filename_by_doc so a UUID never reaches the retriever
-                # as a filename filter.
-                if merged.get("doc_ids") and not merged.get("filenames"):
+                # G3: doc_id is the stable, ingest-stamped scope axis. The run scope's
+                # doc_ids are real UUIDs (resolved from the vault in Postgres), so they
+                # flow straight to the retriever's `doc_id $in` filter — vault isolation
+                # as a DATA property, not a correctly-assembled filename list.
+                #
+                # The MODEL, however, often "narrows" by passing the FILENAMES it saw in
+                # earlier results back as doc_ids. Those aren't UUIDs — route any non-UUID
+                # entry into `filenames` (the legacy fallback) so it still scopes, and
+                # keep only true doc_ids (those present in the run's doc_id set) on the
+                # doc_ids axis. This keeps the model's narrowing AND the doc_id moat.
+                if model_scope.get("doc_ids"):
+                    run_ids = set(scope.doc_ids or [])
                     fmap = scope.filename_by_doc or {}
-                    merged["doc_ids"] = [fmap.get(d, d) for d in merged["doc_ids"]]
+                    real_ids, as_names = [], []
+                    for d in model_scope["doc_ids"]:
+                        if d in run_ids:
+                            real_ids.append(d)
+                        else:
+                            # filename echoed back as a doc_id, or a UUID we can map
+                            as_names.append(fmap.get(d, d))
+                    merged["doc_ids"] = real_ids or None
+                    if as_names and not merged.get("filenames"):
+                        merged["filenames"] = as_names
                 return search_tool(
                     args.get("query", ""),
                     scope.retrieval_manager,
