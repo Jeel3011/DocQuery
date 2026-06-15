@@ -75,6 +75,11 @@ _MODE_TOOLS = {
     # every cell — the finance-origin bug, fixed 2026-06-12.) Keeps read/compute for the
     # numeric columns that share the grid.
     "grid": ["search_vault", "read_document", "list_metrics", "table_lookup", "compute"],
+    # G6.1: drafting is the SAME engine + the SAME gate — it only changes the shape of the
+    # deliverable (a cited memo/summary/section). It needs to GATHER evidence, not a new
+    # capability, so it gets the standard toolset; the draft prompt overlay (prompt.py)
+    # supplies the deliverable shape. Recommended shape (a): prompt-overlay, no new tool.
+    "draft": ["search_vault", "read_document", "list_metrics", "table_lookup", "compute"],
 }
 
 

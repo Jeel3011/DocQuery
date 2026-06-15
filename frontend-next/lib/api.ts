@@ -345,6 +345,28 @@ export async function exportConversation(
   }
 }
 
+// G6.1: export a gated cited deliverable (memo/summary/draft) as a .docx. The markdown
+// supplied ALREADY passed the output gate — export preserves the citation contract (no
+// re-gate, no added number). `includeCitations` toggles numbered endnotes vs a clean
+// client copy (markers stripped at export only).
+export async function exportDraftDocx(
+  token: string,
+  title: string,
+  markdown: string,
+  includeCitations = true
+): Promise<Blob> {
+  try {
+    const res = await makeClient(token).post(
+      `/export/docx`,
+      { title, markdown, include_citations: includeCitations },
+      { responseType: "blob", timeout: 60_000 }
+    );
+    return res.data;
+  } catch (err) {
+    handleAxiosError(err);
+  }
+}
+
 // ─── Analytics ────────────────────────────────────────────────────────────────
 
 export interface DailyQueryCount {

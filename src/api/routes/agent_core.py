@@ -107,11 +107,25 @@ async def agentcore_query_stream(
             detail="collection_id is required for the agent-core endpoint.",
         )
 
-    # Mode dispatch (§3.1): the user may force fast|standard|deep; default standard.
+    # Mode dispatch (§3.1): the user may force fast|standard|deep|draft; default standard.
     # (Fast does not loop — the agent core is the smart path; fast stays on /query/stream.)
     mode = (getattr(body, "mode", None) or "standard").lower()
-    if mode not in ("standard", "deep"):
+    if mode not in ("standard", "deep", "draft"):
         mode = "standard"
+
+    # G6.1 drafting: the deliverable request (doc_type + instructions) is composed into the
+    # question so drafting rides the SAME loop — no second orchestrator. The draft prompt
+    # overlay (prompt.py) supplies the deliverable shape; the gate binds it like any answer.
+    if mode == "draft":
+        _doc_type = (getattr(body, "doc_type", None) or "").strip()
+        _instr = (getattr(body, "instructions", None) or "").strip()
+        if _doc_type or _instr:
+            composed = "Produce a client-ready " + (_doc_type or "deliverable")
+            if _instr:
+                composed += f". Instructions: {_instr}"
+            # Overwrite the question the loop drafts from (keep the request immutable
+            # elsewhere by setting only what the loop reads — body.question).
+            body.question = composed
 
     # ── Scope assembly (async, off the loop) — mirror the brain route ──────────────
     query_embedding: list = []
@@ -253,8 +267,11 @@ async def agentcore_query_stream(
     # G5: deep mode binds the report PER SECTION (an unsupported section is withheld
     # visibly, the grounded ones ship intact). Standard mode keeps the whole-draft gate.
     # Both are non-bypassable; deep just applies the same logic section-by-section.
+    # G6.1: a draft is a multi-section deliverable too (`##` headings), so it gets the
+    # SAME per-section gate — one unsupported section is withheld visibly, never sinks the
+    # whole document. Same non-bypassable rules; never a softer gate for prose.
     from src.components.agent_core.gates import run_output_gates, gate_sectioned
-    gate_fn = gate_sectioned if mode == "deep" else run_output_gates
+    gate_fn = gate_sectioned if mode in ("deep", "draft") else run_output_gates
 
     def _agent_stream():
         try:

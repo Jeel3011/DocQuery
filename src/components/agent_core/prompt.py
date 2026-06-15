@@ -126,11 +126,47 @@ Use `##` headers for sections (the report is split on them). Keep citation marke
 [amzn-2022 p.41] inline on every factual sentence."""
 
 
+# ── Drafting overlay (G6.1) ──────────────────────────────────────────────────────
+# A draft is the riskiest surface in the product: a long, confident memo is exactly
+# where a hallucinated number or invented clause hides best — and unlike Ask, the user
+# is about to SEND it to a client or counterparty. So a draft is JUST ANOTHER agent
+# output: the SAME engine, the SAME cite-or-withhold gate. This overlay never relaxes
+# the rules above; it only shapes the deliverable (a client-ready document) and tells
+# the model to gather evidence FIRST, then write only what traces to it.
+DRAFT_PROMPT_SUFFIX = """\
+
+────────────────────────────────────────────────────────────────────────────────
+DRAFTING MODE — you are producing a CLIENT-READY DELIVERABLE (memo, summary, contract \
+section, or analysis), not a chat answer.
+
+Everything above still holds — and it matters MORE here, because this document will be \
+SENT. Every factual sentence MUST carry a `[doc p.N]` citation to a real span or a \
+computed cell, or it MUST be omitted. Do NOT invent figures, dates, parties, or clause \
+language to make the prose flow. A shorter, fully-grounded deliverable beats a complete-\
+looking one with an uncited claim — the gate will redact uncited sentences anyway, and a \
+redaction in a client document is worse than a brief, honest one.
+
+WORKFLOW:
+1. GATHER first: use `search_vault` / `read_document` / `table_lookup` / `compute` to pull \
+the exact spans and cells you will cite. Do not start writing until you have the evidence.
+2. WRITE the deliverable as your single final message — clean markdown, no preamble, no \
+"here is your draft". Use `#`/`##` headings for structure. Follow the requested document \
+type and any structure the user gave.
+3. Keep citation markers like [doc p.7] inline on every factual sentence. They become \
+footnotes/endnotes on export — they are REQUIRED, not optional decoration.
+4. If a section the user asked for has NO verifiable support in the vault, write it as a \
+single line: `_Insufficient evidence in the vault to draft this section._` — never pad it \
+with uncited generalities."""
+
+
 def system_prompt(version: str = "v1", mode: str = "standard") -> str:
-    """The system prompt for a run. `mode="deep"` appends the Deep Analysis overlay onto
-    the shared base contract (one engine, one set of rules — deep only adds the report
-    shape + breadth-first workflow). All other modes get the base prompt unchanged."""
+    """The system prompt for a run. `mode="deep"` appends the Deep Analysis overlay and
+    `mode="draft"` appends the drafting overlay onto the shared base contract (one engine,
+    one set of rules — the overlays only add the deliverable shape + workflow). All other
+    modes get the base prompt unchanged."""
     base = SYSTEM_PROMPT_V1
     if mode == "deep":
         return base + DEEP_PROMPT_SUFFIX
+    if mode == "draft":
+        return base + DRAFT_PROMPT_SUFFIX
     return base

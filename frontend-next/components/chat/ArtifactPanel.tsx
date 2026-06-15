@@ -1,10 +1,11 @@
 "use client";
 
 import { useReducedMotion, motion, AnimatePresence } from "framer-motion";
-import { X, Copy, Download, Code, FileText, Table2, CheckCheck } from "lucide-react";
+import { X, Copy, Download, Code, FileText, Table2, CheckCheck, FileType2 } from "lucide-react";
 import { useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import { exportDraftDocx } from "@/lib/api";
 
 export type ArtifactKind = "markdown" | "code" | "table" | "text";
 
@@ -19,6 +20,10 @@ export interface Artifact {
 interface ArtifactPanelProps {
   artifact: Artifact | null;
   onClose: () => void;
+  // G6.1: when present, prose artifacts (markdown) offer a "Word (.docx)" export that
+  // POSTs the gated markdown to /export/docx and downloads the blob. The markdown ALREADY
+  // passed the gate; export preserves the citation contract (numbered endnotes).
+  token?: string | null;
 }
 
 const kindIcon: Record<ArtifactKind, React.ReactNode> = {
@@ -28,9 +33,10 @@ const kindIcon: Record<ArtifactKind, React.ReactNode> = {
   text: <FileText size={13} />,
 };
 
-export function ArtifactPanel({ artifact, onClose }: ArtifactPanelProps) {
+export function ArtifactPanel({ artifact, onClose, token }: ArtifactPanelProps) {
   const rm = useReducedMotion();
   const [copied, setCopied] = useState(false);
+  const [exportingDocx, setExportingDocx] = useState(false);
 
   function copyContent() {
     if (!artifact) return;
@@ -40,16 +46,39 @@ export function ArtifactPanel({ artifact, onClose }: ArtifactPanelProps) {
     });
   }
 
-  function downloadContent() {
-    if (!artifact) return;
-    const ext = artifact.kind === "code" ? (artifact.language ?? "txt") : "md";
-    const blob = new Blob([artifact.content], { type: "text/plain" });
+  function triggerDownload(blob: Blob, filename: string) {
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
-    a.download = `${artifact.title.replace(/\s+/g, "_")}.${ext}`;
+    a.download = filename;
     a.click();
     URL.revokeObjectURL(url);
+  }
+
+  function downloadContent() {
+    if (!artifact) return;
+    const ext = artifact.kind === "code" ? (artifact.language ?? "txt") : "md";
+    triggerDownload(
+      new Blob([artifact.content], { type: "text/plain" }),
+      `${artifact.title.replace(/\s+/g, "_")}.${ext}`
+    );
+  }
+
+  // G6.1: Word export — only for prose artifacts (markdown), and only when we have a token
+  // to call the gated /export/docx endpoint. The markdown already passed the output gate.
+  const canExportDocx = !!token && !!artifact && (artifact.kind === "markdown" || artifact.kind === "text");
+
+  async function downloadDocx() {
+    if (!artifact || !token || exportingDocx) return;
+    setExportingDocx(true);
+    try {
+      const blob = await exportDraftDocx(token, artifact.title, artifact.content, true);
+      triggerDownload(blob, `${artifact.title.replace(/\s+/g, "_")}.docx`);
+    } catch {
+      // export is best-effort; a failure leaves the artifact untouched (markdown still copyable)
+    } finally {
+      setExportingDocx(false);
+    }
   }
 
   return (
@@ -104,9 +133,22 @@ export function ArtifactPanel({ artifact, onClose }: ArtifactPanelProps) {
               >
                 {copied ? <CheckCheck size={12} className="text-[var(--status-ready)]" /> : <Copy size={12} />}
               </button>
+              {canExportDocx && (
+                <button
+                  onClick={downloadDocx}
+                  disabled={exportingDocx}
+                  aria-label="Download as Word (.docx)"
+                  title="Download as Word (.docx)"
+                  className="w-7 h-7 rounded-lg flex items-center justify-center text-[var(--text-muted)] transition-[color,background-color] duration-[120ms] ease-[cubic-bezier(0.23,1,0.32,1)] active:scale-[0.97] disabled:opacity-50"
+                  style={{ border: "1px solid var(--glass-border)", background: "var(--glass-bg)", boxShadow: "var(--skeu-raised)" }}
+                >
+                  <FileType2 size={12} className={exportingDocx ? "animate-pulse" : ""} />
+                </button>
+              )}
               <button
                 onClick={downloadContent}
-                aria-label="Download artifact"
+                aria-label="Download artifact (markdown)"
+                title="Download markdown"
                 className="w-7 h-7 rounded-lg flex items-center justify-center text-[var(--text-muted)] transition-[color,background-color] duration-[120ms] ease-[cubic-bezier(0.23,1,0.32,1)] active:scale-[0.97]"
                 style={{ border: "1px solid var(--glass-border)", background: "var(--glass-bg)", boxShadow: "var(--skeu-raised)" }}
               >

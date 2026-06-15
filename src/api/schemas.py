@@ -96,6 +96,11 @@ class QueryRequest(BaseModel):
     # retriever's metadata_filter CONJUNCTIVELY — it NARROWS the vault scope, never
     # replaces it. Null/absent → no narrowing (the unfiltered vault).
     filters: Optional[dict] = None
+    # G6.1 (drafting): when mode="draft", the deliverable type ("engagement memo",
+    # "termination summary", …) and free-text instructions. The route composes them into
+    # `question` so drafting rides the SAME loop — no new orchestrator. Ignored otherwise.
+    doc_type: Optional[str] = Field(default=None, max_length=200)
+    instructions: Optional[str] = Field(default=None, max_length=4000)
 
 
 class QueryResponse(BaseModel):

@@ -1218,7 +1218,7 @@ function ChatPageInner({ scopedCollectionId, conversationId, analysisMode = "sta
       </div>{/* end main chat column */}
 
       {/* ── Artifact panel (right, slide-in) ── */}
-      <ArtifactPanel artifact={artifact} onClose={() => setArtifact(null)} />
+      <ArtifactPanel artifact={artifact} onClose={() => setArtifact(null)} token={token} />
     </div>
   );
 }
