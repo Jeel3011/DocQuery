@@ -267,9 +267,8 @@ export default function VaultWorkspacePage() {
             <Telescope size={14} className="text-[var(--text-muted)]" /> Deep Analysis
           </button>
           <button
-            onClick={() => toast("Draft document arrives in a later phase (G6).")}
-            className="flex items-center gap-2 px-4 py-2 rounded-xl text-[13px] font-medium card transition-shadow opacity-60 cursor-default"
-            title="Coming in G6"
+            onClick={() => router.push(`/app/vault/${encodeURIComponent(vaultId)}/draft`)}
+            className="flex items-center gap-2 px-4 py-2 rounded-xl text-[13px] font-medium card hover:shadow-[var(--shadow-md)] transition-shadow"
           >
             <FileEdit size={14} className="text-[var(--text-muted)]" /> Draft document
           </button>

@@ -126,11 +126,14 @@ interface LocalMessage {
 export interface ChatConversationProps {
   scopedCollectionId?: string;   // route-authoritative vault id (vault route only)
   conversationId?: string;       // override for the [cid] segment (vault route only)
-  // G5: which agent-core mode this conversation runs in. "deep" = Deep Analysis (the
-  // sectioned, whole-vault report via survey_collection + the per-section gate); default
-  // "standard" = Ask. The SAME 1,150-line consumer renders both — deep only changes the
-  // request's `mode` so the backend uses the deep prompt + budget + section gate.
-  analysisMode?: "standard" | "deep";
+  // G5/G6: which agent-core mode this conversation runs in.
+  // "standard" = Ask (default), "deep" = Deep Analysis, "draft" = Draft Deliverable.
+  // All three ride the SAME stream consumer; only `mode` in the request body changes.
+  analysisMode?: "standard" | "deep" | "draft";
+  // G6.1: draft mode only — carried in the URL from the Draft landing and forwarded to
+  // the stream body. Ignored when analysisMode != "draft".
+  draftDocType?: string | null;
+  draftInstructions?: string | null;
 }
 
 export default function ChatPage(props: ChatConversationProps = {}) {
@@ -144,7 +147,7 @@ export default function ChatPage(props: ChatConversationProps = {}) {
 // Exported so the vault route can render the conversation directly with props.
 export { ChatPage as ChatConversation };
 
-function ChatPageInner({ scopedCollectionId, conversationId, analysisMode = "standard" }: ChatConversationProps) {
+function ChatPageInner({ scopedCollectionId, conversationId, analysisMode = "standard", draftDocType, draftInstructions }: ChatConversationProps) {
   const routeParams = useParams<{ id: string }>();
   // When re-homed under the vault route, the conversation id arrives as a prop ([cid]);
   // otherwise it's the [id] segment of /app/chat/[id].
@@ -306,7 +309,7 @@ function ChatPageInner({ scopedCollectionId, conversationId, analysisMode = "sta
             // standard Ask answers stay inline (sectioned=false → unchanged).
             const completed = updated.find((m) => m.id === assistantMsgId);
             if (completed) {
-              const detected = detectArtifact(completed.content, { sectioned: analysisMode === "deep" });
+              const detected = detectArtifact(completed.content, { sectioned: analysisMode === "deep" || analysisMode === "draft" });
               if (detected) setArtifact(detected);
             }
             return updated;
@@ -362,9 +365,12 @@ function ChatPageInner({ scopedCollectionId, conversationId, analysisMode = "sta
         await streamAgentCoreQuery(
           token,
           {
-            // G5: "deep" routes the SAME loop through the Deep Analysis prompt + budget +
-            // per-section gate (the sectioned, whole-vault report); "standard" = Ask.
+            // G5/G6: "deep" = sectioned whole-vault report; "draft" = deliverable with
+            // doc_type + instructions brief; "standard" = Ask (default).
             question, conversation_id: convId, collection_id: collId, mode: analysisMode,
+            // G6.1: draft extras travel only when the mode is "draft".
+            ...(analysisMode === "draft" && draftDocType ? { doc_type: draftDocType } : {}),
+            ...(analysisMode === "draft" && draftInstructions ? { instructions: draftInstructions } : {}),
             // G3 Step E: the active vault filter narrows retrieval scope conjunctively.
             ...(filtersRef.current ? { filters: filtersRef.current } : {}),
           },

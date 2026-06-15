@@ -77,7 +77,11 @@ export interface StreamQueryRequest {
   conversation_id?: string | null;
   collection_id?: string | null;  // Phase 1
   multi_hop?: boolean | null;     // Phase 4.5: force the sequential multi-hop loop on the agent endpoint
-  mode?: string | null;           // A4: agent-core mode ("standard" | "deep") for /query/agentcore/stream
+  mode?: string | null;           // A4: agent-core mode ("standard" | "deep" | "draft") for /query/agentcore/stream
+  // G6.1: draft mode extras — doc_type constrains the deliverable genre; instructions
+  // are the user's free-text brief. Both travel as-is to the backend's QueryRequest.
+  doc_type?: string | null;
+  instructions?: string | null;
   // G3 Step E: active vault filter set (doc_type / fiscal_year). EXPLICIT in the request
   // (never a stale store) → becomes the retriever's CONJUNCTIVE metadata_filter on the
   // backend (narrows the vault scope, never replaces it).
