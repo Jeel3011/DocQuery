@@ -61,7 +61,6 @@ export default function VaultDeepAnalysisPage() {
 
   return (
     <div className="flex-1 overflow-y-auto scrollbar-thin relative" style={{ background: "var(--canvas)" }}>
-      <div className="absolute inset-0 dot-grid opacity-[0.10] pointer-events-none" />
 
       <div className="relative max-w-3xl mx-auto px-6 py-8">
         {/* Back to the vault workspace */}

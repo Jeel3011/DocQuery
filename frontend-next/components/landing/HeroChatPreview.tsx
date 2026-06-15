@@ -333,7 +333,7 @@ export function HeroChatPreview() {
               transition={{ delay: 0.1 * i, ease }}
               className="relative flex-1 rounded-lg px-2 py-1.5 overflow-hidden"
               style={{
-                background: "linear-gradient(165deg,#FFFFFF,#FAFAFA)",
+                background: "#FFFFFF",
                 border: scanning ? "1px solid var(--ink)" : "1px solid var(--line)",
                 boxShadow: scanning
                   ? "0 4px 14px -6px rgba(0,0,0,0.28)"

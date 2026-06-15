@@ -710,58 +710,6 @@ function ChatPageInner({ scopedCollectionId, conversationId }: ChatConversationP
     <div className="flex h-full overflow-hidden">
       {/* ── Main chat column ── */}
       <div className="relative flex flex-col flex-1 min-w-0 overflow-hidden">
-      {/* ── Ambient background: monochrome SHAPES + texture so the canvas isn't dead flat.
-          Layered: (a) a faint dotted grid, (b) two soft drifting grey blobs, (c) a vignette
-          wash. All greyscale, very subtle, pointer-events-none, sits behind the content. ── */}
-      <div aria-hidden className="pointer-events-none absolute inset-0 z-0 overflow-hidden">
-        {/* (a) dotted grid — visible texture */}
-        <div
-          className="absolute inset-0"
-          style={{
-            backgroundImage: "radial-gradient(rgba(0,0,0,0.10) 1px, transparent 1px)",
-            backgroundSize: "24px 24px",
-            maskImage: "radial-gradient(130% 100% at 50% 18%, #000 0%, transparent 78%)",
-            WebkitMaskImage: "radial-gradient(130% 100% at 50% 18%, #000 0%, transparent 78%)",
-          }}
-        />
-        {/* (b) soft concentric ring shape — top, like the reference's geometric forms */}
-        <motion.div
-          className="absolute rounded-full"
-          style={{
-            width: 620, height: 620, top: "-22%", left: "50%", marginLeft: -310,
-            border: "1px solid rgba(0,0,0,0.05)",
-            background: "radial-gradient(circle, rgba(0,0,0,0.05) 0%, transparent 60%)",
-          }}
-          animate={{ scale: [1, 1.05, 1], opacity: [0.7, 1, 0.7] }}
-          transition={{ duration: 16, repeat: Infinity, ease: "easeInOut" }}
-        />
-        {/* (c) two drifting grey blobs — slow, organic, NOW visible */}
-        <motion.div
-          className="absolute rounded-full"
-          style={{
-            width: 520, height: 520, top: "2%", left: "2%",
-            background: "radial-gradient(circle, rgba(0,0,0,0.10), transparent 66%)",
-            filter: "blur(10px)",
-          }}
-          animate={{ x: [0, 50, 0], y: [0, 30, 0], scale: [1, 1.1, 1] }}
-          transition={{ duration: 22, repeat: Infinity, ease: "easeInOut" }}
-        />
-        <motion.div
-          className="absolute rounded-full"
-          style={{
-            width: 480, height: 480, bottom: "-8%", right: "3%",
-            background: "radial-gradient(circle, rgba(0,0,0,0.09), transparent 66%)",
-            filter: "blur(10px)",
-          }}
-          animate={{ x: [0, -42, 0], y: [0, -26, 0], scale: [1, 1.12, 1] }}
-          transition={{ duration: 26, repeat: Infinity, ease: "easeInOut", delay: 2 }}
-        />
-        {/* (c) top vignette so content reads cleanly */}
-        <div
-          className="absolute inset-0"
-          style={{ background: "radial-gradient(110% 75% at 50% 6%, rgba(255,255,255,0.5) 0%, transparent 55%)" }}
-        />
-      </div>
       {/* Top bar — collection badge + export */}
       <div
         className="relative z-10 flex items-center justify-between px-4 py-1.5 border-b flex-shrink-0"
@@ -932,7 +880,7 @@ function ChatPageInner({ scopedCollectionId, conversationId }: ChatConversationP
                   <div className="flex items-center gap-2.5 mb-1.5">
                     <div
                       className="w-8 h-8 rounded-lg flex items-center justify-center text-[var(--text-secondary)] group-hover:text-white group-hover:bg-[var(--accent)] transition-colors"
-                      style={{ background: "#EFEFEF", border: "1px solid rgba(0,0,0,0.07)" }}
+                      style={{ background: "var(--surface-3)", border: "1px solid var(--line)" }}
                     >
                       <s.icon size={15} />
                     </div>

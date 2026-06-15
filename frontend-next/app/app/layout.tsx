@@ -177,8 +177,6 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
 
   return (
     <div className="relative flex flex-col h-dvh overflow-hidden" style={{ background: "var(--canvas)" }}>
-      {/* Soft aurora wash so glass surfaces (top bar, panels, input) blur real depth */}
-      <div className="aurora aurora-soft" />
 
       {/* Route → store scope sync (the URL is the authoritative vault scope) */}
       <VaultScopeSync />

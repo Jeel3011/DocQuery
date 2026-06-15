@@ -24,12 +24,12 @@
   --z-toast: 500;
 
   /* ── Clean black-and-white canvas (G2 §0.5, law aesthetic) ──
-     Faint-grey page canvas so pure-white surfaces keep a visible edge;
+     Pure white page canvas — polished, professional, sparkling white.
      true black / white / grey only — no warmth anywhere. */
-  --canvas:    #FAFAFA;     /* page canvas — faint grey (cards float on it) */
+  --canvas:    #FFFFFF;     /* page canvas — pure white */
   --surface:   #FFFFFF;     /* card / modal surfaces — pure white */
-  --surface-2: #F7F7F7;     /* near-white inset */
-  --surface-3: #EFEFEF;     /* recessed panels / code blocks */
+  --surface-2: #F8F8F8;     /* near-white inset */
+  --surface-3: #F2F2F2;     /* recessed panels / code blocks */
 
   /* ── Ink scale (neutral grey) ── */
   --ink:   #0E0E0E;          /* near-black, neutral */
@@ -38,8 +38,8 @@
   --on-ink: #FAFAFA;         /* text on dark backgrounds */
 
   /* ── Line / border scale ── */
-  --line:   #E4E4E4;         /* default border */
-  --line-2: #D4D4D4;         /* stronger border */
+  --line:   #E8E8E8;         /* default border — crisp on white */
+  --line-2: #D8D8D8;         /* stronger border */
 
   /* ── Accent ── */
   --accent:       #0E0E0E;   /* black — primary CTA/link */
@@ -207,27 +207,27 @@ body {
     position: absolute;
     inset: -20%;
     background:
-      radial-gradient(44% 52% at 14% 20%, rgba(160,160,160,0.28) 0%, transparent 60%),
-      radial-gradient(36% 44% at 88% 12%, rgba(140,140,140,0.20) 0%, transparent 60%),
-      radial-gradient(44% 48% at 72% 82%, rgba(120,120,120,0.18) 0%, transparent 62%),
-      radial-gradient(40% 44% at 24% 86%, rgba(150,150,150,0.20) 0%, transparent 60%);
+      radial-gradient(44% 52% at 14% 20%, rgba(200,200,200,0.12) 0%, transparent 60%),
+      radial-gradient(36% 44% at 88% 12%, rgba(200,200,200,0.09) 0%, transparent 60%),
+      radial-gradient(44% 48% at 72% 82%, rgba(200,200,200,0.08) 0%, transparent 62%),
+      radial-gradient(40% 44% at 24% 86%, rgba(200,200,200,0.10) 0%, transparent 60%);
     filter: blur(52px);
     will-change: transform;
     animation: aurora-drift 26s var(--ease-in-out) infinite alternate;
   }
   .aurora::after {
     inset: -25%;
-    opacity: 0.55;
+    opacity: 0.4;
     animation: aurora-drift-2 34s var(--ease-in-out) infinite alternate;
   }
 
-  /* Fainter aurora for working surfaces (chat/app) — present but not loud */
+  /* Fainter aurora for working surfaces (chat/app) — barely visible on white */
   .aurora-soft::before,
   .aurora-soft::after {
-    opacity: 0.32;
+    opacity: 0.18;
     filter: blur(56px);
   }
-  .aurora-soft::after { opacity: 0.2; }
+  .aurora-soft::after { opacity: 0.10; }
 
   /* Page-level aurora: FIXED so the colour wash stays behind every section
      as you scroll. Pinned to viewport, sits at the very back (z -1). */
@@ -647,7 +647,7 @@ body {
 
 /* ── Dot grid background ──────────────────────────────────────────────────── */
 .dot-grid {
-  background-image: radial-gradient(circle, var(--line-2) 1px, transparent 1px);
+  background-image: radial-gradient(circle, rgba(0,0,0,0.12) 1px, transparent 1px);
   background-size: 28px 28px;
 }
 

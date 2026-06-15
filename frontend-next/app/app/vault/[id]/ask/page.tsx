@@ -64,7 +64,6 @@ export default function VaultAskLandingPage() {
 
   return (
     <div className="flex-1 overflow-y-auto scrollbar-thin relative" style={{ background: "var(--canvas)" }}>
-      <div className="absolute inset-0 dot-grid opacity-[0.10] pointer-events-none" />
 
       <div className="relative h-full flex flex-col items-center justify-center w-full max-w-3xl mx-auto px-4 md:px-8 py-10 text-left">
         <motion.div
@@ -101,7 +100,7 @@ export default function VaultAskLandingPage() {
                 <div className="flex items-center gap-2.5 mb-1.5">
                   <div
                     className="w-8 h-8 rounded-lg flex items-center justify-center text-[var(--text-secondary)] group-hover:text-white group-hover:bg-[var(--accent)] transition-colors"
-                    style={{ background: "#EFEFEF", border: "1px solid rgba(0,0,0,0.07)" }}
+                    style={{ background: "var(--surface-3)", border: "1px solid var(--line)" }}
                   >
                     <s.icon size={15} />
                   </div>

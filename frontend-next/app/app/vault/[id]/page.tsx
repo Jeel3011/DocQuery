@@ -213,7 +213,6 @@ export default function VaultWorkspacePage() {
 
   return (
     <div className="flex-1 overflow-y-auto scrollbar-thin relative">
-      <div className="absolute inset-0 dot-grid opacity-[0.10] pointer-events-none" />
 
       <div className="relative max-w-5xl mx-auto px-6 py-8">
         {/* Back */}
