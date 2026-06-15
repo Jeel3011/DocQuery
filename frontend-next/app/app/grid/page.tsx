@@ -52,6 +52,15 @@ const STATUS_STYLE: Record<string, { bg: string; fg: string; label: string }> = 
   error:   { bg: "rgba(220,38,38,0.08)", fg: "#b3261e", label: "error" },
 };
 
+// Human-readable WHY for an abstain cell (G4 loop-breaker, surfaced in the UI). The cell
+// still reads "unclear", but hover / detail tells a reviewer which KIND — and crucially
+// "unparsed" is OUR bug class, never to be confused with a genuine not-found.
+const ABSTAIN_REASON_LABEL: Record<string, string> = {
+  unparsed: "answer couldn't be parsed (report this)",
+  no_evidence: "no clause found to ground an answer",
+  ambiguous: "evidence was conflicting or inconclusive",
+};
+
 // Props let this page be RE-HOMED under /app/vault/[id]/review (G2 Step E) without
 // forking the grid logic into a second, drift-prone copy. When the vault route mounts
 // it, `scopedCollectionId` is the route's [id] — the AUTHORITATIVE vault scope (§9
@@ -206,7 +215,8 @@ function ReviewGridInner({ scopedCollectionId }: ReviewGridProps) {
         const v = cell.status === "found"
           ? `${cell.value ?? ""}${cell.risk === "non_standard" ? " [non-standard]" : ""}`
           : cell.status === "missing" ? "NOT FOUND"
-          : cell.status === "abstain" ? "UNCLEAR"
+          : cell.status === "abstain"
+            ? `UNCLEAR${cell.abstain_reason ? ` (${cell.abstain_reason})` : ""}`
           : "ERROR";
         row.push(v);
       }
@@ -388,13 +398,24 @@ function GridCellView({ cell, running, onClick }:
     );
   }
   const st = STATUS_STYLE[cell.status] ?? STATUS_STYLE.abstain;
-  const clickable = cell.status === "found";
+  // FOUND cells open to their source; abstain/missing/error open to show WHY (reason +
+  // note). Only a truly empty cell stays inert.
+  const clickable = cell.status === "found" || !!cell.abstain_reason || !!cell.note;
+  // For an abstain cell, the most useful hover is WHY (G4): the distinguishable reason,
+  // falling back to the model's note. A 'unparsed' abstain is our bug — make it visible.
+  const reasonHint =
+    cell.status === "abstain" && cell.abstain_reason
+      ? ABSTAIN_REASON_LABEL[cell.abstain_reason] ?? cell.abstain_reason
+      : null;
+  const hover = reasonHint
+    ? `Unclear — ${reasonHint}${cell.note ? `\n${cell.note}` : ""}`
+    : cell.note || "";
   return (
     <button
       onClick={clickable ? onClick : undefined}
       className="w-full text-left rounded-md px-2 py-1.5 min-h-[36px] transition-colors"
       style={{ background: st.bg, cursor: clickable ? "pointer" : "default" }}
-      title={cell.note || ""}
+      title={hover}
     >
       {cell.status === "found" ? (
         <div className="flex flex-col gap-0.5">
@@ -432,6 +453,17 @@ function CellDetail({ cell, onClose }: { cell: GridCellEvent; onClose: () => voi
           <button onClick={onClose} className="text-[var(--text-muted)] text-[13px]">✕</button>
         </div>
         <div className="text-[11px] text-[var(--text-muted)] mb-1">{cell.doc_name}</div>
+        {/* Why a cell is Unclear (G4): distinguish a parser bug ('unparsed') from a genuine
+            not-found. Shown prominently so a reviewer knows whether to trust the abstain. */}
+        {cell.status === "abstain" && cell.abstain_reason && (
+          <div className="mb-3 text-[12px] rounded-lg p-2"
+            style={{
+              background: cell.abstain_reason === "unparsed" ? "rgba(220,38,38,0.06)" : "rgba(0,0,0,0.04)",
+              color: cell.abstain_reason === "unparsed" ? "#b3261e" : "var(--text-secondary)",
+            }}>
+            <b>Unclear:</b> {ABSTAIN_REASON_LABEL[cell.abstain_reason] ?? cell.abstain_reason}
+          </div>
+        )}
         {cell.value && (
           <div className="text-[14px] text-[var(--text-primary)] mb-3 font-medium">{cell.value}</div>
         )}

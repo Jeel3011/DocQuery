@@ -22,6 +22,7 @@ from src.components.agent_core.review_grid import (
 )
 from src.components.agent_core.grid_engine import (
     build_cell, build_grid, _cell_from_run, _extract_envelope,
+    _recover_custom_shape, _looks_like_envelope, _reads_as_abstention,
 )
 from src.components.agent_core.registry import RunScope
 from src.components.agent_core.budgets import Budget
@@ -60,6 +61,13 @@ def _envelope(status, value=None, quote=None, risk="none", note=None):
     import json
     return json.dumps({"status": status, "value": value, "quote": quote,
                        "risk": risk, "note": note})
+
+
+def _envelope_raw(obj):
+    """Serialize an ARBITRARY dict as the model's final answer — used to script the
+    custom (non-envelope) JSON shapes the tolerant parser must recover."""
+    import json
+    return json.dumps(obj)
 
 
 def main() -> int:
@@ -125,6 +133,88 @@ def main() -> int:
     cell = _cell_from_run("d1", "c1.pdf", GOV, ev_garbage)
     c.ok(cell.status == CellStatus.ABSTAIN and cell.note and "Delaware" in cell.note,
          "unparseable answer → ABSTAIN (text kept as note)")
+    c.ok(cell.abstain_reason == "unparsed",
+         "free-text (no JSON) abstain is flagged abstain_reason='unparsed' (not no_evidence)")
+
+    # ── 1g. THE G4 LOOP-BREAKER: the exact Sezzle failing shape. The agent found the
+    #        clause, GROUNDED it (provenance present), the gate passed — but returned a
+    #        CUSTOM JSON shape instead of the envelope. Before the fix this was discarded
+    #        → ABSTAIN ("unclear" forever). Now the tolerant parser recovers the value and,
+    #        because provenance exists, UPGRADES it to FOUND. (Provenance injected directly,
+    #        same as 1a — this isolates the parser, no live call.)
+    print("── G4 loop-breaker: custom JSON shape recovers to FOUND ──────────")
+    custom_shape = _envelope_raw({"governing_law_and_seat": {
+        "governing_law": "Minnesota", "seat": "Jackson, Mississippi"}})
+    ev_custom_grounded = [
+        {"type": "token", "text": custom_shape},
+        {"type": "sources", "sources": [{"kind": "span", "doc": "Document.pdf", "page": 5,
+                                         "snippet": "...laws of the State of Minnesota..."}]},
+        {"type": "meta", "abstained": False},
+    ]
+    cell = _cell_from_run("d1", "Document.pdf", GOV, ev_custom_grounded)
+    c.ok(cell.status == CellStatus.FOUND and cell.value
+         and "Minnesota" in cell.value and "Jackson, Mississippi" in cell.value
+         and cell.is_verified and cell.abstain_reason is None,
+         f"custom shape + provenance → FOUND, value recovered from leaves "
+         f"(status={cell.status.value}, value={cell.value!r})")
+
+    # 1h. SAME custom shape but NO provenance → must NOT become FOUND (the grounding
+    #     guard is untouched). It abstains, flagged abstain_reason='unparsed' — NOT
+    #     no_evidence — so a human/eval can tell "we mangled it" from "agent found nothing".
+    ev_custom_ungrounded = [
+        {"type": "token", "text": custom_shape},
+        {"type": "sources", "sources": []},
+        {"type": "meta", "abstained": False},
+    ]
+    cell = _cell_from_run("d1", "Document.pdf", GOV, ev_custom_ungrounded)
+    c.ok(cell.status == CellStatus.ABSTAIN and not cell.is_verified
+         and cell.abstain_reason == "unparsed",
+         f"custom shape WITHOUT provenance → ABSTAIN unparsed (no silent-wrong; "
+         f"abstain_reason={cell.abstain_reason})")
+
+    # 1i. The abstain-reason DISTINCTION is the loop-breaker: a genuine model 'abstain'
+    #     is 'ambiguous', and an ungrounded 'found' downgrade is 'no_evidence' — neither
+    #     is 'unparsed'. This is what stops re-blaming ingestion for a parser bug.
+    cell = _cell_from_run("d1", "c1.pdf", CAP, ev_abstain)
+    c.ok(cell.abstain_reason == "ambiguous",
+         "genuine model abstain → abstain_reason='ambiguous' (distinct from 'unparsed')")
+    cell = _cell_from_run("d1", "c1.pdf", GOV, ev_ungrounded)
+    c.ok(cell.abstain_reason == "no_evidence",
+         "ungrounded 'found' downgrade → abstain_reason='no_evidence' (distinct from 'unparsed')")
+
+    # 1k. ANTI-MISLABEL: the model declines IN PROSE inside a custom shape ("abstain; I
+    #     could not verify a 'Term & Termination' section..."). Even WITH provenance, this
+    #     must NOT become a FOUND cell whose value literally reads "abstain..." — it's a
+    #     genuine abstain. (Live-observed on EX-10.01 term_termination, 2026-06-15.)
+    custom_abstention = _envelope_raw({"term_and_termination":
+        "abstain; I could not verify a section titled 'Term & Termination' in this document."})
+    ev_custom_abstention = [
+        {"type": "token", "text": custom_abstention},
+        {"type": "sources", "sources": [{"kind": "span", "doc": "EX-10.01.pdf", "page": 1,
+                                         "snippet": "...stock plan..."}]},
+        {"type": "meta", "abstained": False},
+    ]
+    cell = _cell_from_run("d1", "EX-10.01.pdf", CAP, ev_custom_abstention)
+    c.ok(cell.status == CellStatus.ABSTAIN and not cell.is_verified
+         and cell.abstain_reason == "ambiguous"
+         and not (cell.value or "").lower().startswith("abstain"),
+         f"custom shape whose VALUE is an abstention → ABSTAIN, not a 'found' saying "
+         f"'abstain' (status={cell.status.value}, value={cell.value!r})")
+    # and the inverse: a real clause that merely opens normally still recovers to FOUND
+    c.ok(not _reads_as_abstention("State of Minnesota; Jackson, Mississippi")
+         and _reads_as_abstention("abstain; could not verify")
+         and _reads_as_abstention("No indemnity clause is present"),
+         "_reads_as_abstention: real clause False; prose-abstention True")
+
+    # ── 1j. recovery helpers (pure) ──────────────────────────────────────────────
+    c.ok(not _looks_like_envelope({"governing_law_and_seat": {"x": "y"}})
+         and _looks_like_envelope({"status": "found"})
+         and _looks_like_envelope({"value": "X"}),
+         "_looks_like_envelope: custom shape False, envelope-keyed True")
+    c.ok(_recover_custom_shape({"a": {"b": "Minnesota", "c": "Mississippi"}})
+         == "Minnesota; Mississippi"
+         and _recover_custom_shape({"a": None, "b": ""}) is None,
+         "_recover_custom_shape flattens leaves; empty → None")
 
     # ── 2. _extract_envelope tolerance (fences, leading prose) ───────────────────
     print("── envelope extraction tolerance ────────────────────────────────")

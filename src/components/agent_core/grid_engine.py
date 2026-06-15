@@ -57,6 +57,10 @@ def _cell_system_prompt(column: GridColumn, doc_name: str) -> str:
     )
     return f"""You extract ONE specific fact from ONE document for a review grid.
 
+Your ENTIRE final answer MUST be ONE JSON object with EXACTLY these five top-level keys
+and NO others: status, value, quote, risk, note. Do NOT nest. Do NOT rename keys to the
+field (e.g. NOT {{"governing_law": ...}}). Do NOT wrap it in another object.
+
 Document: {doc_name}
 Field to extract: {column.label}
 Instruction: {column.prompt}{risk_line}
@@ -71,12 +75,19 @@ RULES (non-negotiable):
   (status "missing") — that is a valid, useful finding, not a failure. Do not guess.
 - If it's ambiguous or conflicting, status "abstain". Never invent a value.
 
-Answer with ONE JSON object and NOTHING else, in this exact shape:
+Answer with ONE JSON object and NOTHING else, in this EXACT shape (these keys, this nesting):
 {{"status": "found" | "missing" | "abstain",
   "value": "<the extracted value, or null>",
   "quote": "<exact source text you grounded on, or null>",
   "risk": "standard" | "non_standard" | "missing" | "none",
-  "note": "<one short clause of rationale, or null>"}}"""
+  "note": "<one short clause of rationale, or null>"}}
+
+Correct example (governing law found):
+{{"status": "found", "value": "State of Minnesota; seat Jackson, Mississippi",
+  "quote": "This Agreement shall be governed by the laws of the State of Minnesota...",
+  "risk": "non_standard", "note": "governing law Minnesota; arbitration seat Mississippi"}}
+
+The top-level keys MUST be exactly status/value/quote/risk/note — nothing else, no nesting."""
 
 
 def _cell_question(column: GridColumn) -> str:
@@ -150,6 +161,75 @@ def _extract_envelope(text: str) -> Optional[Dict[str, Any]]:
         return None
 
 
+def _looks_like_envelope(env: Dict[str, Any]) -> bool:
+    """True if the parsed dict is (or resembles) the required cell envelope — it carries
+    any of the canonical keys. A custom shape (e.g. {"governing_law_and_seat": {...}})
+    carries none of them and is handled by the tolerant recovery path instead."""
+    return any(k in env for k in ("status", "value", "quote"))
+
+
+def _flatten_leaves(obj: Any, _depth: int = 0) -> List[str]:
+    """Collect the leaf scalar values of an arbitrarily-nested JSON object/list into a
+    flat list of strings (skips null/empty). Used to recover a readable value from a
+    model that answered correctly but in a custom JSON shape instead of the envelope."""
+    out: List[str] = []
+    if _depth > 6:
+        return out
+    if isinstance(obj, dict):
+        for v in obj.values():
+            out.extend(_flatten_leaves(v, _depth + 1))
+    elif isinstance(obj, (list, tuple)):
+        for v in obj:
+            out.extend(_flatten_leaves(v, _depth + 1))
+    elif obj is None:
+        return out
+    else:
+        s = str(obj).strip()
+        if s and s.lower() != "null":
+            out.append(s)
+    return out
+
+
+def _recover_custom_shape(env: Dict[str, Any]) -> Optional[str]:
+    """Flatten a custom-shape dict (no envelope keys) into a single readable value
+    string by joining its leaf values. Returns None if nothing usable is left.
+
+    This is the loop-breaking recovery: the agent found and grounded the answer but
+    returned e.g. {"governing_law_and_seat": {"governing_law": "Minnesota",
+    "seat": "Jackson, Mississippi"}}. We turn that into "Minnesota; Jackson, Mississippi"
+    so a grounded answer is UPGRADED to a value instead of silently discarded. The
+    provenance guard downstream still gates whether it becomes FOUND."""
+    leaves = _flatten_leaves(env)
+    if not leaves:
+        return None
+    # de-dup while preserving order (a leaf can repeat across mirrored keys)
+    seen: set = set()
+    uniq = [x for x in leaves if not (x in seen or seen.add(x))]
+    return "; ".join(uniq)
+
+
+# Phrases a model uses when it is abstaining/declining IN PROSE inside a custom shape.
+# Recovering such a leaf into a FOUND value would mislabel an honest "can't find it" as a
+# grounded answer (the value would literally read "abstain; I could not verify ..."). We
+# detect it at the START of the recovered string so a real clause that merely mentions a
+# word ("...the parties cannot terminate...") is not falsely flagged.
+_ABSTENTION_OPENERS = (
+    "abstain", "missing", "not found", "no ", "none",
+    "i could not", "i cannot", "i can't", "could not verify", "cannot verify",
+    "could not find", "cannot find", "unable to", "does not contain", "doesn't contain",
+    "no such", "not present", "not applicable", "n/a",
+)
+
+
+def _reads_as_abstention(value: str) -> bool:
+    """True if a recovered custom-shape value is itself an abstention/negation rather than
+    an extracted clause — so we abstain instead of emitting a 'found' that says 'abstain'."""
+    if not value:
+        return True
+    head = value.strip().lower()[:40]
+    return any(head.startswith(op) for op in _ABSTENTION_OPENERS)
+
+
 def _coerce_status(raw: Any) -> CellStatus:
     try:
         return CellStatus(str(raw).strip().lower())
@@ -191,11 +271,45 @@ def _cell_from_run(
 
     env = _extract_envelope(final_text)
     if env is None:
-        # The agent answered but not in the envelope — treat as abstain, keep the text
-        # as the note so a human can see what it said.
+        # No JSON at all (free-text answer). This is an envelope/parse failure, NOT a
+        # genuine "couldn't find it" — record it distinguishably (abstain_reason
+        # "unparsed") so we never re-blame ingestion for a cell the agent actually
+        # answered. Keep the text as the note so a human can see what it said.
         return GridCell(doc_id=doc_id, column_key=column.key, doc_name=doc_name,
-                        status=CellStatus.ABSTAIN, provenance=provenance,
-                        note=(final_text[:200] or "no parseable answer"))
+                        status=CellStatus.ABSTAIN, provenance=[],
+                        note="parse: " + (final_text[:120] or "no parseable answer"),
+                        abstain_reason="unparsed")
+
+    # ── Tolerant recovery: a CUSTOM shape (valid JSON, but no envelope keys). The
+    #    agent answered, possibly grounded, just not in our exact key shape. Recover a
+    #    value from its leaves and treat it as a FOUND candidate — gated by provenance
+    #    below, so it can only ever UPGRADE a grounded answer, never invent a cell.
+    if not _looks_like_envelope(env):
+        recovered = _recover_custom_shape(env)
+        if recovered is not None and _reads_as_abstention(recovered):
+            # The model declined IN PROSE inside a custom shape ("abstain; I could not
+            # verify..."). Recovering that into a FOUND value would mislabel an honest
+            # 'can't find it' as a grounded clause. Treat it as a genuine abstain.
+            return GridCell(
+                doc_id=doc_id, column_key=column.key, doc_name=doc_name,
+                status=CellStatus.ABSTAIN, provenance=[],
+                note=recovered[:200], abstain_reason="ambiguous",
+            )
+        if recovered is not None and provenance:
+            return GridCell(
+                doc_id=doc_id, column_key=column.key, doc_name=doc_name,
+                status=CellStatus.FOUND, value=recovered, quote=None,
+                risk=RiskFlag.NONE, provenance=provenance,
+                note="parse: recovered from non-envelope JSON shape",
+            )
+        # custom shape but nothing grounded it → abstain, flagged as our parse failure
+        # (NOT no_evidence). This is the distinction that ends the loop.
+        return GridCell(
+            doc_id=doc_id, column_key=column.key, doc_name=doc_name,
+            status=CellStatus.ABSTAIN, provenance=[],
+            note="parse: " + (recovered or final_text[:120] or "non-envelope JSON shape"),
+            abstain_reason="unparsed",
+        )
 
     status = _coerce_status(env.get("status"))
     value = env.get("value")
@@ -205,14 +319,22 @@ def _cell_from_run(
     risk = _coerce_risk(env.get("risk"))
     note = env.get("note")
     note = None if note in ("", "null", None) else str(note)
+    abstain_reason: Optional[str] = None
 
     # Enforce the contract structurally: a FOUND value MUST carry provenance. If the
     # agent claims found but nothing grounded it, downgrade to ABSTAIN (never emit an
-    # unverified 'found' into the grid).
+    # unverified 'found' into the grid). This is a genuine lack of evidence, not a
+    # parse failure.
     if status == CellStatus.FOUND and not provenance:
         status = CellStatus.ABSTAIN
         note = (note + " | " if note else "") + "claimed found but no source span grounded it"
         value = None
+        abstain_reason = "no_evidence"
+
+    # A genuine abstain the model itself declared (ambiguous/low-evidence). Mark it
+    # distinguishably from our parse-failure abstains.
+    if status == CellStatus.ABSTAIN and abstain_reason is None:
+        abstain_reason = "ambiguous"
 
     # MISSING means 'the term is absent' — its absence is itself a risk flag.
     if status == CellStatus.MISSING and risk == RiskFlag.NONE:
@@ -222,7 +344,7 @@ def _cell_from_run(
         doc_id=doc_id, column_key=column.key, doc_name=doc_name,
         status=status, value=value, quote=quote, risk=risk,
         provenance=provenance if status == CellStatus.FOUND else [],
-        note=note,
+        note=note, abstain_reason=abstain_reason,
     )
 
 

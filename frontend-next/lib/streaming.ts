@@ -611,6 +611,11 @@ export interface GridCellEvent {
   quote?: string | null;
   risk: "standard" | "non_standard" | "missing" | "none";
   note?: string | null;
+  // WHY an abstain cell abstained, distinguishably (G4): "unparsed" = the agent answered
+  // but in a shape we couldn't read (our bug class); "no_evidence" = it couldn't ground an
+  // answer; "ambiguous" = conflicting/declined. Lets the UI explain "Unclear" instead of
+  // conflating a parser bug with a genuine not-found.
+  abstain_reason?: "unparsed" | "no_evidence" | "ambiguous" | null;
   provenance?: Array<Record<string, unknown>>;
   verified?: boolean;
 }

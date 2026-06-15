@@ -195,6 +195,7 @@ async def review_grid_stream(
                     "quote": cell.quote,
                     "risk": cell.risk.value,
                     "note": cell.note,
+                    "abstain_reason": cell.abstain_reason,  # unparsed|no_evidence|ambiguous
                     "provenance": cell.provenance,
                     "verified": cell.is_verified,
                 })

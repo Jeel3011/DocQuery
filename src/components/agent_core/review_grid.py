@@ -125,6 +125,13 @@ class GridCell:
     provenance: List[Dict[str, Any]] = field(default_factory=list)  # span/CellRef dicts
     note: Optional[str] = None             # why ABSTAIN/MISSING/ERROR; or a short rationale
     doc_name: Optional[str] = None         # filename, for display/export convenience
+    abstain_reason: Optional[str] = None   # WHY this cell abstained, distinguishably:
+    #   "unparsed"    → our bug: the agent answered (often grounded) but in a shape the
+    #                   envelope parser couldn't read. NEVER let this look like no_evidence
+    #                   (that conflation is the G4 loop — see G4_REVIEW_GRID_PLAN §0).
+    #   "no_evidence" → genuine: the agent searched and could not ground an answer.
+    #   "ambiguous"   → genuine: conflicting/unclear evidence the agent declined to pick.
+    #   None for FOUND/MISSING/ERROR. Additive + optional — existing consumers ignore it.
 
     @property
     def is_verified(self) -> bool:
