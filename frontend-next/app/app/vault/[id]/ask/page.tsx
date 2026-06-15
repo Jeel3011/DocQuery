@@ -14,21 +14,30 @@
 import { useEffect, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import { motion } from "framer-motion";
-import { Search, GitCompare, BarChart3, TrendingUp, ArrowUpRight } from "lucide-react";
+import { Search, GitCompare, BarChart3, TrendingUp, Scale, Coins, ArrowUpRight } from "lucide-react";
 import { toast } from "sonner";
 import { useAuthStore } from "@/stores/auth.store";
-import { createConversation, listCollections } from "@/lib/api";
+import { createConversation, listCollections, getCollectionDocuments } from "@/lib/api";
+import { isFinanceVault } from "@/lib/docType";
 import { ChatInput } from "@/components/chat/ChatInput";
 
 const ease = [0.23, 1, 0.32, 1] as const;
 
-// Doc-type-aware suggestions (legal default; DocQuery is law-first). Mirrors the
-// contract review framing of the conversation empty-state and the vault workspace chips.
-const SUGGESTIONS = [
+// Doc-type-aware suggestions: DocQuery is law-first, so LEGAL is the default — shown for a
+// legal vault, a mixed vault, or any vault whose docs aren't classified yet. A vault that
+// leans FINANCIAL (dominant doc_type = financial_filing) gets the finance set instead.
+const LEGAL_SUGGESTIONS = [
   { icon: Search, title: "Key terms", q: "What are the governing law, term, and termination notice period in this contract? Quote each clause." },
   { icon: GitCompare, title: "Indemnity & liability", q: "Is there an indemnity cap and a limitation of liability? Quote the exact caps, or say if liability is uncapped." },
-  { icon: BarChart3, title: "Risk flags", q: "Flag any non-standard or unusual clauses in this contract that a reviewer should look at." },
-  { icon: TrendingUp, title: "Dispute resolution", q: "How are disputes resolved — arbitration or courts? What is the seat/venue and which rules apply?" },
+  { icon: Scale, title: "Risk flags", q: "Flag any non-standard or unusual clauses in this contract that a reviewer should look at." },
+  { icon: GitCompare, title: "Dispute resolution", q: "How are disputes resolved — arbitration or courts? What is the seat/venue and which rules apply?" },
+];
+
+const FINANCE_SUGGESTIONS = [
+  { icon: TrendingUp, title: "Revenue & growth", q: "What was total revenue in the latest year and how did it change year-over-year? Show the figures with their source." },
+  { icon: BarChart3, title: "Profitability", q: "What were operating income and net income, and what are the operating and net margins? Compute each from the source tables." },
+  { icon: Coins, title: "Balance-sheet strength", q: "What are total assets, total liabilities, and cash & equivalents at the latest period end? Cite each figure." },
+  { icon: GitCompare, title: "Compare periods", q: "Compare the key metrics (revenue, net income, total assets) across the years available, and note the trend." },
 ];
 
 export default function VaultAskLandingPage() {
@@ -39,6 +48,8 @@ export default function VaultAskLandingPage() {
 
   const [vaultName, setVaultName] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
+  // Suggestion set keyed off the vault's dominant doc-type (legal default, law-first).
+  const [suggestions, setSuggestions] = useState(LEGAL_SUGGESTIONS);
 
   useEffect(() => {
     if (!token || !vaultId) return;
@@ -46,6 +57,10 @@ export default function VaultAskLandingPage() {
     listCollections(token)
       .then((cols) => { if (!cancelled) setVaultName(cols.find((c) => c.id === vaultId)?.name ?? null); })
       .catch(() => { if (!cancelled) setVaultName(null); });
+    // Pick the finance set only when the vault leans financial; otherwise keep legal.
+    getCollectionDocuments(token, vaultId)
+      .then((docs) => { if (!cancelled && isFinanceVault(docs)) setSuggestions(FINANCE_SUGGESTIONS); })
+      .catch(() => { /* keep the legal default on any error */ });
     return () => { cancelled = true; };
   }, [token, vaultId]);
 
@@ -82,7 +97,7 @@ export default function VaultAskLandingPage() {
           </p>
 
           <div className="mt-6 grid grid-cols-1 sm:grid-cols-2 gap-3 w-full">
-            {SUGGESTIONS.map((s, i) => (
+            {suggestions.map((s, i) => (
               <motion.button
                 key={s.title}
                 initial={{ opacity: 0, y: 10 }}

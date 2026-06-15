@@ -178,6 +178,30 @@ async def agentcore_query_stream(
 
     grids = await asyncio.to_thread(_load_grids)
 
+    # ── Conversation memory (G5 Ask polish): thread PRIOR turns into the run so a
+    # follow-up ("what about 2022?", "and the termination clause?") resolves against the
+    # conversation, not from scratch. The loop already accepts `history` — we only load it.
+    # Prior turns are READ-ONLY context; the current question is appended by the loop and
+    # the current turn is persisted by `_saving_stream_wrapper` AFTER the stream, so it is
+    # NOT yet in `get_messages` (no duplication). Bounded to the recent turns to keep the
+    # context (and cost) in check; off the event loop (blocking DB read).
+    history: list[dict] = []
+    _conv_id_for_history = getattr(body, "conversation_id", None)
+    if _conv_id_for_history:
+        def _load_history():
+            try:
+                rows = sb.get_messages(_conv_id_for_history) or []
+                msgs = [
+                    {"role": r.get("role"), "content": r.get("content") or ""}
+                    for r in rows
+                    if r.get("role") in ("user", "assistant") and (r.get("content") or "").strip()
+                ]
+                return msgs[-12:]  # ~6 recent turns — enough for follow-ups, bounded cost
+            except Exception as exc:  # noqa: BLE001 — memory is best-effort; a fresh run still works
+                logger.warning("[agentcore] history load failed (%s) — running without memory", exc)
+                return []
+        history = await asyncio.to_thread(_load_history)
+
     # ── Build the run: scope + budget + model + system prompt ──────────────────────
     from src.components.agent_core.registry import RunScope, REGISTRY
     from src.components.agent_core.budgets import budget_for
@@ -196,9 +220,13 @@ async def agentcore_query_stream(
         question=body.question,
         # G3 Step E: conjunctive narrowing on top of the doc_id vault scope.
         filters=metadata_filter,
+        # G5: the demoted Brain MAP step (survey_collection, deep mode) runs on this.
+        config=user_config,
     )
     budget = budget_for(mode, user_config)
-    sys_prompt = system_prompt("v1")
+    # G5: deep mode gets the Deep Analysis overlay (sectioned report + breadth-first
+    # workflow) on top of the shared base contract; standard/fast get the base prompt.
+    sys_prompt = system_prompt("v1", mode=mode)
 
     try:
         model = build_model(mode, budget, user_config, system=sys_prompt)
@@ -222,6 +250,12 @@ async def agentcore_query_stream(
     import uuid as _uuid
     tracer = RunTracer(run_id=_uuid.uuid4().hex[:12], question=body.question, mode=mode)
 
+    # G5: deep mode binds the report PER SECTION (an unsupported section is withheld
+    # visibly, the grounded ones ship intact). Standard mode keeps the whole-draft gate.
+    # Both are non-bypassable; deep just applies the same logic section-by-section.
+    from src.components.agent_core.gates import run_output_gates, gate_sectioned
+    gate_fn = gate_sectioned if mode == "deep" else run_output_gates
+
     def _agent_stream():
         try:
             for ev in run_agent(
@@ -230,7 +264,9 @@ async def agentcore_query_stream(
                 scope=scope,
                 budget=budget,
                 system_prompt=sys_prompt,
+                history=history,            # G5: prior conversation turns (read-only memory)
                 registry=REGISTRY,
+                gate_fn=gate_fn,
             ):
                 tracer.record(ev)  # durable journal + health (never raises)
                 # Also log compactly to the API stdout for live tailing.

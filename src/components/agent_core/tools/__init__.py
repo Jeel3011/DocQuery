@@ -16,6 +16,7 @@ from .compute import SCHEMA as COMPUTE_SCHEMA, compute
 from .metrics import SCHEMA as METRICS_SCHEMA, list_metrics
 from .read import SCHEMA as READ_SCHEMA, read_document
 from .search import SCHEMA as SEARCH_SCHEMA, search_vault
+from .survey import SCHEMA as SURVEY_SCHEMA, survey_collection
 from .table import SCHEMA as TABLE_SCHEMA, table_lookup
 
 SCHEMAS = {
@@ -24,10 +25,14 @@ SCHEMAS = {
     "list_metrics": METRICS_SCHEMA,
     "table_lookup": TABLE_SCHEMA,
     "compute": COMPUTE_SCHEMA,
+    # G5: the broad whole-vault pass — deep mode only (see registry._MODE_TOOLS).
+    "survey_collection": SURVEY_SCHEMA,
 }
 
 __all__ = [
     "search_vault", "read_document", "list_metrics", "table_lookup", "compute",
+    "survey_collection",
     "SEARCH_SCHEMA", "READ_SCHEMA", "METRICS_SCHEMA", "TABLE_SCHEMA", "COMPUTE_SCHEMA",
+    "SURVEY_SCHEMA",
     "SCHEMAS",
 ]

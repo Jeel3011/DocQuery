@@ -216,11 +216,53 @@ def main() -> int:
     c.ok(any("513,983" in e.get("text", "") for e in events if e["type"] == "token"),
          "answer shipped after the retry")
 
+    # ── 9. Conversation memory (G5): prior turns precede the current question ─────
+    print("\n── conversation memory: prior turns threaded into the run ───────")
+    import copy as _copy
+
+    class _CapturingModel(ScriptedModel):
+        """Snapshots a DEEP COPY of the messages on the FIRST invoke (so the assertion
+        isn't fooled by the loop later appending the model's own turn to the same list)."""
+        def __init__(self, script):
+            super().__init__(script)
+            self.first_messages = None
+        def invoke(self, messages, tools):
+            if self.first_messages is None:
+                self.first_messages = _copy.deepcopy(messages)
+            return super().invoke(messages, tools)
+
+    history = [
+        {"role": "user", "content": "What is the governing law?"},
+        {"role": "assistant", "content": "It is governed by the laws of India [msa.pdf p.12]."},
+    ]
+    cap = _CapturingModel([ModelResponse(
+        text="The termination notice period is 30 days [msa.pdf p.5].", tool_calls=[])])
+    events = collect(run_agent(
+        "And the termination notice period?", model=cap, scope=RunScope(grids=GRIDS),
+        budget=std_budget(), history=history))
+    seen = [(m.get("role"), m.get("content")) for m in (cap.first_messages or [])
+            if isinstance(m.get("content"), str)]
+    c.ok(any("governing law" in (txt or "").lower() for _, txt in seen)
+         and any("laws of India" in (txt or "") for _, txt in seen),
+         "memory: BOTH prior turns are present in the model's context")
+    # The current question is appended AFTER the history (last string message at invoke #1).
+    c.ok(seen and seen[-1][0] == "user" and "termination" in (seen[-1][1] or "").lower(),
+         "memory: the current question follows the prior turns (correct order)")
+    c.ok(any("30 days" in e.get("text", "") for e in events if e["type"] == "token"),
+         "memory: the follow-up answer still ships through the gate")
+    # No history → the run still works (memory is additive, never required).
+    cap2 = _CapturingModel([ModelResponse(text="Net sales were 513,983 [amzn-2022 p.41].", tool_calls=[])])
+    events = collect(run_agent("net sales 2022", model=cap2, scope=RunScope(grids=GRIDS),
+                               budget=std_budget()))  # history defaults to None
+    only_user = [m for m in (cap2.first_messages or []) if isinstance(m.get("content"), str)]
+    c.ok(len(only_user) == 1 and "net sales" in (only_user[0].get("content") or "").lower(),
+         "memory: no history → only the current question (additive, not required)")
+
     print("\n" + "=" * 64)
     print(f"  PASS: {c.passed}   FAIL: {c.failed}")
     print("=" * 64)
     if c.failed == 0:
-        print("  ✓ A2 loop gate GREEN (bridge · budget · tool-error · degrade · stream)")
+        print("  ✓ A2 loop gate GREEN (bridge · budget · tool-error · degrade · stream · memory)")
         return 0
     print("  ✗ A2 gate FAILED")
     return 1

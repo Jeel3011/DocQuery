@@ -318,6 +318,89 @@ def main() -> int:
     r = search_vault("x", _BoomRM(), kind="both")
     c.ok(is_envelope(r), "search_vault: raising manager → envelope (no raise escapes)")
 
+    print("\n── survey_collection (G5 broad-pass tool — demoted map_reduce) ──")
+    from src.components.agent_core.tools import survey_collection
+    from src.components.brain import map_reduce as _mr
+    from src.components.brain.claims import PerDocExtract, Claim, EvidenceSpan
+
+    # survey_collection retrieves per-doc (chat.py POSITIONAL signature: query,
+    # filename_filter, page_filter, filename_filters, top_k, apply_threshold, use_reranker)
+    # then runs the demoted Brain MAP step. To keep the gate $0/offline, we (a) feed a stub
+    # RM that returns chunks and (b) monkeypatch Brain._map_all_docs so NO LLM is called —
+    # we assert the tool's RETRIEVAL→ENVELOPE→PROVENANCE shaping, the part G5 added.
+    class _SurveyRM:
+        def __init__(self, with_chunks=True):
+            self.with_chunks = with_chunks
+            self.calls = []
+        def retrieve(self, query, *args, **kw):
+            self.calls.append((query, args, kw))
+            if not self.with_chunks:
+                return []
+            fname = args[0] if args else kw.get("filename_filter", "doc.pdf")
+            return [_Doc("the agreement is governed by the laws of India",
+                         {"filename": fname, "page_number": 5, "chunk_id": "c1",
+                          "doc_id": f"id-{fname}"})]
+
+    # Canned MAP output (no LLM): two docs with cited claims, one empty, one errored.
+    def _fake_map_all(query, doc_chunks, on_progress=None):
+        out = []
+        for doc_id, (fname, _chunks) in doc_chunks.items():
+            out.append(PerDocExtract(
+                doc_id=doc_id, filename=fname,
+                claims=[Claim(
+                    text=f"{fname}: governed by Indian law",
+                    evidence=[EvidenceSpan(doc_id=doc_id, chunk_id="c1",
+                                           verbatim_span="governed by the laws of India")],
+                    confidence=0.9,
+                )],
+            ))
+        return out
+
+    _orig_map_all = _mr.Brain._map_all_docs
+    try:
+        _mr.Brain._map_all_docs = staticmethod(lambda q, dc, on_progress=None: _fake_map_all(q, dc))
+        cfg = object()  # Brain(config) only stores it; the patched MAP never touches it
+        rm = _SurveyRM()
+        r = survey_collection("key terms and governing law", rm, cfg,
+                              filenames=["a.pdf", "b.pdf"],
+                              filename_by_doc={"id-a.pdf": "a.pdf", "id-b.pdf": "b.pdf"})
+        c.ok(is_envelope(r) and r["ok"], "survey_collection: stub RM + MAP → ok envelope")
+        c.ok(isinstance(r["data"].get("clusters"), list) and len(r["data"]["clusters"]) == 2,
+             "survey_collection: returns one evidence cluster per relevant doc")
+        c.ok(all(cl.get("claims") and "verbatim_span" in cl["claims"][0]
+                 for cl in r["data"]["clusters"]),
+             "survey_collection: each cluster carries cited claims (not a written answer)")
+        c.ok(len(r["provenance"]) >= 2 and all(p["kind"] == "span" for p in r["provenance"]),
+             "survey_collection: provenance is evidence spans (flows to ledger/gate)")
+        c.ok(all(p.get("snippet") for p in r["provenance"]),
+             "survey_collection: each span carries its verbatim snippet")
+        # Retrieval used the breadth settings (apply_threshold=False, use_reranker=False).
+        c.ok(rm.calls and rm.calls[0][1][4] is False and rm.calls[0][1][5] is False,
+             "survey_collection: broad retrieval (no similarity floor, no reranker)")
+
+        # No chunks anywhere → a CLEAN empty survey (ok=True, 0 clusters), not an error.
+        r2 = survey_collection("nothing here", _SurveyRM(with_chunks=False), cfg,
+                               filenames=["a.pdf"], filename_by_doc={"id-a.pdf": "a.pdf"})
+        c.ok(is_envelope(r2) and r2["ok"] and r2["data"]["clusters"] == [],
+             "survey_collection: no relevant passages → clean empty survey (ok, 0 clusters)")
+
+        # never-raise contract: missing deps + a raising RM → error envelope, no exception.
+        c.ok(is_envelope(survey_collection("", rm, cfg)) and not survey_collection("", rm, cfg)["ok"],
+             "survey_collection: empty query → error envelope")
+        c.ok(is_envelope(survey_collection("q", None, cfg)) and not survey_collection("q", None, cfg)["ok"],
+             "survey_collection: no retrieval manager → error envelope")
+        c.ok(is_envelope(survey_collection("q", rm, None)) and not survey_collection("q", rm, None)["ok"],
+             "survey_collection: no config → error envelope")
+        class _BoomSurveyRM:
+            def retrieve(self, *a, **k): raise RuntimeError("boom")
+        rboom = survey_collection("q", _BoomSurveyRM(), cfg,
+                                  filenames=["a.pdf"], filename_by_doc={"id-a.pdf": "a.pdf"})
+        # A per-doc retrieval that raises is swallowed (non-fatal) → clean empty survey.
+        c.ok(is_envelope(rboom) and rboom["ok"] and rboom["data"]["clusters"] == [],
+             "survey_collection: raising RM is non-fatal per-doc → envelope (no raise escapes)")
+    finally:
+        _mr.Brain._map_all_docs = _orig_map_all
+
     print("\n── list_metrics (the line-item index — anti-guessing) ───────────")
     # Live (2026-06-11) the model GUESSED labels it couldn't know ("Technology and
     # content" instead of Amazon's real "Technology and infrastructure") → every
@@ -351,10 +434,15 @@ def main() -> int:
 
     print("\n── schemas (registry-ready, A2) ─────────────────────────────────")
     c.ok(set(SCHEMAS) == {"search_vault", "read_document", "list_metrics",
-                          "table_lookup", "compute"},
-         "SCHEMAS: all four tools registered")
+                          "table_lookup", "compute", "survey_collection"},
+         "SCHEMAS: all tools registered (incl. G5 survey_collection)")
     c.ok(all("name" in s and "input_schema" in s for s in SCHEMAS.values()),
          "SCHEMAS: each has name + input_schema")
+    # G5: survey_collection is deep-mode only — it must NOT leak into standard mode.
+    from src.components.agent_core.registry import REGISTRY as _REG
+    c.ok("survey_collection" in _REG.names("deep")
+         and "survey_collection" not in _REG.names("standard"),
+         "registry: survey_collection in deep mode only (breadth tool, not standard)")
 
     print("\n" + "=" * 64)
     print(f"  PASS: {c.passed}   FAIL: {c.failed}")

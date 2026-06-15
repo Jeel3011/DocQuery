@@ -22,6 +22,7 @@ from .tools import (
     list_metrics as metrics_tool,
     read_document as read_tool,
     search_vault as search_tool,
+    survey_collection as survey_tool,
     table_lookup as table_tool,
 )
 from .tools._envelope import error_result
@@ -42,6 +43,10 @@ class RunScope:
     # search_vault as `scope.filters` → the retriever's CONJUNCTIVE metadata_filter. It
     # NARROWS the vault scope, never replaces it (a bug there = cross-vault leak).
     filters: Optional[Dict[str, Any]] = None
+    # G5: the user Config the demoted Brain MAP step runs on (survey_collection, deep mode
+    # only). None ⇒ survey_collection returns an error envelope (never raises); the other
+    # tools never read it.
+    config: Any = None
 
     def scope_dict(self) -> Dict[str, Any]:
         d: Dict[str, Any] = {
@@ -54,11 +59,14 @@ class RunScope:
         return d
 
 
-# Which tools each mode may use (§3.3 registry mechanics). survey_collection/draft/
-# knowledge tools arrive in later phases; A1 ships the four core tools.
+# Which tools each mode may use (§3.3 registry mechanics). draft/knowledge tools arrive
+# in later phases; survey_collection (G5) is the deep-mode breadth tool only.
 _MODE_TOOLS = {
     "standard": ["search_vault", "read_document", "list_metrics", "table_lookup", "compute"],
-    "deep": ["search_vault", "read_document", "list_metrics", "table_lookup", "compute"],
+    # G5: deep mode adds `survey_collection` — the broad whole-vault pass it opens with
+    # before drilling. It is deliberately ABSENT from standard mode (breadth is the long
+    # run's tool; a standard answer searches narrowly).
+    "deep": ["survey_collection", "search_vault", "read_document", "list_metrics", "table_lookup", "compute"],
     "fast": [],  # fast mode does not loop / call tools
     # Review-grid cell (B2): the run is locked to ONE document via RunScope, so
     # `search_vault` cannot leak across docs — and a PROSE document (a contract) needs
@@ -121,6 +129,20 @@ class ToolRegistry:
                     # Live (2026-06-11) the model read the right doc but compute
                     # couldn't see it — "document not in scope".
                     scope_grids=scope.grids,
+                )
+
+            if name == "survey_collection":
+                # G5 deep-mode breadth tool. Runs over the WHOLE vault scope (the run's
+                # routed filenames); the model only chooses the topic + how wide to go.
+                # Scope is authoritative here — survey isn't a place to narrow to one doc.
+                return survey_tool(
+                    args.get("query", "") or scope.question or "",
+                    scope.retrieval_manager,
+                    scope.config,
+                    filenames=scope.filenames,
+                    filename_by_doc=scope.filename_by_doc,
+                    k_docs=args.get("k_docs"),
+                    per_doc_k=args.get("per_doc_k", 8),
                 )
 
             if name == "search_vault":

@@ -84,5 +84,53 @@ their citations. Use citation markers like [amzn-2022 p.41].
 """
 
 
-def system_prompt(version: str = "v1") -> str:
-    return SYSTEM_PROMPT_V1
+# ── Deep Analysis overlay (G5) ───────────────────────────────────────────────────
+# Deep mode is the SAME engine + the SAME output contract (above) — it only changes the
+# SHAPE of the deliverable (a multi-section report) and adds the breadth-first workflow.
+# The cite-or-abstain rules are inherited verbatim; this overlay never relaxes them. The
+# per-SECTION gate (gates.gate_sectioned) enforces them section-by-section, so a single
+# unsupported section is withheld VISIBLY rather than sinking — or padding — the report.
+DEEP_PROMPT_SUFFIX = """\
+
+────────────────────────────────────────────────────────────────────────────────
+DEEP ANALYSIS MODE — you are writing a comprehensive, cited report over the WHOLE vault.
+
+Everything above still holds (every figure from a tool, every factual sentence cited, \
+abstention is success). Deep mode only changes the DELIVERABLE and the workflow:
+
+WORKFLOW (breadth first, then depth):
+1. START with ONE `survey_collection` call to see the lay of the land across EVERY \
+document — it returns cited evidence clusters per document, not an answer. Use it to \
+decide what the report should cover.
+2. From the survey, propose a SHORT outline: 3–6 sections that genuinely matter for the \
+question (e.g. for a contract set: Parties & Term, Commercial Terms, Liability & \
+Indemnity, Termination, Risks/Red Flags; for filings: Revenue & Growth, Profitability, \
+Balance-Sheet Strength, Risks). Do not pad with sections you cannot ground.
+3. For EACH section, DRILL with `read_document` / `table_lookup` / `compute` to get the \
+exact spans and cells you will cite. A section's every claim must cite a `[doc p.N]` span \
+or a computed cell — exactly as in any answer.
+
+THE REPORT (your single final message — plain markdown, no preamble):
+- Begin with a one-paragraph executive summary (still cited).
+- Then one `## Section Title` per outline section. Under each, write the findings as \
+cited sentences. Prefer specifics (parties, amounts, dates, clause language) over \
+generalities.
+- If, after honestly drilling, a section has NO verifiable support in the vault, write \
+that section as a single line: `_Insufficient evidence in the vault to report on this._` \
+— do NOT pad it with uncited generalities. A withheld section is an honest result; a \
+confidently-uncited one is a defect the gate will redact anyway.
+- Each section is verified INDEPENDENTLY: an uncited claim in one section is removed from \
+THAT section only, so keep every section's claims tied to their own evidence.
+
+Use `##` headers for sections (the report is split on them). Keep citation markers like \
+[amzn-2022 p.41] inline on every factual sentence."""
+
+
+def system_prompt(version: str = "v1", mode: str = "standard") -> str:
+    """The system prompt for a run. `mode="deep"` appends the Deep Analysis overlay onto
+    the shared base contract (one engine, one set of rules — deep only adds the report
+    shape + breadth-first workflow). All other modes get the base prompt unchanged."""
+    base = SYSTEM_PROMPT_V1
+    if mode == "deep":
+        return base + DEEP_PROMPT_SUFFIX
+    return base

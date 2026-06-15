@@ -213,6 +213,94 @@ def _redact(draft: str, ledger: EvidenceLedger, failures: List[Dict[str, Any]]) 
         "not stating them. Please check the cited pages directly." )
 
 
+# ── Deep Analysis: per-section gating (G5) ───────────────────────────────────────
+
+_SECTION_SPLIT = re.compile(r"(?m)^(?=##\s)")  # split BEFORE each `## ` header, keep it
+# A section the model intentionally abstained on (the deep prompt's withhold line). It
+# carries no figures and no claim — passing it through is correct (honest abstention),
+# NOT a gate bypass. Matched loosely so minor wording/emphasis variations still count.
+_WITHHELD_SECTION_RE = re.compile(r"insufficient evidence", re.IGNORECASE)
+
+
+def _split_sections(draft: str) -> List[str]:
+    """Split a deep report into [preamble?, ## section, ## section, …].
+
+    The leading chunk before the first `##` (the executive summary) is its own section so
+    it is gated too. Empty fragments are dropped. A report with no `##` headers is ONE
+    section — gate_sectioned then behaves exactly like run_output_gates."""
+    parts = [p for p in _SECTION_SPLIT.split(draft or "") if p.strip()]
+    return parts or ([draft] if (draft or "").strip() else [])
+
+
+def gate_sectioned(draft: str, ledger: EvidenceLedger, *, llm=None) -> GateOutcome:
+    """Deep-mode output gate: bind EACH section to the ledger independently (G5 §2.B2).
+
+    Same verification intelligence as `run_output_gates` (verify_numbers +
+    verify_citations + the per-claim `_redact`), applied section-by-section so one
+    unsupported section is redacted to a VISIBLE withhold line while the grounded
+    sections ship intact with their citations. This is the moat for the riskiest surface:
+    a long report can abstain a section, never silently assert it.
+
+    Returns a GateOutcome whose `redacted_draft` is the REASSEMBLED report (every section,
+    failing ones redacted). `passed` is True only if every section passed as-is.
+    """
+    sections = _split_sections(draft)
+    if len(sections) <= 1:
+        # No real sectioning → identical to the whole-draft gate (don't special-case).
+        return run_output_gates(draft, ledger, llm=llm)
+
+    rebuilt: List[str] = []
+    all_failures: List[Dict[str, Any]] = []
+    any_failed = False
+
+    for sec in sections:
+        # An intentionally-withheld section is already honest (no figures, no claim) —
+        # ship it verbatim; redacting it would just rewrite one withhold line as another.
+        if _WITHHELD_SECTION_RE.search(sec):
+            rebuilt.append(sec.rstrip())
+            continue
+
+        # Verify the BODY, not the whole section: a `## Title` line is never a factual
+        # sentence or a figure, and including it would PREFIX the header onto the first
+        # sentence (split on `.!?`, not `\n`) — so `verify_citations`'s `uncited` strings
+        # wouldn't match what `_redact` (which iterates body sentences) removes, and the
+        # offending claim would survive. Strip the header, gate the body, re-attach the
+        # header. A preamble (no `## `) has empty header and is gated whole.
+        if sec.lstrip().startswith("##"):
+            header, _, body = sec.partition("\n")
+            header = header.strip()
+        else:
+            header, body = "", sec
+
+        failures: List[Dict[str, Any]] = []
+        for result in (verify_numbers(body, ledger), verify_citations(body, ledger, llm=llm)):
+            if not result.get("pass", False):
+                failures.append({"name": result["name"], "detail": result["detail"],
+                                 **({"uncited": result["uncited"]} if "uncited" in result else {})})
+
+        if not failures:
+            rebuilt.append(sec.rstrip())
+            continue
+
+        # This section failed → redact its claims (from the body), preserving the
+        # `## header` so the report keeps its shape and the withheld section is visible
+        # in place with an explicit withhold line.
+        any_failed = True
+        all_failures.extend(failures)
+        redacted_body = _redact(body, ledger, failures).rstrip()
+        rebuilt.append(f"{header}\n\n{redacted_body}".rstrip() if header else redacted_body)
+
+    report = "\n\n".join(rebuilt).strip()
+    if not any_failed:
+        return GateOutcome(passed=True, failures=[])
+    return GateOutcome(
+        passed=False,
+        failures=all_failures,
+        redacted_draft=report,
+        abstained=True,
+    )
+
+
 # ── The entry point the loop calls ──────────────────────────────────────────────
 
 def run_output_gates(draft: str, ledger: EvidenceLedger, *, llm=None) -> GateOutcome:

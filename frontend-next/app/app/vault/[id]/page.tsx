@@ -246,7 +246,7 @@ export default function VaultWorkspacePage() {
 
         {/* Action row — Review · Deep Analysis · Draft as siblings above the composer
             (plan §8.1). Ask is the hero composer below; these are the other vault modes.
-            Deep Analysis is the G5 stub (Step G); Draft is the G6 stub. */}
+            Deep Analysis is LIVE (G5); Draft is the G6 stub. */}
         <div className="flex items-center justify-center gap-2.5 mb-4">
           <button
             onClick={() =>

@@ -158,7 +158,14 @@ const ARTIFACT_RE = /```artifact(?::(\w+))?(?:\s+title="([^"]*)")?\n([\s\S]*?)``
 const CODE_RE = /```(\w+)\n([\s\S]{200,})```/;
 const TABLE_RE = /\|.+\|[\s\S]{60,}/;
 
-export function detectArtifact(content: string): Artifact | null {
+// Count `## ` section headers (a multi-section report). `^` multiline so we only match
+// real headers at line-start, not a `##` inside a sentence or a code block.
+const SECTION_RE = /^##\s+\S/gm;
+
+export function detectArtifact(
+  content: string,
+  opts: { sectioned?: boolean } = {},
+): Artifact | null {
   // Explicit artifact fence
   const explicit = ARTIFACT_RE.exec(content);
   if (explicit) {
@@ -180,6 +187,22 @@ export function detectArtifact(content: string): Artifact | null {
       content: code[2].trim(),
       language: code[1],
     };
+  }
+  // G5: a Deep Analysis report — a multi-section (≥2 `## headers`), substantial markdown
+  // document — opens in the ArtifactPanel as a read-as-a-document report (section outline
+  // + inline citations). Gated to `sectioned` (deep mode only) so Ask's shorter cited
+  // answers keep rendering inline, unchanged. Checked BEFORE the table rule so a report
+  // that happens to contain a table is still treated as the report, not just its table.
+  if (opts.sectioned) {
+    const sections = content.match(SECTION_RE);
+    if (sections && sections.length >= 2 && content.length > 400) {
+      return {
+        id: String(Date.now()),
+        kind: "markdown",
+        title: "Analysis report",
+        content: content,
+      };
+    }
   }
   // Large markdown table
   if (TABLE_RE.test(content) && content.length > 400) {

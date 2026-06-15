@@ -126,6 +126,11 @@ interface LocalMessage {
 export interface ChatConversationProps {
   scopedCollectionId?: string;   // route-authoritative vault id (vault route only)
   conversationId?: string;       // override for the [cid] segment (vault route only)
+  // G5: which agent-core mode this conversation runs in. "deep" = Deep Analysis (the
+  // sectioned, whole-vault report via survey_collection + the per-section gate); default
+  // "standard" = Ask. The SAME 1,150-line consumer renders both — deep only changes the
+  // request's `mode` so the backend uses the deep prompt + budget + section gate.
+  analysisMode?: "standard" | "deep";
 }
 
 export default function ChatPage(props: ChatConversationProps = {}) {
@@ -139,7 +144,7 @@ export default function ChatPage(props: ChatConversationProps = {}) {
 // Exported so the vault route can render the conversation directly with props.
 export { ChatPage as ChatConversation };
 
-function ChatPageInner({ scopedCollectionId, conversationId }: ChatConversationProps) {
+function ChatPageInner({ scopedCollectionId, conversationId, analysisMode = "standard" }: ChatConversationProps) {
   const routeParams = useParams<{ id: string }>();
   // When re-homed under the vault route, the conversation id arrives as a prop ([cid]);
   // otherwise it's the [id] segment of /app/chat/[id].
@@ -296,10 +301,12 @@ function ChatPageInner({ scopedCollectionId, conversationId }: ChatConversationP
             const updated = prev.map((m) =>
               m.id === assistantMsgId ? { ...m, isStreaming: false, isFallback } : m
             );
-            // Auto-detect artifact from the completed assistant message
+            // Auto-detect artifact from the completed assistant message. G5: in deep mode
+            // a multi-section report opens in the ArtifactPanel (read-as-a-document);
+            // standard Ask answers stay inline (sectioned=false → unchanged).
             const completed = updated.find((m) => m.id === assistantMsgId);
             if (completed) {
-              const detected = detectArtifact(completed.content);
+              const detected = detectArtifact(completed.content, { sectioned: analysisMode === "deep" });
               if (detected) setArtifact(detected);
             }
             return updated;
@@ -355,7 +362,9 @@ function ChatPageInner({ scopedCollectionId, conversationId }: ChatConversationP
         await streamAgentCoreQuery(
           token,
           {
-            question, conversation_id: convId, collection_id: collId, mode: "standard",
+            // G5: "deep" routes the SAME loop through the Deep Analysis prompt + budget +
+            // per-section gate (the sectioned, whole-vault report); "standard" = Ask.
+            question, conversation_id: convId, collection_id: collId, mode: analysisMode,
             // G3 Step E: the active vault filter narrows retrieval scope conjunctively.
             ...(filtersRef.current ? { filters: filtersRef.current } : {}),
           },
@@ -588,7 +597,7 @@ function ChatPageInner({ scopedCollectionId, conversationId }: ChatConversationP
         );
       }
     },
-    [token, convId] // Stable deps only — no isStreaming, agenticMode, brainMode, activeCollectionId
+    [token, convId, analysisMode] // Stable deps only (analysisMode is a per-mount prop)
   );
 
   // ── Load documents for the comparison picker (C2: lazy, not on every mount) ──
