@@ -48,12 +48,17 @@ def _resolve_collection_filters(
     query: str = None,
     query_embedding: list = None,
     user_config=None,
+    metadata_filter: dict = None,
 ) -> list[str] | None:
     """Resolve a collection_id to a filename list for Pinecone filtering.
 
     Phase 3+: when a DocumentRouter is available, uses Stage-1 routing to return
     only the top-N most relevant docs (caps fan-out per Invariant R1).  Falls back
     to the full filename list for small collections or when routing data is absent.
+
+    G3 Step D: ``metadata_filter`` (doc_type / fiscal_year) pre-narrows the router's
+    candidate set BEFORE the vector fan-out for large vaults, so a 1000-doc vault doesn't
+    embed-search all 1000. Null-safe; only drops known non-matches.
 
     Returns:
         None  — no collection scope (search all docs).
@@ -75,12 +80,16 @@ def _resolve_collection_filters(
     if not all_filenames:
         return []
 
-    # Small collection: skip routing overhead, fanout is already safe
+    # Small collection: skip routing overhead, fanout is already safe.
+    # (Even with an active metadata_filter we don't pre-narrow here — below the router
+    # threshold the retriever's own conjunctive metadata_filter does the narrowing, and
+    # pre-narrowing a tiny set buys nothing.)
     max_fanout = getattr(user_config, "ROUTING_MAX_FANOUT", 8) if user_config else 8
-    if len(all_filenames) <= max_fanout:
+    if len(all_filenames) <= max_fanout and not metadata_filter:
         return all_filenames
 
-    # Large collection: use Stage-1 router to narrow to top-N docs
+    # Large collection (or any active filter): use Stage-1 router to narrow to top-N docs,
+    # pre-narrowing the candidate set by the metadata_filter first (G3 Step D).
     if query and user_config:
         try:
             from src.components.document_router import DocumentRouter
@@ -90,11 +99,13 @@ def _resolve_collection_filters(
                 collection_id=collection_id,
                 user_id=sb.user_id,
                 query_embedding=query_embedding,
+                metadata_filter=metadata_filter,
             )
             if routed:
                 logger.info(
-                    "Stage-1 router: collection %s has %d docs → routed to top %d",
+                    "Stage-1 router: collection %s has %d docs → routed to top %d%s",
                     collection_id, len(all_filenames), len(routed),
+                    f" (pre-narrowed by {metadata_filter})" if metadata_filter else "",
                 )
                 return routed
         except Exception as exc:

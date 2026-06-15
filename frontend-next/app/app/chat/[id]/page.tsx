@@ -188,6 +188,11 @@ function ChatPageInner({ scopedCollectionId, conversationId }: ChatConversationP
   const brainModeRef = useRef(false);
   const agentCoreModeRef = useRef(false);
   const activeCollectionIdRef = useRef<string | null>(null);
+  // G3 Step E: the active vault filter set (doc_type / fiscal_year), carried in the URL
+  // (?filters=<json>) from the vault page. EXPLICIT in the request (mirror §9 risk #1 —
+  // never a stale store) → sent as the stream body's `filters` so the backend narrows
+  // retrieval scope. Parsed once from searchParams (below); null when absent.
+  const filtersRef = useRef<Record<string, unknown> | null>(null);
   const toolStepSeq = useRef(0);                 // each tool call = its own timeline step
   const lastToolStepId = useRef<string | null>(null);
 
@@ -197,6 +202,16 @@ function ChatPageInner({ scopedCollectionId, conversationId }: ChatConversationP
   useEffect(() => { brainModeRef.current = brainMode; }, [brainMode]);
   useEffect(() => { agentCoreModeRef.current = agentCoreMode; }, [agentCoreMode]);
   useEffect(() => { activeCollectionIdRef.current = activeCollectionId; }, [activeCollectionId]);
+  // G3 Step E: parse the active vault filter set from the URL (?filters=<json>). Tolerant
+  // of a malformed param (→ null, no narrowing) so a bad link never breaks the run.
+  useEffect(() => {
+    const raw = searchParams.get("filters");
+    if (!raw) { filtersRef.current = null; return; }
+    try {
+      const parsed = JSON.parse(raw);
+      filtersRef.current = parsed && typeof parsed === "object" ? parsed : null;
+    } catch { filtersRef.current = null; }
+  }, [searchParams]);
 
   // Resolve the active collection's NAME for the composer's vault chip + cache the full
   // list for the vault picker (Harvey-style "Choose vault").
@@ -339,7 +354,11 @@ function ChatPageInner({ scopedCollectionId, conversationId }: ChatConversationP
 
         await streamAgentCoreQuery(
           token,
-          { question, conversation_id: convId, collection_id: collId, mode: "standard" },
+          {
+            question, conversation_id: convId, collection_id: collId, mode: "standard",
+            // G3 Step E: the active vault filter narrows retrieval scope conjunctively.
+            ...(filtersRef.current ? { filters: filtersRef.current } : {}),
+          },
           {
             ...callbacks,
             onDone: () => {

@@ -38,13 +38,20 @@ class RunScope:
     db_client: Any = None                                  # live SupabaseClient (read_document)
     filename_by_doc: Dict[str, str] = field(default_factory=dict)
     question: Optional[str] = None                         # the run's question (grid relevance ranking)
+    # G3 Step D/E: the active vault metadata filter (doc_type / fiscal_year). Threaded to
+    # search_vault as `scope.filters` → the retriever's CONJUNCTIVE metadata_filter. It
+    # NARROWS the vault scope, never replaces it (a bug there = cross-vault leak).
+    filters: Optional[Dict[str, Any]] = None
 
     def scope_dict(self) -> Dict[str, Any]:
-        return {
+        d: Dict[str, Any] = {
             "collection_id": self.collection_id,
             "doc_ids": self.doc_ids,
             "filenames": self.filenames,
         }
+        if self.filters:
+            d["filters"] = self.filters
+        return d
 
 
 # Which tools each mode may use (§3.3 registry mechanics). survey_collection/draft/
@@ -143,6 +150,11 @@ class ToolRegistry:
                     merged["doc_ids"] = real_ids or None
                     if as_names and not merged.get("filenames"):
                         merged["filenames"] = as_names
+                # G3 Step E: the run's active vault filters are AUTHORITATIVE — fold them
+                # in conjunctively so the model can ADD a narrowing but never DROP the
+                # UI's filter (e.g. "FY2023 only" must hold even if the model omits it).
+                if scope.filters:
+                    merged["filters"] = {**(model_scope.get("filters") or {}), **scope.filters}
                 return search_tool(
                     args.get("query", ""),
                     scope.retrieval_manager,

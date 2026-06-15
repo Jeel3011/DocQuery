@@ -78,6 +78,10 @@ export interface StreamQueryRequest {
   collection_id?: string | null;  // Phase 1
   multi_hop?: boolean | null;     // Phase 4.5: force the sequential multi-hop loop on the agent endpoint
   mode?: string | null;           // A4: agent-core mode ("standard" | "deep") for /query/agentcore/stream
+  // G3 Step E: active vault filter set (doc_type / fiscal_year). EXPLICIT in the request
+  // (never a stale store) → becomes the retriever's CONJUNCTIVE metadata_filter on the
+  // backend (narrows the vault scope, never replaces it).
+  filters?: Record<string, unknown> | null;
 }
 
 // ─── Main streaming function ───────────────────────────────────────────────────
@@ -638,6 +642,9 @@ export interface ReviewGridRequest {
   collection_id: string;
   doc_ids?: string[];
   columns: ReviewGridColumnSpec[];
+  // G3 Step E: same semantics as StreamQueryRequest.filters — narrows the reviewed row
+  // set (doc_type / fiscal_year), null-safe on the backend.
+  filters?: Record<string, unknown> | null;
 }
 
 export interface ReviewGridCallbacks {

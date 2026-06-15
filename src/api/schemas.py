@@ -91,6 +91,11 @@ class QueryRequest(BaseModel):
     # A4 (agent core §3.1): per-request mode for /query/agentcore/stream. None defaults
     # to "standard"; "deep" raises the step/wall/token budget. Ignored by other endpoints.
     mode: Optional[str] = None
+    # G3 Step E: active vault filter set (doc_type / fiscal_year). EXPLICIT in the request
+    # (mirror G2 §9 #1 — never driven by a stale global store). Threaded into the
+    # retriever's metadata_filter CONJUNCTIVELY — it NARROWS the vault scope, never
+    # replaces it. Null/absent → no narrowing (the unfiltered vault).
+    filters: Optional[dict] = None
 
 
 class QueryResponse(BaseModel):
@@ -206,3 +211,6 @@ class ReviewGridRequest(BaseModel):
     collection_id: str
     doc_ids: List[str] = Field(default_factory=list)
     columns: List[GridColumnRequest] = Field(..., min_length=1, max_length=12)
+    # G3 Step E: active vault filter set (doc_type / fiscal_year). Same semantics as
+    # QueryRequest.filters — CONJUNCTIVE narrowing of the review scope, never a replace.
+    filters: Optional[dict] = None

@@ -122,9 +122,15 @@ async def agentcore_query_stream(
     except Exception:
         pass
 
+    # G3 Step D/E: the active vault filter set (doc_type / fiscal_year) is EXPLICIT in the
+    # request (never a stale global store). It pre-narrows the router's candidate set for
+    # a big vault AND becomes the retriever's conjunctive metadata_filter via scope.filters.
+    metadata_filter = getattr(body, "filters", None) or None
+
     filename_filters = _resolve_collection_filters(
         sb, collection_id,
         query=body.question, query_embedding=query_embedding, user_config=user_config,
+        metadata_filter=metadata_filter,
     )
     if not filename_filters:
         def _empty():
@@ -188,6 +194,8 @@ async def agentcore_query_stream(
         db_client=sb,
         filename_by_doc=filename_by_doc,
         question=body.question,
+        # G3 Step E: conjunctive narrowing on top of the doc_id vault scope.
+        filters=metadata_filter,
     )
     budget = budget_for(mode, user_config)
     sys_prompt = system_prompt("v1")

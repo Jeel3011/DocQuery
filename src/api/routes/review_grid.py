@@ -68,13 +68,32 @@ async def review_grid_stream(
     all_doc_ids = sb.get_collection_document_ids(collection_id) or []
     if not all_doc_ids:
         raise HTTPException(status_code=400, detail="The collection has no documents.")
-    docs = sb.client.table("documents").select("id,filename").in_(
+    # G3 Step D/E: pull doc_type / fiscal_year too so an active filter can narrow the
+    # rows reviewed ("review only FY2023 contracts") — the review-grid equivalent of the
+    # router pre-narrow (a cell is locked to one doc, so cross-vault leak isn't the risk;
+    # the filter just picks WHICH docs become rows).
+    docs = sb.client.table("documents").select("id,filename,doc_type,fiscal_year").in_(
         "id", all_doc_ids
     ).eq("user_id", sb.user_id).execute()
+    rows_by_doc = {d["id"]: d for d in (docs.data or [])}
     filename_by_doc = {d["id"]: d["filename"] for d in (docs.data or [])}
 
     # Caller may restrict rows; default = all docs in the collection.
     requested = [d for d in body.doc_ids if d in filename_by_doc] if body.doc_ids else all_doc_ids
+
+    # Active vault filter (doc_type / fiscal_year) narrows the row set, null-safe (a doc
+    # with an unknown filtered value is kept — never guessed away). Skipped if it would
+    # empty the grid, so a too-aggressive filter can't silently produce a 0-row grid.
+    metadata_filter = getattr(body, "filters", None) or None
+    if metadata_filter:
+        from src.components.document_router import _doc_matches_filter
+        narrowed = [d for d in requested
+                    if _doc_matches_filter(rows_by_doc.get(d, {}), metadata_filter)]
+        if narrowed:
+            logger.info("[review-grid] filter %s narrowed rows %d → %d",
+                        metadata_filter, len(requested), len(narrowed))
+            requested = narrowed
+
     if not requested:
         raise HTTPException(status_code=400, detail="None of the requested doc_ids are in this collection.")
 

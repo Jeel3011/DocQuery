@@ -37,6 +37,15 @@ import { EmptyState } from "@/components/ui/EmptyState";
 
 const ease = [0.23, 1, 0.32, 1] as const;
 
+// Filter-chip labels for the G1d doc_type classes (mirror DocMeta's TYPE_META so the chip
+// reads the same as the Category column). Falls back to the raw key if a new class appears.
+const TYPE_LABELS: Record<string, string> = {
+  legal_contract: "Contracts",
+  financial_filing: "Filings",
+  mixed: "Mixed",
+  generic: "Documents",
+};
+
 // Doc-type-aware suggested prompts. Until Step F surfaces a vault-level type, we default
 // to the legal-contract set (DocQuery is law-first); a finance-typed vault swaps these in F.
 const CONTRACT_PROMPTS = [
@@ -81,6 +90,10 @@ export default function VaultWorkspacePage() {
   const [query, setQuery] = useState("");
   const [lastSync, setLastSync] = useState<number | null>(null);
   const [confirmDel, setConfirmDel] = useState<string | null>(null); // doc id pending confirm
+  // G3 Step E: active vault filters (doc_type / fiscal_year). null = no narrowing. These
+  // drive BOTH the client-side table view AND retrieval scope (passed to Ask/Review).
+  const [typeFilter, setTypeFilter] = useState<string | null>(null);
+  const [yearFilter, setYearFilter] = useState<number | null>(null);
   const pollRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const loadVault = useCallback(async () => {
@@ -121,16 +134,37 @@ export default function VaultWorkspacePage() {
     return () => { if (pollRef.current) clearTimeout(pollRef.current); };
   }, [docs, loadDocs]);
 
+  // G3 Step E: the active filter set as the backend's metadata_filter shape
+  // ({doc_type, fiscal_year}). null when no filter is active → no narrowing. This is the
+  // SINGLE source of truth for both the table view and the retrieval scope, so the two
+  // can never disagree.
+  const activeFilters: Record<string, string | number> | null =
+    typeFilter || yearFilter != null
+      ? {
+          ...(typeFilter ? { doc_type: typeFilter } : {}),
+          ...(yearFilter != null ? { fiscal_year: yearFilter } : {}),
+        }
+      : null;
+
+  // The filter set travels to Ask/Review EXPLICITLY in the URL (mirror §9 risk #1 — the
+  // request carries the scope; no stale global store). Encoded as a compact JSON param the
+  // child page reads back and puts on the stream body.
+  const filtersParam = activeFilters
+    ? `&filters=${encodeURIComponent(JSON.stringify(activeFilters))}`
+    : "";
+
   // Submitting the composer opens an Ask conversation scoped to this vault. Step D
   // re-homed Ask under /app/vault/[id]/ask/[cid] — the route [id] is the authoritative
   // scope (§9 risk #1), so the conversation reads collection_id from the URL, not the
-  // store. ?q= auto-submits on mount.
+  // store. ?q= auto-submits on mount; &filters= carries the active vault filter (G3 E).
   async function ask(q: string) {
     if (!token || creating || !q.trim()) return;
     setCreating(true);
     try {
       const c = await createConversation(token, q.slice(0, 50));
-      router.push(`/app/vault/${vaultId}/ask/${c.id}?q=${encodeURIComponent(q)}`);
+      router.push(
+        `/app/vault/${vaultId}/ask/${c.id}?q=${encodeURIComponent(q)}${filtersParam}`
+      );
     } catch {
       toast.error("Failed to start conversation");
       setCreating(false);
@@ -154,9 +188,24 @@ export default function VaultWorkspacePage() {
     }
   }
 
-  const filtered = query.trim()
-    ? docs.filter((d) => d.filename.toLowerCase().includes(query.toLowerCase()))
-    : docs;
+  // Chip option lists, derived from the REAL doc metadata in this vault (so a chip only
+  // appears when at least one doc carries that value — no dead chips).
+  const typeOptions = Array.from(
+    new Set(docs.map((d) => d.doc_type).filter((t): t is NonNullable<typeof t> => !!t))
+  );
+  const yearOptions = Array.from(
+    new Set(docs.map((d) => d.fiscal_year).filter((y): y is number => y != null))
+  ).sort((a, b) => b - a);
+
+  // View filter: filename search AND the active doc_type / fiscal_year chips. Null-safe
+  // for fiscal_year — a doc with an UNKNOWN year is KEPT (we never hide a doc on a value
+  // we couldn't derive; mirrors the backend's null-safe filter).
+  const filtered = docs.filter((d) => {
+    if (query.trim() && !d.filename.toLowerCase().includes(query.toLowerCase())) return false;
+    if (typeFilter && d.doc_type !== typeFilter) return false;
+    if (yearFilter != null && d.fiscal_year != null && d.fiscal_year !== yearFilter) return false;
+    return true;
+  });
   // Processing docs walk the pipeline tracks (the live verification view); settled docs
   // (ready/failed) live in the table below. Both come from the same polled list.
   const processing = filtered.filter((d) => d.status === "processing");
@@ -201,7 +250,13 @@ export default function VaultWorkspacePage() {
             Deep Analysis is the G5 stub (Step G); Draft is the G6 stub. */}
         <div className="flex items-center justify-center gap-2.5 mb-4">
           <button
-            onClick={() => router.push(`/app/vault/${encodeURIComponent(vaultId)}/review`)}
+            onClick={() =>
+              router.push(
+                `/app/vault/${encodeURIComponent(vaultId)}/review${
+                  activeFilters ? `?filters=${encodeURIComponent(JSON.stringify(activeFilters))}` : ""
+                }`
+              )
+            }
             className="flex items-center gap-2 px-4 py-2 rounded-xl text-[13px] font-medium card hover:shadow-[var(--shadow-md)] transition-shadow"
           >
             <Table2 size={14} className="text-[var(--text-muted)]" /> Review table
@@ -278,6 +333,62 @@ export default function VaultWorkspacePage() {
             </button>
           </div>
         </div>
+
+        {/* G3 Step E — vault filter chips. doc_type / fiscal_year, derived from the real
+            doc metadata. Selecting one narrows the table view AND becomes scope.filters on
+            the next Ask/Review stream (so "FY2023 only" actually scopes what the agent
+            searches). Only shown when there's something to filter (≥2 options). */}
+        {(typeOptions.length > 1 || yearOptions.length > 1) && (
+          <div className="flex flex-wrap items-center gap-2 mb-3">
+            <span className="text-[11px] uppercase tracking-wide text-[var(--text-muted)] mr-1">
+              Filter
+            </span>
+            {typeOptions.length > 1 &&
+              typeOptions.map((t) => {
+                const active = typeFilter === t;
+                return (
+                  <button
+                    key={t}
+                    onClick={() => setTypeFilter(active ? null : t)}
+                    className="px-2.5 py-1 rounded-full text-[12px] font-medium transition-colors"
+                    style={{
+                      background: active ? "var(--ink)" : "var(--surface)",
+                      border: "1px solid var(--line)",
+                      color: active ? "var(--surface)" : "var(--ink-2)",
+                    }}
+                  >
+                    {TYPE_LABELS[t] ?? t}
+                  </button>
+                );
+              })}
+            {yearOptions.length > 1 &&
+              yearOptions.map((y) => {
+                const active = yearFilter === y;
+                return (
+                  <button
+                    key={y}
+                    onClick={() => setYearFilter(active ? null : y)}
+                    className="px-2.5 py-1 rounded-full text-[12px] font-medium transition-colors tabular-nums"
+                    style={{
+                      background: active ? "var(--ink)" : "var(--surface)",
+                      border: "1px solid var(--line)",
+                      color: active ? "var(--surface)" : "var(--ink-2)",
+                    }}
+                  >
+                    FY{y}
+                  </button>
+                );
+              })}
+            {activeFilters && (
+              <button
+                onClick={() => { setTypeFilter(null); setYearFilter(null); }}
+                className="px-2 py-1 rounded-full text-[11px] text-[var(--text-muted)] hover:text-[var(--text-primary)] transition-colors"
+              >
+                Clear
+              </button>
+            )}
+          </div>
+        )}
 
         {/* Ingress — slim command bar + full-page drag overlay (the NEW hybrid UX). */}
         <div className="mb-3">

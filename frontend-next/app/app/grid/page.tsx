@@ -95,6 +95,17 @@ function ReviewGridInner({ scopedCollectionId }: ReviewGridProps) {
   // links). Either wins over the first-collection default below.
   const scopedCollection = scopedCollectionId ?? searchParams.get("collection");
   const routeScoped = !!scopedCollectionId; // vault route: hide the picker
+  // G3 Step E: active vault filter set (doc_type / fiscal_year), carried in ?filters=<json>
+  // from the vault page. EXPLICIT in the request (mirror §9 risk #1) → narrows the reviewed
+  // rows on the backend (null-safe). Tolerant of a malformed param → no narrowing.
+  const gridFilters: Record<string, unknown> | null = (() => {
+    const raw = searchParams.get("filters");
+    if (!raw) return null;
+    try {
+      const p = JSON.parse(raw);
+      return p && typeof p === "object" ? p : null;
+    } catch { return null; }
+  })();
   const [collections, setCollections] = useState<CollectionResponse[]>([]);
   const [collectionId, setCollectionId] = useState<string>(scopedCollection ?? "");
   const [docs, setDocs] = useState<DocumentResponse[]>([]);
@@ -159,7 +170,10 @@ function ReviewGridInner({ scopedCollectionId }: ReviewGridProps) {
     abortRef.current = new AbortController();
     await streamReviewGrid(
       token,
-      { title: "Review grid", collection_id: collectionId, columns },
+      {
+        title: "Review grid", collection_id: collectionId, columns,
+        ...(gridFilters ? { filters: gridFilters } : {}),
+      },
       {
         onStart: (s) => setStart(s),
         onCell: (c) => setCells((prev) => ({ ...prev, [ck(c.doc_id, c.column_key)]: c })),
