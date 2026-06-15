@@ -231,6 +231,240 @@ def _build_docx(req: "DocxExportRequest") -> bytes:
     return buf.getvalue()
 
 
+# ── G6.3: tracked-changes .docx for a redline result ────────────────────────────
+#
+# Each RedlineFinding with status="deviation" becomes a section in the .docx:
+#   - The target clause quote (what the contract says) as a struck-through "deleted" run.
+#   - The suggested edit as an underlined "inserted" run.
+#   - The rationale as a comment-style paragraph.
+# Conforming and missing clauses are noted without tracked changes.
+# python-docx supports run-level formatting (bold, underline, strike) — we use those
+# to represent tracked changes visually (Word opens them as a clean redlined document).
+# True OOXML revision marks (w:ins / w:del) would require low-level XML; the
+# formatting approach is lawyer-readable and sufficient for the India mid-market wedge.
+
+class RedlineExportRequest(BaseModel):
+    """A completed redline result to export as a tracked-changes .docx."""
+    title: Optional[str] = "Redline Review"
+    doc_name: Optional[str] = None
+    findings: List[Dict[str, Any]] = []   # list of RedlineFinding-shaped dicts
+
+
+def _build_redline_docx(req: "RedlineExportRequest") -> bytes:
+    """Render a redline result to a tracked-changes .docx.
+
+    Each deviation finding gets a section with: the original clause (struck-through)
+    and the suggested replacement (underlined + bold). Conforming/missing/abstain
+    clauses are recorded as summary lines. No figure is invented; export is dumb
+    plumbing — the agent already grounded the findings.
+    """
+    from docx import Document
+    from docx.shared import Pt, RGBColor
+    from docx.enum.text import WD_COLOR_INDEX
+
+    doc = Document()
+    doc.add_heading(req.title or "Redline Review", level=0)
+    if req.doc_name:
+        p = doc.add_paragraph()
+        p.add_run(f"Document: {req.doc_name}").italic = True
+    doc.add_paragraph()
+
+    deviations = [f for f in req.findings if f.get("status") == "deviation"]
+    conforming = [f for f in req.findings if f.get("status") == "conforming"]
+    missing = [f for f in req.findings if f.get("status") == "missing"]
+    abstained = [f for f in req.findings if f.get("status") == "abstain"]
+
+    # ── Deviations (the main redline content) ──
+    if deviations:
+        doc.add_heading("Deviations", level=1)
+        for f in deviations:
+            doc.add_heading(f.get("clause_topic", "Clause"), level=2)
+
+            # Original clause — struck-through (the "deleted" tracked change)
+            if f.get("target_quote"):
+                p = doc.add_paragraph()
+                p.add_run("Current: ").bold = True
+                r = p.add_run(f["target_quote"])
+                r.font.strike = True
+                r.font.color.rgb = RGBColor(0xC0, 0x00, 0x00)
+
+            # Suggested edit — underlined + green (the "inserted" tracked change)
+            if f.get("suggested_edit"):
+                p = doc.add_paragraph()
+                p.add_run("Suggested: ").bold = True
+                r = p.add_run(f["suggested_edit"])
+                r.underline = True
+                r.font.color.rgb = RGBColor(0x00, 0x70, 0x00)
+
+            # Deviation description
+            if f.get("deviation"):
+                p = doc.add_paragraph()
+                p.add_run("Issue: ").bold = True
+                p.add_run(f["deviation"])
+
+            # Rationale (cites the playbook rule)
+            if f.get("rationale"):
+                p = doc.add_paragraph()
+                p.add_run("Rationale: ").bold = True
+                r = p.add_run(f["rationale"])
+                r.italic = True
+
+            # Firm standard position for reference
+            if f.get("playbook_standard"):
+                p = doc.add_paragraph()
+                p.add_run("Firm standard: ").bold = True
+                r = p.add_run(f["playbook_standard"])
+                r.font.color.rgb = RGBColor(0x60, 0x60, 0x60)
+                r.italic = True
+
+            doc.add_paragraph()
+
+    # ── Conforming clauses (summary only) ──
+    if conforming:
+        doc.add_heading("Conforming Clauses", level=1)
+        for f in conforming:
+            p = doc.add_paragraph(style="List Bullet")
+            p.add_run(f.get("clause_topic", "Clause")).bold = True
+            if f.get("target_quote"):
+                p.add_run(f" — {f['target_quote'][:120]}{'…' if len(f.get('target_quote','')) > 120 else ''}")
+
+    # ── Missing clauses ──
+    if missing:
+        doc.add_heading("Missing Clauses", level=1)
+        for f in missing:
+            p = doc.add_paragraph(style="List Bullet")
+            p.add_run(f.get("clause_topic", "Clause")).bold = True
+            p.add_run(" — clause not found in document")
+            if f.get("playbook_standard"):
+                doc.add_paragraph(f"  Firm standard: {f['playbook_standard'][:200]}")
+
+    # ── Abstained (could not assess) ──
+    if abstained:
+        doc.add_heading("Could Not Assess", level=1)
+        for f in abstained:
+            p = doc.add_paragraph(style="List Bullet")
+            p.add_run(f.get("clause_topic", "Clause")).bold = True
+            if f.get("rationale"):
+                p.add_run(f" — {f['rationale']}")
+
+    buf = io.BytesIO()
+    doc.save(buf)
+    return buf.getvalue()
+
+
+# ── G6.1b: .pdf export of a cited deliverable (fast-follow, fpdf2) ──────────────
+#
+# Same contract as .docx: markdown ALREADY passed the gate; export is dumb plumbing.
+# fpdf2 is already pinned (used by the conversation-PDF endpoint). weasyprint requires
+# native GTK/Pango libs not present on all platforms — fpdf2 is pure-Python, zero
+# new system deps. Citation markers → numbered footnotes (with) or stripped (without).
+
+class PdfExportRequest(BaseModel):
+    """A gated cited deliverable to export as .pdf."""
+    title: Optional[str] = "DocQuery Draft"
+    markdown: str = ""
+    include_citations: bool = True
+
+
+def _build_pdf(req: "PdfExportRequest") -> bytes:
+    """Render gated markdown to a .pdf using fpdf2, preserving the citation contract."""
+    from fpdf import FPDF
+
+    class _PDF(FPDF):
+        def header(self):
+            pass  # suppress default header
+
+    pdf = _PDF()
+    pdf.set_auto_page_break(auto=True, margin=20)
+    pdf.add_page()
+    pdf.set_margins(20, 20, 20)
+
+    endnotes: List[str] = []
+    endnote_index: Dict[str, int] = {}
+
+    def cite_number(marker: str) -> int:
+        if marker not in endnote_index:
+            endnotes.append(marker)
+            endnote_index[marker] = len(endnotes)
+        return endnote_index[marker]
+
+    def _safe(text: str) -> str:
+        return text.encode("latin-1", "replace").decode("latin-1")
+
+    def render_line(text: str, *, bold: bool = False, size: int = 10, indent: int = 0):
+        """Write one text line, lifting citation markers to inline refs."""
+        # Collect segments: plain text or citation markers
+        parts: List = []
+        last = 0
+        for cm in _DOCX_CITE_RE.finditer(text):
+            if cm.start() > last:
+                parts.append(("text", text[last:cm.start()]))
+            if req.include_citations:
+                parts.append(("cite", f"[{cite_number(cm.group(0))}]"))
+            last = cm.end()
+        if last < len(text):
+            parts.append(("text", text[last:]))
+
+        # Strip markdown inline markers from plain segments
+        _inline = re.compile(r"\*\*(.+?)\*\*|`([^`]+)`|(?<!\*)\*(?!\*)(.+?)(?<!\*)\*(?!\*)")
+
+        x0 = pdf.l_margin + indent
+        pdf.set_x(x0)
+        for kind, segment in parts:
+            if kind == "cite":
+                pdf.set_font("Helvetica", "I", size - 2)
+                pdf.write(size * 0.4, _safe(segment))
+                pdf.set_font("Helvetica", "B" if bold else "", size)
+            else:
+                # Flatten inline md
+                clean = _inline.sub(lambda m: (m.group(1) or m.group(2) or m.group(3) or ""), segment)
+                pdf.set_font("Helvetica", "B" if bold else "", size)
+                pdf.write(size * 0.4, _safe(clean))
+
+    # Title
+    pdf.set_font("Helvetica", "B", 16)
+    pdf.cell(0, 10, _safe(req.title or "DocQuery Draft"), ln=True)
+    pdf.ln(2)
+
+    for raw in (req.markdown or "").split("\n"):
+        line = raw.rstrip()
+        if not line.strip():
+            pdf.ln(4)
+            continue
+        h = re.match(r"^(#{1,6})\s+(.*)$", line)
+        if h:
+            depth = len(h.group(1))
+            size = max(10, 15 - depth)
+            pdf.set_font("Helvetica", "B", size)
+            pdf.ln(3)
+            render_line(h.group(2).strip(), bold=True, size=size)
+            pdf.ln(size * 0.5)
+            continue
+        ul = re.match(r"^\s*[-*]\s+(.*)$", line)
+        if ul:
+            render_line("• " + ul.group(1).strip(), indent=4)
+            pdf.ln(5)
+            continue
+        ol = re.match(r"^\s*(\d+)\.\s+(.*)$", line)
+        if ol:
+            render_line(f"{ol.group(1)}. {ol.group(2).strip()}", indent=4)
+            pdf.ln(5)
+            continue
+        render_line(line.strip())
+        pdf.ln(5)
+
+    # Sources section
+    if req.include_citations and endnotes:
+        pdf.ln(4)
+        pdf.set_font("Helvetica", "B", 12)
+        pdf.cell(0, 8, "Sources", ln=True)
+        pdf.set_font("Helvetica", "", 9)
+        for i, marker in enumerate(endnotes, start=1):
+            pdf.multi_cell(0, 5, _safe(f"[{i}] {marker.strip('[]')}"))
+
+    return bytes(pdf.output())
+
+
 def _format_conversation_md(title: str, messages: list) -> str:
     """Format a conversation as Markdown text."""
     lines = []
@@ -344,6 +578,34 @@ def _format_conversation_pdf(title: str, messages: list) -> bytes:
     return pdf.output()
 
 
+@router.post("/export/pdf")
+async def export_draft_pdf(
+    req: PdfExportRequest,
+    sb=Depends(get_current_user),
+):
+    """Export a gated cited deliverable as a .pdf (G6.1b).
+
+    The markdown supplied MUST already have passed the output gate. Same contract as
+    /export/docx: `include_citations` toggles numbered footnotes vs a clean client copy.
+    Uses fpdf2 (pure-Python, already pinned) — no native GTK/Pango system libs required.
+    """
+    try:
+        pdf_bytes = _build_pdf(req)
+    except Exception as exc:
+        logger.warning("PDF export failed: %s", exc)
+        raise HTTPException(status_code=500, detail=f"PDF export failed: {exc}")
+
+    safe_title = "".join(c for c in (req.title or "draft") if c.isalnum() or c in " -_").strip()[:50]
+    filename = f"{safe_title or 'draft'}.pdf"
+    log_audit(sb, "export.draft", "draft", safe_title,
+              {"format": "pdf", "include_citations": req.include_citations})
+    return StreamingResponse(
+        io.BytesIO(pdf_bytes),
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
 @router.get("/conversations/{conversation_id}/export")
 async def export_conversation(
     conversation_id: str,
@@ -443,6 +705,34 @@ async def export_draft_docx(
     filename = f"{safe_title or 'draft'}.docx"
     log_audit(sb, "export.draft", "draft", safe_title,
               {"format": "docx", "include_citations": req.include_citations})
+    return StreamingResponse(
+        io.BytesIO(docx_bytes),
+        media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@router.post("/export/redline-docx")
+async def export_redline_docx(
+    req: RedlineExportRequest,
+    sb=Depends(get_current_user),
+):
+    """Export a redline result as a tracked-changes .docx (G6.3).
+
+    Each deviation finding renders as a clause pair: the original (struck-through, red)
+    and the suggested edit (underlined, green) — the lawyer's redline. Conforming,
+    missing, and abstained clauses are summarised at the end. Export is dumb plumbing:
+    the agent already grounded the findings; no re-gating, no new intelligence here.
+    """
+    try:
+        docx_bytes = _build_redline_docx(req)
+    except Exception as exc:
+        logger.warning("Redline DOCX export failed: %s", exc)
+        raise HTTPException(status_code=500, detail=f"Redline DOCX export failed: {exc}")
+
+    safe_title = "".join(c for c in (req.title or "redline") if c.isalnum() or c in " -_").strip()[:50]
+    filename = f"{safe_title or 'redline'}.docx"
+    log_audit(sb, "export.redline", "redline", safe_title, {"format": "docx"})
     return StreamingResponse(
         io.BytesIO(docx_bytes),
         media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",

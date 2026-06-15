@@ -367,6 +367,83 @@ export async function exportDraftDocx(
   }
 }
 
+export async function exportDraftPdf(
+  token: string,
+  title: string,
+  markdown: string,
+  includeCitations = true
+): Promise<Blob> {
+  try {
+    const res = await makeClient(token).post(
+      `/export/pdf`,
+      { title, markdown, include_citations: includeCitations },
+      { responseType: "blob", timeout: 60_000 }
+    );
+    return res.data;
+  } catch (err) {
+    handleAxiosError(err);
+  }
+}
+
+// ─── Playbook (G6.2) ──────────────────────────────────────────────────────────
+
+export interface PlaybookRow {
+  id: string;
+  user_id: string;
+  collection_id: string | null;
+  clause_topic: string;
+  standard_position: string;
+  fallback_position: string | null;
+  notes: string | null;
+  is_seed: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface PlaybookRowInput {
+  collection_id?: string | null;
+  clause_topic: string;
+  standard_position: string;
+  fallback_position?: string | null;
+  notes?: string | null;
+}
+
+export async function listPlaybooks(token: string, collectionId?: string | null): Promise<PlaybookRow[]> {
+  try {
+    const params = collectionId ? { collection_id: collectionId } : {};
+    const res = await makeClient(token).get(`/playbooks`, { params });
+    return res.data;
+  } catch (err) { handleAxiosError(err); }
+}
+
+export async function createPlaybookRow(token: string, body: PlaybookRowInput): Promise<PlaybookRow> {
+  try {
+    const res = await makeClient(token).post(`/playbooks`, body);
+    return res.data;
+  } catch (err) { handleAxiosError(err); }
+}
+
+export async function updatePlaybookRow(token: string, id: string, body: PlaybookRowInput): Promise<PlaybookRow> {
+  try {
+    const res = await makeClient(token).put(`/playbooks/${id}`, body);
+    return res.data;
+  } catch (err) { handleAxiosError(err); }
+}
+
+export async function deletePlaybookRow(token: string, id: string): Promise<void> {
+  try {
+    await makeClient(token).delete(`/playbooks/${id}`);
+  } catch (err) { handleAxiosError(err); }
+}
+
+export async function seedPlaybook(token: string, collectionId?: string | null): Promise<{ inserted: number; skipped: number }> {
+  try {
+    const params = collectionId ? { collection_id: collectionId } : {};
+    const res = await makeClient(token).post(`/playbooks/seed`, null, { params });
+    return res.data;
+  } catch (err) { handleAxiosError(err); }
+}
+
 // ─── Analytics ────────────────────────────────────────────────────────────────
 
 export interface DailyQueryCount {

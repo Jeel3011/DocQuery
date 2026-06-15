@@ -1,11 +1,11 @@
 "use client";
 
 import { useReducedMotion, motion, AnimatePresence } from "framer-motion";
-import { X, Copy, Download, Code, FileText, Table2, CheckCheck, FileType2 } from "lucide-react";
+import { X, Copy, Download, Code, FileText, Table2, CheckCheck, FileType2, FileImage } from "lucide-react";
 import { useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { exportDraftDocx } from "@/lib/api";
+import { exportDraftDocx, exportDraftPdf } from "@/lib/api";
 
 export type ArtifactKind = "markdown" | "code" | "table" | "text";
 
@@ -37,6 +37,7 @@ export function ArtifactPanel({ artifact, onClose, token }: ArtifactPanelProps) 
   const rm = useReducedMotion();
   const [copied, setCopied] = useState(false);
   const [exportingDocx, setExportingDocx] = useState(false);
+  const [exportingPdf, setExportingPdf] = useState(false);
 
   function copyContent() {
     if (!artifact) return;
@@ -78,6 +79,19 @@ export function ArtifactPanel({ artifact, onClose, token }: ArtifactPanelProps) 
       // export is best-effort; a failure leaves the artifact untouched (markdown still copyable)
     } finally {
       setExportingDocx(false);
+    }
+  }
+
+  async function downloadPdf() {
+    if (!artifact || !token || exportingPdf) return;
+    setExportingPdf(true);
+    try {
+      const blob = await exportDraftPdf(token, artifact.title, artifact.content, true);
+      triggerDownload(blob, `${artifact.title.replace(/\s+/g, "_")}.pdf`);
+    } catch {
+      // best-effort; markdown still copyable on failure
+    } finally {
+      setExportingPdf(false);
     }
   }
 
@@ -134,16 +148,28 @@ export function ArtifactPanel({ artifact, onClose, token }: ArtifactPanelProps) 
                 {copied ? <CheckCheck size={12} className="text-[var(--status-ready)]" /> : <Copy size={12} />}
               </button>
               {canExportDocx && (
-                <button
-                  onClick={downloadDocx}
-                  disabled={exportingDocx}
-                  aria-label="Download as Word (.docx)"
-                  title="Download as Word (.docx)"
-                  className="w-7 h-7 rounded-lg flex items-center justify-center text-[var(--text-muted)] transition-[color,background-color] duration-[120ms] ease-[cubic-bezier(0.23,1,0.32,1)] active:scale-[0.97] disabled:opacity-50"
-                  style={{ border: "1px solid var(--glass-border)", background: "var(--glass-bg)", boxShadow: "var(--skeu-raised)" }}
-                >
-                  <FileType2 size={12} className={exportingDocx ? "animate-pulse" : ""} />
-                </button>
+                <>
+                  <button
+                    onClick={downloadDocx}
+                    disabled={exportingDocx}
+                    aria-label="Download as Word (.docx)"
+                    title="Download as Word (.docx)"
+                    className="w-7 h-7 rounded-lg flex items-center justify-center text-[var(--text-muted)] transition-[color,background-color] duration-[120ms] ease-[cubic-bezier(0.23,1,0.32,1)] active:scale-[0.97] disabled:opacity-50"
+                    style={{ border: "1px solid var(--glass-border)", background: "var(--glass-bg)", boxShadow: "var(--skeu-raised)" }}
+                  >
+                    <FileType2 size={12} className={exportingDocx ? "animate-pulse" : ""} />
+                  </button>
+                  <button
+                    onClick={downloadPdf}
+                    disabled={exportingPdf}
+                    aria-label="Download as PDF"
+                    title="Download as PDF"
+                    className="w-7 h-7 rounded-lg flex items-center justify-center text-[var(--text-muted)] transition-[color,background-color] duration-[120ms] ease-[cubic-bezier(0.23,1,0.32,1)] active:scale-[0.97] disabled:opacity-50"
+                    style={{ border: "1px solid var(--glass-border)", background: "var(--glass-bg)", boxShadow: "var(--skeu-raised)" }}
+                  >
+                    <FileImage size={12} className={exportingPdf ? "animate-pulse" : ""} />
+                  </button>
+                </>
               )}
               <button
                 onClick={downloadContent}

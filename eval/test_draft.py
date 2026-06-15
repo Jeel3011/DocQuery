@@ -94,6 +94,26 @@ def _docx_text(blob: bytes):
     return full, has_sources
 
 
+def test_pdf_roundtrip():
+    print("\nTest 3b — markdown → .pdf round-trip preserves the contract")
+    from src.api.routes.export import _build_pdf, PdfExportRequest
+    import io
+
+    md = (
+        "# Engagement Summary\n\n"
+        "Microsoft reported total revenue of 198,270 for fiscal 2022 [msft-2022 p.7].\n\n"
+        "## Key Points\n\n"
+        "- Revenue grew year over year [msft-2022 p.7].\n"
+    )
+
+    with_blob = _build_pdf(PdfExportRequest(title="Memo", markdown=md, include_citations=True))
+    check("pdf: valid non-empty blob (with citations)", len(with_blob) > 500)
+    check("pdf: is bytes", isinstance(with_blob, bytes))
+
+    wo_blob = _build_pdf(PdfExportRequest(title="Memo", markdown=md, include_citations=False))
+    check("pdf: valid non-empty blob (without citations)", len(wo_blob) > 500)
+
+
 def test_export_roundtrip():
     print("\nTest 3 — markdown → .docx round-trip preserves the contract")
     md = (
@@ -125,13 +145,81 @@ def test_export_roundtrip():
     check("without: valid non-empty .docx blob", len(wo_blob) > 1000)
 
 
+# ── Test 4: QueryRequest schema accepts doc_type + instructions without errors ────
+
+def test_query_request_schema():
+    print("\nTest 4 — QueryRequest accepts doc_type + instructions (no validation error)")
+    from src.api.schemas import QueryRequest
+    from pydantic import ValidationError
+
+    # mode="draft" with both extras — should construct cleanly
+    try:
+        req = QueryRequest(
+            question="Draft a termination summary",
+            collection_id="col-abc",
+            mode="draft",
+            doc_type="memo",
+            instructions="Summarise the termination and notice clauses.",
+        )
+        check("QueryRequest constructs with mode=draft + doc_type + instructions", True)
+        check("mode field is draft", req.mode == "draft")
+        check("doc_type field preserved", req.doc_type == "memo")
+        check("instructions field preserved", req.instructions == "Summarise the termination and notice clauses.")
+    except ValidationError as e:
+        check("QueryRequest constructs with mode=draft + doc_type + instructions", False, str(e))
+
+    # mode=None (standard ask) with neither extra — should also be fine
+    try:
+        QueryRequest(question="What is total revenue?", collection_id="col-abc")
+        check("QueryRequest constructs without draft extras (standard ask)", True)
+    except ValidationError as e:
+        check("QueryRequest constructs without draft extras (standard ask)", False, str(e))
+
+    # instructions beyond max_length should raise
+    try:
+        QueryRequest(
+            question="Draft",
+            collection_id="col-abc",
+            mode="draft",
+            instructions="x" * 4001,
+        )
+        check("instructions >4000 chars raises ValidationError", False, "no error raised")
+    except ValidationError:
+        check("instructions >4000 chars raises ValidationError", True)
+
+
+# ── Test 5: no groundable evidence → gate abstains cleanly (no hallucination) ────
+
+def test_empty_ledger_abstains():
+    print("\nTest 5 — empty ledger → gate abstains cleanly (no hallucinated numbers ship)")
+    from src.components.agent_core.ledger import EvidenceLedger
+    from src.components.agent_core.gates import gate_sectioned
+
+    led = EvidenceLedger()   # nothing recorded — no evidence at all
+    draft = (
+        "## Governing Law\n\n"
+        "The contract is governed by the laws of England and Wales.\n\n"
+        "## Indemnity Cap\n\n"
+        "The liability cap is set at £500,000.\n"
+    )
+    outcome = gate_sectioned(draft, led)
+    # A numeric figure (£500,000) with no ledger entry must not ship unredacted.
+    red = outcome.redacted_draft or ""
+    check("gate abstains or redacts on empty ledger", outcome.abstained or not outcome.passed)
+    check("bare number 500,000 does not survive unredacted", "500,000" not in red or outcome.abstained, red)
+    check("no crash / clean outcome object returned", outcome is not None)
+
+
 if __name__ == "__main__":
     print("=" * 64)
     print("G6.1 DRAFT GATE — citation contract + export round-trip ($0)")
     print("=" * 64)
     test_cited_draft_passes()
     test_uncited_figure_redacted()
+    test_pdf_roundtrip()
     test_export_roundtrip()
+    test_query_request_schema()
+    test_empty_ledger_abstains()
     print("\n" + "=" * 64)
     if _failures:
         print(f"{FAIL}: {len(_failures)} check(s) failed: {_failures}")

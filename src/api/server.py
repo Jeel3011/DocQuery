@@ -21,6 +21,8 @@ from src.api.routes import document_comparison as comparison_routes
 from src.api.routes import audit as audit_routes
 from src.api.routes import agent_core as agent_core_routes  # A4: /query/agentcore/stream (flag-gated)
 from src.api.routes import review_grid as review_grid_routes  # B2: /review-grid/stream (flag-gated)
+from src.api.routes import playbooks as playbooks_routes      # G6.2: playbook CRUD
+from src.api.routes import redline as redline_routes          # G6.3: redline stream + export
 from src.api.middleware import CorrelationIDMiddleware, SecurityHeadersMiddleware
 
 from slowapi.errors import RateLimitExceeded
@@ -129,6 +131,8 @@ app.include_router(comparison_routes.router, prefix=API_PREFIX, tags=["Compariso
 app.include_router(audit_routes.router, prefix=API_PREFIX, tags=["Audit"])  # Phase 6
 app.include_router(agent_core_routes.router, prefix=API_PREFIX, tags=["AgentCore"])  # A4 (flag-gated)
 app.include_router(review_grid_routes.router, prefix=API_PREFIX, tags=["ReviewGrid"])  # B2 (flag-gated)
+app.include_router(playbooks_routes.router,   prefix=API_PREFIX, tags=["Playbooks"])  # G6.2
+app.include_router(redline_routes.router,     prefix=API_PREFIX, tags=["Redline"])    # G6.3
 
 
 # -- Prometheus Metrics --
