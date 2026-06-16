@@ -16,7 +16,7 @@ import { useParams, useRouter } from "next/navigation";
 import { motion, AnimatePresence } from "framer-motion";
 import ReactMarkdown from "react-markdown";
 import {
-  ArrowLeft, Search, Play, X, FileText, CheckCircle2, HelpCircle, MinusCircle,
+  Search, Play, X, FileText, CheckCircle2, HelpCircle, MinusCircle,
   Table2, PenLine, Sparkles, Loader2,
 } from "lucide-react";
 import { toast } from "sonner";
@@ -29,6 +29,7 @@ import {
   streamWorkflowRun, streamWorkflowReport, GridCellEvent, GridStart, GridDone, WorkflowStep,
 } from "@/lib/streaming";
 import { ThinkingStream, ThinkingStep } from "@/components/chat/ThinkingStream";
+import { BackToVault } from "@/components/app/BackToVault";
 
 const ease = [0.23, 1, 0.32, 1] as const;
 const ck = (docId: string, colKey: string) => `${docId}::${colKey}`;
@@ -85,12 +86,7 @@ export default function VaultWorkflowsPage() {
   return (
     <div className="flex-1 overflow-y-auto scrollbar-thin">
       <div className="max-w-6xl mx-auto px-8 py-9">
-        <button
-          onClick={() => router.push(`/app/vault/${vaultId}`)}
-          className="inline-flex items-center gap-1.5 text-[12px] text-[var(--ink-3)] hover:text-[var(--ink)] transition-colors mb-6"
-        >
-          <ArrowLeft size={13} /> Back to vault
-        </button>
+        <BackToVault vaultId={vaultId} className="mb-6" />
 
         {/* Title row */}
         <div className="flex items-end justify-between mb-7">

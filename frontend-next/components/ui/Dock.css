@@ -1,0 +1,79 @@
+/* Dock — adapted from React Bits for DocQuery's B&W law aesthetic.
+   Upstream is dark (#120F17 panel/items, white labels). Here the panel and items use
+   light surface + line tokens, icons are ink/muted, and the hover label is ink-on-surface. */
+
+.dock-outer {
+  margin: 0 0.5rem;
+  display: flex;
+  max-width: 100%;
+  align-items: center;
+  justify-content: center;
+}
+
+.dock-panel {
+  position: relative;
+  bottom: 0;
+  display: flex;
+  align-items: center;
+  width: fit-content;
+  gap: 1.25rem;
+  border-radius: 1rem;
+  background-color: var(--surface-2, var(--surface));
+  border: 1px solid var(--line);
+  box-shadow: var(--shadow-md);
+  padding: 0.5rem 1.25rem;
+}
+
+.dock-item {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 10px;
+  background-color: var(--surface);
+  border: 1px solid var(--line);
+  box-shadow:
+    0 1px 2px rgba(0, 0, 0, 0.04),
+    0 1px 3px rgba(0, 0, 0, 0.06);
+  cursor: pointer;
+  outline: none;
+  transition: background-color 0.2s ease, border-color 0.2s ease;
+}
+
+.dock-item:hover {
+  background-color: var(--ink);
+  border-color: var(--ink);
+}
+
+.dock-item:hover .dock-icon {
+  color: var(--surface);
+}
+
+.dock-item:focus-visible {
+  box-shadow: 0 0 0 2px var(--ink);
+}
+
+.dock-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--ink-2, var(--ink));
+  transition: color 0.2s ease;
+}
+
+.dock-label {
+  position: absolute;
+  top: -1.5rem;
+  left: 50%;
+  width: fit-content;
+  white-space: pre;
+  border-radius: 0.375rem;
+  border: 1px solid var(--line);
+  background-color: var(--ink);
+  padding: 0.125rem 0.5rem;
+  font-size: 0.75rem;
+  font-weight: 500;
+  color: var(--surface);
+  transform: translateX(-50%);
+  box-shadow: var(--shadow-md);
+}

@@ -16,6 +16,7 @@ import { FileEdit, ChevronRight } from "lucide-react";
 import { toast } from "sonner";
 import { useAuthStore } from "@/stores/auth.store";
 import { createConversation } from "@/lib/api";
+import { BackToVault } from "@/components/app/BackToVault";
 
 const ease = [0.23, 1, 0.32, 1] as const;
 
@@ -68,6 +69,8 @@ export default function VaultDraftPage() {
           transition={{ duration: 0.5, ease }}
           className="w-full"
         >
+          <BackToVault vaultId={vaultId} className="mb-6" />
+
           <div className="flex items-center gap-2.5 mb-3">
             <span
               className="w-9 h-9 rounded-xl flex items-center justify-center flex-shrink-0"

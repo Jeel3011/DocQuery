@@ -34,6 +34,7 @@ import { UploadZone } from "@/components/app/UploadZone";
 import { PipelineTrack } from "@/components/app/PipelineTrack";
 import { DocTypeChip, FidelityDot } from "@/components/app/DocMeta";
 import { EmptyState } from "@/components/ui/EmptyState";
+import Dock from "@/components/ui/Dock";
 
 const ease = [0.23, 1, 0.32, 1] as const;
 
@@ -244,41 +245,46 @@ export default function VaultWorkspacePage() {
           </div>
         </div>
 
-        {/* Action row — Review · Deep Analysis · Draft as siblings above the composer
-            (plan §8.1). Ask is the hero composer below; these are the other vault modes.
-            Deep Analysis is LIVE (G5); Draft is the G6 stub. */}
-        <div className="flex items-center justify-center gap-2.5 mb-4">
-          <button
-            onClick={() =>
-              router.push(
-                `/app/vault/${encodeURIComponent(vaultId)}/review${
-                  activeFilters ? `?filters=${encodeURIComponent(JSON.stringify(activeFilters))}` : ""
-                }`
-              )
-            }
-            className="flex items-center gap-2 px-4 py-2 rounded-xl text-[13px] font-medium card hover:shadow-[var(--shadow-md)] transition-shadow"
-          >
-            <Table2 size={14} className="text-[var(--text-muted)]" /> Review table
-          </button>
-          <button
-            onClick={() => router.push(`/app/vault/${encodeURIComponent(vaultId)}/deep`)}
-            className="flex items-center gap-2 px-4 py-2 rounded-xl text-[13px] font-medium card hover:shadow-[var(--shadow-md)] transition-shadow"
-          >
-            <Telescope size={14} className="text-[var(--text-muted)]" /> Deep Analysis
-          </button>
-          <button
-            onClick={() => router.push(`/app/vault/${encodeURIComponent(vaultId)}/draft`)}
-            className="flex items-center gap-2 px-4 py-2 rounded-xl text-[13px] font-medium card hover:shadow-[var(--shadow-md)] transition-shadow"
-          >
-            <FileEdit size={14} className="text-[var(--text-muted)]" /> Draft document
-          </button>
-          {/* G7: Workflow Agents — repeatable cited processes (the clause sweep ships first). */}
-          <button
-            onClick={() => router.push(`/app/vault/${encodeURIComponent(vaultId)}/workflows`)}
-            className="flex items-center gap-2 px-4 py-2 rounded-xl text-[13px] font-medium card hover:shadow-[var(--shadow-md)] transition-shadow"
-          >
-            <Workflow size={14} className="text-[var(--text-muted)]" /> Workflows
-          </button>
+        {/* Action row — Review · Deep Analysis · Draft · Workflows as siblings above the
+            composer (plan §8.1). Ask is the hero composer below; these are the other vault
+            modes. Deep Analysis is LIVE (G5). Dock (React Bits, B&W-themed) magnifies icons
+            on hover and surfaces the label as a tooltip; clicking navigates to each mode. */}
+        <div className="flex items-center justify-center mb-4">
+          <Dock
+            panelHeight={56}
+            baseItemSize={44}
+            magnification={62}
+            distance={140}
+            dockHeight={100}
+            items={[
+              {
+                label: "Review table",
+                icon: <Table2 size={18} />,
+                onClick: () =>
+                  router.push(
+                    `/app/vault/${encodeURIComponent(vaultId)}/review${
+                      activeFilters ? `?filters=${encodeURIComponent(JSON.stringify(activeFilters))}` : ""
+                    }`
+                  ),
+              },
+              {
+                label: "Deep Analysis",
+                icon: <Telescope size={18} />,
+                onClick: () => router.push(`/app/vault/${encodeURIComponent(vaultId)}/deep`),
+              },
+              {
+                label: "Draft document",
+                icon: <FileEdit size={18} />,
+                onClick: () => router.push(`/app/vault/${encodeURIComponent(vaultId)}/draft`),
+              },
+              {
+                // G7: Workflow Agents — repeatable cited processes (the clause sweep ships first).
+                label: "Workflows",
+                icon: <Workflow size={18} />,
+                onClick: () => router.push(`/app/vault/${encodeURIComponent(vaultId)}/workflows`),
+              },
+            ]}
+          />
         </div>
 
         {/* HERO composer — the vault screen IS the ask surface (plan §8.1). */}

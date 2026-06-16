@@ -17,7 +17,7 @@ import { FolderOpen, FileText, Plus } from "lucide-react";
 import { toast } from "sonner";
 import { useAuthStore } from "@/stores/auth.store";
 import { listCollections, createCollection, CollectionResponse } from "@/lib/api";
-import { EmptyState } from "@/components/ui/EmptyState";
+import Folder from "@/components/ui/Folder";
 import {
   Dialog,
   DialogContent,
@@ -129,19 +129,27 @@ export default function VaultHomePage() {
           </div>
         ) : collections.length === 0 ? (
           <div
-            className="rounded-2xl"
+            className="rounded-2xl flex flex-col items-center text-center px-6 py-14"
             style={{ background: "var(--surface)", border: "1px solid var(--line)", boxShadow: "var(--shadow-sm)" }}
           >
-            <EmptyState
-              icon={<FolderOpen size={18} />}
-              title="No vaults yet"
-              description="A vault holds the documents for one matter — a deal, a contract set, or a filing. Create your first to begin."
-              action={
-                <button className="btn-primary flex items-center gap-1.5" onClick={() => setShowNew(true)}>
-                  <Plus size={14} /> Create your first vault
-                </button>
-              }
-            />
+            {/* Animated folder — click to fan it open. Sized with bottom headroom so
+                the papers have room to lift without clipping the heading below. */}
+            <div className="mb-12 mt-2" style={{ height: 100 }}>
+              <Folder color="#0E0E0E" size={1.4} />
+            </div>
+            <h3
+              className="text-[17px] font-semibold"
+              style={{ color: "var(--ink)", fontFamily: "Fraunces, Georgia, serif", letterSpacing: "-0.01em" }}
+            >
+              No vaults yet
+            </h3>
+            <p className="text-[13px] mt-1.5 max-w-[420px]" style={{ color: "var(--ink-3)" }}>
+              A vault holds the documents for one matter — a deal, a contract set, or a filing.
+              Create your first to begin.
+            </p>
+            <button className="btn-primary flex items-center gap-1.5 mt-5" onClick={() => setShowNew(true)}>
+              <Plus size={14} /> Create your first vault
+            </button>
           </div>
         ) : (
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
