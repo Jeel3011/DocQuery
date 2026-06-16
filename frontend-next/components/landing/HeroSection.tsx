@@ -5,6 +5,7 @@ import Link from "next/link";
 import { motion, useReducedMotion } from "framer-motion";
 import { ArrowRight, Sparkles, Shield, Zap, Brain, BookOpen } from "lucide-react";
 import { HeroChatPreview } from "./HeroChatPreview";
+import { Threads } from "@/components/ui/Threads";
 
 const STATS = [
   { value: "0.96", label: "Answer relevancy", sub: "RAGAS eval" },
@@ -45,8 +46,25 @@ export function HeroSection() {
         "--py": "0",
       } as React.CSSProperties}
     >
+      {/* ── Threads — ink-line texture, anchored to the very top of the hero so it's
+          behind the eyebrow + headline first, fading out before the chat preview ── */}
+      {!rm && (
+        <div
+          className="absolute left-0 right-0 top-0 z-0 pointer-events-none"
+          style={{
+            height: "min(120vh, 980px)",
+            opacity: 0.5,
+            maskImage: "linear-gradient(180deg, black 0%, black 60%, transparent 100%)",
+            WebkitMaskImage: "linear-gradient(180deg, black 0%, black 60%, transparent 100%)",
+          }}
+          aria-hidden="true"
+        >
+          <Threads color={[0.07, 0.07, 0.07]} amplitude={1.4} distance={0.3} enableMouseInteraction />
+        </div>
+      )}
+
       {/* ── Centre-aligned copy block ── */}
-      <div className="section-container w-full">
+      <div className="section-container w-full relative z-10">
         <div className="flex flex-col items-center text-center gap-8">
 
           {/* Eyebrow chip */}
@@ -57,7 +75,7 @@ export function HeroSection() {
             className="tag"
           >
             <Brain size={12} />
-            Multi-document Brain · Cited answers in seconds
+            Built for finance & legal · Every answer traced to a cell or clause
           </motion.div>
 
           {/* Headline — Fraunces display editorial */}
@@ -77,7 +95,7 @@ export function HeroSection() {
                 textWrap: "balance",
               } as React.CSSProperties}
             >
-              Ask anything across
+              Built for
             </h1>
             <h1
               className="font-display font-light text-center"
@@ -89,7 +107,7 @@ export function HeroSection() {
                 textWrap: "balance",
               } as React.CSSProperties}
             >
-              <span style={{ color: "var(--accent-taupe)" }}>your</span> documents.
+              <span style={{ color: "var(--accent-taupe)" }}>precision</span> work.
             </h1>
           </motion.div>
 
@@ -106,7 +124,7 @@ export function HeroSection() {
               letterSpacing: "-0.01em",
             }}
           >
-            Upload PDFs, contracts, research papers. DocQuery reads across all of them simultaneously — returning cited, verifiable answers your team can stand behind.
+            Upload contracts, filings, board packs. DocQuery traces every answer back to its clause or cell — and abstains rather than guesses when it can't.
           </motion.p>
 
           {/* CTAs */}
