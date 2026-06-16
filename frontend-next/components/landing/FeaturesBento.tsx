@@ -1,9 +1,10 @@
 "use client";
 
 import React from "react";
-import { motion } from "framer-motion";
 import { Table, Cpu, Activity, Zap, Layers, Workflow } from "lucide-react";
 import { Reveal } from "./Reveal";
+import { ParticleCard } from "../ui/MagicBento";
+import "../ui/MagicBento.css";
 
 type Feature = {
   icon: React.ElementType;
@@ -71,24 +72,18 @@ function FeatureCard({
 }: Feature & { delay: number; large?: boolean }) {
   return (
     <Reveal delay={delay} className="h-full">
-      <div
-        className="group h-full flex flex-col gap-5 rounded-[20px] cursor-default"
+      <ParticleCard
+        className="card--border-glow h-full flex flex-col gap-5 rounded-[20px] cursor-default"
+        glowColor="14, 14, 14"
+        particleCount={6}
+        enableTilt={false}
+        enableMagnetism
+        clickEffect
         style={{
           background: "var(--surface)",
           border: "1px solid var(--line)",
           boxShadow: "var(--shadow-md)",
           padding: large ? "36px" : "28px",
-          transition: "box-shadow 200ms ease, transform 200ms ease",
-        }}
-        onMouseEnter={(e) => {
-          const el = e.currentTarget as HTMLElement;
-          el.style.boxShadow = "var(--shadow-lg)";
-          el.style.transform = "translateY(-2px)";
-        }}
-        onMouseLeave={(e) => {
-          const el = e.currentTarget as HTMLElement;
-          el.style.boxShadow = "var(--shadow-md)";
-          el.style.transform = "translateY(0)";
         }}
       >
         <div
@@ -123,7 +118,7 @@ function FeatureCard({
             {detail}
           </p>
         </div>
-      </div>
+      </ParticleCard>
     </Reveal>
   );
 }

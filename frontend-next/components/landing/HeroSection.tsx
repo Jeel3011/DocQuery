@@ -40,8 +40,9 @@ export function HeroSection() {
       ref={containerRef}
       className="relative flex flex-col items-center justify-center overflow-hidden"
       style={{
-        paddingTop: "clamp(120px, 14vw, 180px)",
-        paddingBottom: "clamp(80px, 10vw, 140px)",
+        minHeight: "100vh",
+        paddingTop: "clamp(100px, 12vw, 160px)",
+        paddingBottom: "clamp(60px, 8vw, 100px)",
         "--px": "0",
         "--py": "0",
       } as React.CSSProperties}
@@ -153,13 +154,33 @@ export function HeroSection() {
           >
             No credit card required · Free tier available · SOC 2 in progress
           </motion.p>
+        </div>
+      </div>
+    </section>
+  );
+}
 
+export function HeroProof() {
+  const rm = useReducedMotion();
+  const ease = [0.23, 1, 0.32, 1] as const;
+
+  return (
+    <section
+      className="relative overflow-hidden"
+      style={{
+        paddingTop: "clamp(40px, 6vw, 72px)",
+        paddingBottom: "clamp(80px, 10vw, 140px)",
+      }}
+    >
+      <div className="section-container w-full relative z-10">
+        <div className="flex flex-col items-center text-center gap-8">
           {/* Stat grid */}
           <motion.div
             initial={{ opacity: 0, y: rm ? 0 : 16 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ duration: 0.55, delay: 0.28, ease }}
-            className="w-full max-w-3xl grid grid-cols-2 md:grid-cols-4 mt-4"
+            whileInView={{ opacity: 1, y: 0 }}
+            viewport={{ once: true, margin: "-80px" }}
+            transition={{ duration: 0.55, ease }}
+            className="w-full max-w-3xl grid grid-cols-2 md:grid-cols-4"
             style={{
               borderTop: "1px solid var(--line)",
               borderLeft: "1px solid var(--line)",
@@ -213,8 +234,9 @@ export function HeroSection() {
         {/* ── Chat preview window ── */}
         <motion.div
           initial={{ opacity: 0, y: rm ? 0 : 32 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: 0.72, delay: 0.38, ease }}
+          whileInView={{ opacity: 1, y: 0 }}
+          viewport={{ once: true, margin: "-80px" }}
+          transition={{ duration: 0.72, ease }}
           className="mt-16 w-full max-w-4xl mx-auto"
         >
           {/* Browser chrome */}

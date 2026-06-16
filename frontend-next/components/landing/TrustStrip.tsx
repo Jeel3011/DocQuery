@@ -2,6 +2,7 @@
 
 import { Shield, BookOpen, Lock, Server, CheckCircle2, ArrowRight, Upload, Search, FileCheck, KeyRound, EyeOff, ScrollText } from "lucide-react";
 import { Reveal } from "./Reveal";
+import { MagicBento } from "../ui/MagicBento";
 import Link from "next/link";
 
 const TRUST_ITEMS = [
@@ -102,51 +103,22 @@ export function TrustStrip() {
             </p>
           </Reveal>
 
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-12">
-            {TRUST_ITEMS.map((item, i) => {
-              const Icon = item.icon;
-              return (
-                <Reveal key={i} delay={i * 0.07}>
-                  <div
-                    className="flex flex-col gap-4 p-7 rounded-[20px] h-full"
-                    style={{
-                      background: "var(--surface)",
-                      border: "1px solid var(--line)",
-                      boxShadow: "var(--shadow-sm)",
-                    }}
-                  >
-                    <div
-                      className="w-10 h-10 rounded-xl flex items-center justify-center shrink-0"
-                      style={{
-                        background: "var(--surface-3)",
-                        border: "1px solid var(--line)",
-                        color: "var(--ink-2)",
-                      }}
-                    >
-                      <Icon size={18} strokeWidth={1.6} />
-                    </div>
-                    <div className="flex flex-col flex-1">
-                      <p
-                        className="font-semibold text-[15px] mb-1.5 leading-snug"
-                        style={{ color: "var(--ink)", letterSpacing: "-0.01em" }}
-                      >
-                        {item.title}
-                      </p>
-                      <p className="text-[13px] leading-relaxed mb-3" style={{ color: "var(--ink-3)" }}>
-                        {item.desc}
-                      </p>
-                      <p
-                        className="text-[12px] leading-relaxed mt-auto pt-3"
-                        style={{ color: "var(--ink-3)", borderTop: "1px solid var(--line)" }}
-                      >
-                        {item.detail}
-                      </p>
-                    </div>
-                  </div>
-                </Reveal>
-              );
-            })}
-          </div>
+          <Reveal className="mb-12">
+            <MagicBento
+              cards={TRUST_ITEMS.map((item) => ({
+                icon: item.icon,
+                title: item.title,
+                description: item.desc,
+                detail: item.detail,
+              }))}
+              enableStars={false}
+              enableSpotlight
+              enableBorderGlow
+              enableMagnetism
+              clickEffect
+              glowColor="14, 14, 14"
+            />
+          </Reveal>
 
           {/* ── Data-flow: how a document is handled, end to end ── */}
           <Reveal className="mb-12">

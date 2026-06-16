@@ -127,7 +127,7 @@ type ThreadsProps = {
   amplitude?: number;
   distance?: number;
   enableMouseInteraction?: boolean;
-} & React.HTMLAttributes<HTMLDivElement>;
+} & Omit<React.HTMLAttributes<HTMLDivElement>, "color">;
 
 export function Threads({
   color = [0.06, 0.06, 0.06],
@@ -159,7 +159,7 @@ export function Threads({
         iResolution: {
           value: new Color(gl.canvas.width, gl.canvas.height, gl.canvas.width / gl.canvas.height),
         },
-        uColor: { value: new Color(...color) },
+        uColor: { value: new Color(color) },
         uAmplitude: { value: amplitude },
         uDistance: { value: distance },
         uMouse: { value: new Float32Array([0.5, 0.5]) },

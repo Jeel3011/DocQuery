@@ -1,0 +1,56 @@
+.bento-grid {
+  position: relative;
+}
+
+.bento-card {
+  will-change: transform;
+}
+
+.card--border-glow {
+  position: relative;
+}
+
+.card--border-glow::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  padding: 1px;
+  background: radial-gradient(
+    240px circle at var(--bento-glow-x, 50%) var(--bento-glow-y, 50%),
+    rgba(var(--bento-glow-color, 14, 14, 14), calc(var(--bento-glow-intensity, 0) * 0.5)) 0%,
+    transparent 70%
+  );
+  pointer-events: none;
+  z-index: 1;
+}
+
+.card--border-glow::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background: radial-gradient(
+    320px circle at var(--bento-glow-x, 50%) var(--bento-glow-y, 50%),
+    rgba(var(--bento-glow-color, 14, 14, 14), calc(var(--bento-glow-intensity, 0) * 0.06)) 0%,
+    transparent 70%
+  );
+  pointer-events: none;
+  z-index: 0;
+  transition: opacity 0.2s ease;
+}
+
+.bento-particle {
+  will-change: transform, opacity;
+}
+
+.bento-global-spotlight {
+  will-change: left, top, opacity;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .card--border-glow::after,
+  .card--border-glow::before {
+    display: none;
+  }
+}
