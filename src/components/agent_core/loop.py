@@ -117,6 +117,7 @@ def run_agent(
     history: Optional[List[Dict[str, Any]]] = None,
     registry=REGISTRY,
     gate_fn: Callable[[str, EvidenceLedger], GateOutcome] = _default_gate,
+    tools: Optional[List[str]] = None,
 ) -> Iterator[Dict[str, Any]]:
     """Drive one agent run, yielding §3.6 events. `model` is injected (live or scripted).
 
@@ -129,7 +130,10 @@ def run_agent(
     import time
 
     ledger = EvidenceLedger()
-    tools = registry.schemas(budget.mode)
+    # G7: a workflow template may restrict the run to its own `tools` subset (validated
+    # against SCHEMAS by the registry); `tools=None` (every other caller) falls back to the
+    # mode map — byte-identical to before.
+    tool_schemas = registry.schemas(budget.mode, tools=tools)
 
     messages: List[Dict[str, Any]] = list(history or [])
     messages.append({"role": "user", "content": question})
@@ -191,11 +195,11 @@ def run_agent(
 
         try:
             try:
-                resp = model.invoke(messages, tools)
+                resp = model.invoke(messages, tool_schemas)
             except Exception as first_exc:  # noqa: BLE001 — one retry for transient API blips
                 logger.warning("[agent_core.loop] model.invoke failed at step %d (retrying once): %s",
                                step, first_exc)
-                resp = model.invoke(messages, tools)
+                resp = model.invoke(messages, tool_schemas)
         except Exception as exc:  # noqa: BLE001 — surfaced as a degrade signal to the caller
             logger.warning("[agent_core.loop] model.invoke failed at step %d: %s", step, exc)
             yield {"type": "gate", "name": "model_error", "pass": False, "detail": str(exc)}

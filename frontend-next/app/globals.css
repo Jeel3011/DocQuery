@@ -671,3 +671,39 @@ body {
 @media (min-width: 768px) {
   .sidebar-mobile-toggle { display: none; }
 }
+
+/* ── Workflow deliverable prose (G7) — monochrome, clean spacing for the streamed
+   Draft/Output markdown. Minimal: headings, lists, paragraphs, inline code. ───────── */
+.prose-wf h1, .prose-wf h2, .prose-wf h3 {
+  font-family: Fraunces, Georgia, serif;
+  color: var(--ink);
+  font-weight: 500;
+  letter-spacing: -0.02em;
+  margin: 1.1em 0 0.45em;
+  line-height: 1.25;
+}
+.prose-wf h1 { font-size: 1.35em; }
+.prose-wf h2 { font-size: 1.15em; }
+.prose-wf h3 { font-size: 1.02em; }
+.prose-wf p { margin: 0.5em 0; }
+.prose-wf ul, .prose-wf ol { margin: 0.5em 0; padding-left: 1.25em; }
+.prose-wf li { margin: 0.22em 0; }
+.prose-wf ul { list-style: disc; }
+.prose-wf ol { list-style: decimal; }
+.prose-wf strong { color: var(--ink); font-weight: 600; }
+.prose-wf em { color: var(--ink-2); }
+.prose-wf code {
+  background: var(--surface-3);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  padding: 0.08em 0.34em;
+  font-size: 0.9em;
+}
+.prose-wf a { color: var(--ink); text-decoration: underline; text-underline-offset: 2px; }
+.prose-wf blockquote {
+  border-left: 2px solid var(--line-2);
+  padding-left: 0.85em;
+  color: var(--ink-2);
+  margin: 0.6em 0;
+}
+.prose-wf > :first-child { margin-top: 0; }

@@ -21,7 +21,7 @@ import { useParams, useRouter } from "next/navigation";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   ArrowLeft, FolderOpen, Table2, FileEdit, FileText, CheckCircle, AlertCircle,
-  RefreshCw, Search, Trash2, Telescope,
+  RefreshCw, Search, Trash2, Telescope, Workflow,
 } from "lucide-react";
 import { toast } from "sonner";
 import { useAuthStore } from "@/stores/auth.store";
@@ -271,6 +271,13 @@ export default function VaultWorkspacePage() {
             className="flex items-center gap-2 px-4 py-2 rounded-xl text-[13px] font-medium card hover:shadow-[var(--shadow-md)] transition-shadow"
           >
             <FileEdit size={14} className="text-[var(--text-muted)]" /> Draft document
+          </button>
+          {/* G7: Workflow Agents — repeatable cited processes (the clause sweep ships first). */}
+          <button
+            onClick={() => router.push(`/app/vault/${encodeURIComponent(vaultId)}/workflows`)}
+            className="flex items-center gap-2 px-4 py-2 rounded-xl text-[13px] font-medium card hover:shadow-[var(--shadow-md)] transition-shadow"
+          >
+            <Workflow size={14} className="text-[var(--text-muted)]" /> Workflows
           </button>
         </div>
 

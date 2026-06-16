@@ -743,3 +743,241 @@ export async function streamReviewGrid(
     reader.releaseLock();
   }
 }
+
+// ─── Workflows (Phase G7) — POST /api/v1/workflows/{id}/run ─────────────────────
+// A workflow run reuses the EXISTING engine, so it reuses the EXISTING event shapes:
+//  · GRID  (Review) → grid_start → cell* → grid_done (streamWorkflowRun, below)
+//  · REPORT (Draft) / OUTPUT (Output) → the agent-core token/sources/step/gate events
+//    (streamWorkflowReport, below) — a cited memo or freeform deliverable, lands in the
+//    answer/artifact surface. No new renderer; both reuse what Ask/Review already render.
+
+export interface WorkflowRunBody {
+  collection_id: string;
+  params?: Record<string, unknown>;
+  doc_ids?: string[];
+  filters?: Record<string, unknown> | null;
+  conversation_id?: string | null;
+}
+
+export async function streamWorkflowRun(
+  token: string,
+  templateId: string,
+  body: WorkflowRunBody,
+  callbacks: ReviewGridCallbacks,   // grid-shape templates emit the review-grid events
+  signal?: AbortSignal
+): Promise<void> {
+  let response: Response;
+  try {
+    response = await fetch(`${API_BASE}/api/v1/workflows/${encodeURIComponent(templateId)}/run`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "application/json",
+        Accept: "text/event-stream",
+      },
+      body: JSON.stringify(body),
+      signal,
+    });
+  } catch (err) {
+    if ((err as Error).name === "AbortError") return;
+    callbacks.onError("Network error — could not connect to server.");
+    return;
+  }
+
+  if (!response.ok) {
+    const text = await response.text().catch(() => "Unknown error");
+    if (response.status === 404) {
+      callbacks.onError("Workflows are unavailable (agent core is off).");
+      return;
+    }
+    callbacks.onError(`Server error ${response.status}: ${text}`);
+    return;
+  }
+  if (!response.body) {
+    callbacks.onError("No response body — streaming not supported.");
+    return;
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split("\n");
+      buffer = lines.pop() ?? "";
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (!trimmed || !trimmed.startsWith("data: ")) continue;
+        const dataStr = trimmed.slice(6);
+        if (dataStr === "[DONE]") return;
+        try {
+          const ev = JSON.parse(dataStr) as Record<string, unknown>;
+          switch (ev.type) {
+            case "grid_start":
+              callbacks.onStart?.(ev as unknown as GridStart);
+              break;
+            case "cell":
+              callbacks.onCell(ev as unknown as GridCellEvent);
+              break;
+            case "grid_done":
+              callbacks.onDone(ev as unknown as GridDone);
+              break;
+          }
+        } catch {
+          console.warn("[workflow] malformed SSE line:", dataStr);
+        }
+      }
+    }
+  } catch (err) {
+    if ((err as Error).name !== "AbortError") {
+      callbacks.onError("Stream interrupted. Please try again.");
+    }
+  } finally {
+    reader.releaseLock();
+  }
+}
+
+// REPORT (Draft) / OUTPUT (Output) workflows stream the agent-core events. This helper
+// turns the raw loop events into a LIVE ACTIVITY TIMELINE (the same shape ThinkingStream
+// renders on the Ask screen): each tool_call → an active step ("Searching the vault"),
+// each tool_result → that step completes with a detail/chips, the gate → "Verifying",
+// then the deliverable streams in. The run drawer shows the agent WORKING, not a spinner.
+export interface WorkflowStep {
+  id: string;
+  kind: "think" | "search" | "read" | "compute" | "verify";
+  label: string;        // "Searching the vault", "Reading goog-2023", "Verifying citations"
+  detail?: string;      // the args/result summary
+  status: "active" | "done" | "failed";
+}
+export interface WorkflowReportCallbacks {
+  onStep?: (step: WorkflowStep) => void; // a structured live step (new or status update)
+  onToken: (chunk: string) => void;      // the deliverable streams in
+  onSources?: (sources: SourceInfo[]) => void;
+  onGate?: (passed: boolean, detail: string) => void;
+  onDone: () => void;
+  onError: (message: string) => void;
+}
+
+// Friendly label + kind for a tool name (the agent's verbs, Harvey-style).
+function _toolStep(name: string): { kind: WorkflowStep["kind"]; label: string } {
+  switch (name) {
+    case "search_vault": return { kind: "search", label: "Searching the vault" };
+    case "read_document": return { kind: "read", label: "Reading the document" };
+    case "table_lookup": return { kind: "compute", label: "Looking up a figure" };
+    case "compute": return { kind: "compute", label: "Computing from the source" };
+    case "list_metrics": return { kind: "compute", label: "Listing the document's metrics" };
+    case "survey_collection": return { kind: "search", label: "Surveying the vault" };
+    default: return { kind: "think", label: `Using ${name}` };
+  }
+}
+
+export async function streamWorkflowReport(
+  token: string,
+  templateId: string,
+  body: WorkflowRunBody,
+  callbacks: WorkflowReportCallbacks,
+  signal?: AbortSignal
+): Promise<void> {
+  let response: Response;
+  try {
+    response = await fetch(`${API_BASE}/api/v1/workflows/${encodeURIComponent(templateId)}/run`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "application/json",
+        Accept: "text/event-stream",
+      },
+      body: JSON.stringify(body),
+      signal,
+    });
+  } catch (err) {
+    if ((err as Error).name === "AbortError") return;
+    callbacks.onError("Network error — could not connect to server.");
+    return;
+  }
+
+  if (!response.ok) {
+    const text = await response.text().catch(() => "Unknown error");
+    if (response.status === 404) { callbacks.onError("Workflows are unavailable (agent core is off)."); return; }
+    callbacks.onError(`Server error ${response.status}: ${text}`);
+    return;
+  }
+  if (!response.body) { callbacks.onError("No response body — streaming not supported."); return; }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let stepN = 0;  // increments per agent_step so a tool_call/tool_result share a step id
+
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split("\n");
+      buffer = lines.pop() ?? "";
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (!trimmed || !trimmed.startsWith("data: ")) continue;
+        const dataStr = trimmed.slice(6);
+        if (dataStr === "[DONE]") { callbacks.onDone(); return; }
+        try {
+          const ev = JSON.parse(dataStr) as Record<string, unknown>;
+          // one step id per agent step so a tool_call → its tool_result update the SAME row
+          const sid = `s${stepN}`;
+          switch (ev.type) {
+            case "token":
+              callbacks.onToken(String(ev.content ?? ""));
+              break;
+            case "sources":
+              callbacks.onSources?.(((ev.sources as SourceInfo[]) ?? []));
+              break;
+            case "agent_step":
+              stepN += 1;
+              break;
+            case "tool_call": {
+              const t = _toolStep(String(ev.name ?? ""));
+              callbacks.onStep?.({
+                id: `${sid}-${String(ev.name)}`, kind: t.kind, label: t.label,
+                detail: String(ev.args_summary ?? "") || undefined, status: "active",
+              });
+              break;
+            }
+            case "tool_result": {
+              const t = _toolStep(String(ev.name ?? ""));
+              const np = Number(ev.n_provenance ?? 0);
+              callbacks.onStep?.({
+                id: `${sid}-${String(ev.name)}`, kind: t.kind, label: t.label,
+                detail: (String(ev.summary ?? "") || (np ? `${np} source${np === 1 ? "" : "s"}` : undefined)),
+                status: ev.ok === false ? "failed" : "done",
+              });
+              break;
+            }
+            case "gate":
+              if (ev.name === "output") {
+                callbacks.onStep?.({
+                  id: "gate", kind: "verify", label: "Verifying citations",
+                  detail: String(ev.detail ?? ""), status: ev.pass ? "done" : "failed",
+                });
+                callbacks.onGate?.(!!ev.pass, String(ev.detail ?? ""));
+              }
+              break;
+          }
+        } catch {
+          console.warn("[workflow-report] malformed SSE line:", dataStr);
+        }
+      }
+    }
+    callbacks.onDone();
+  } catch (err) {
+    if ((err as Error).name !== "AbortError") {
+      callbacks.onError("Stream interrupted. Please try again.");
+    }
+  } finally {
+    reader.releaseLock();
+  }
+}

@@ -607,3 +607,39 @@ export async function updatePreferredName(
     handleAxiosError(err);
   }
 }
+
+// ─── Workflows (Phase G7) ───────────────────────────────────────────────────────
+// A workflow is an authored template the agent runs over a vault. The gallery lists
+// cards (params_schema → the run form); the RUN is a stream (see streamWorkflowRun in
+// lib/streaming.ts). Flag-gated on the backend (USE_AGENT_CORE) — a 404 means it's off.
+
+export interface WorkflowParamSpec {
+  name: string;
+  label: string;
+  type: string;             // "text" | "textarea" | "doc_multiselect" | "multiselect"
+  required?: boolean;
+  help?: string;
+  options?: string[];       // for a multiselect
+}
+
+export interface WorkflowCard {
+  id: string;
+  title: string;
+  practice_area: string;    // "Litigation" | "Transactional" | "Financial services" | "Compliance (India)" | "Cross-cutting"
+  description: string;
+  shape: string;            // "grid" | "report" | "output"
+  output_type: string;      // the Harvey tag: "Review" | "Draft" | "Output"
+  step_count: number;
+  params_schema: WorkflowParamSpec[];
+}
+
+export async function listWorkflows(token: string): Promise<WorkflowCard[]> {
+  try {
+    const res = await makeClient(token).get<{ templates: WorkflowCard[] }>(`/workflows`);
+    return res.data.templates ?? [];
+  } catch (err) {
+    // Flag off ⇒ 404 (the gallery doesn't exist). Treat as "no workflows", not an error.
+    if ((err as AxiosError)?.response?.status === 404) return [];
+    handleAxiosError(err);
+  }
+}

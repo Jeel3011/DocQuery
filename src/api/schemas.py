@@ -219,3 +219,26 @@ class ReviewGridRequest(BaseModel):
     # G3 Step E: active vault filter set (doc_type / fiscal_year). Same semantics as
     # QueryRequest.filters — CONJUNCTIVE narrowing of the review scope, never a replace.
     filters: Optional[dict] = None
+
+
+# ─────────────────────────────────────────
+# WORKFLOWS (Phase G7) — a template run over a vault
+# ─────────────────────────────────────────
+class WorkflowRunRequest(BaseModel):
+    """Run an authored workflow template over a vault (collection).
+
+    The template (resolved by `template_id` from the server-side registry) supplies the
+    overlay / tool subset / columns / artifact shape; the request supplies only the SCOPE
+    (collection + optional doc subset + filters) and the form `params` the template folds
+    into its run. A report-shape template streams the agent-core events; a grid-shape one
+    streams the review-grid events — both on the SAME engine, gated identically.
+    """
+    collection_id: str
+    # The form values for the template's params_schema (text / multiselect / doc-picker…).
+    params: dict = Field(default_factory=dict)
+    # Optional row restriction for a grid-shape (fan-out) template; empty → all vault docs.
+    doc_ids: List[str] = Field(default_factory=list)
+    # G3 Step E: active vault filter set — CONJUNCTIVE narrowing of the run scope.
+    filters: Optional[dict] = None
+    # Optional conversation id so a report-shape run persists like an Ask answer.
+    conversation_id: Optional[str] = None

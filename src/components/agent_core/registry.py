@@ -86,12 +86,23 @@ _MODE_TOOLS = {
 class ToolRegistry:
     """Schemas + dispatch. One instance per process is fine (stateless besides config)."""
 
-    def schemas(self, mode: str) -> List[Dict[str, Any]]:
-        """The tool schemas exposed for `mode`, in the model's native tool shape."""
-        names = _MODE_TOOLS.get(mode, _MODE_TOOLS["standard"])
+    def schemas(self, mode: str, *, tools: Optional[List[str]] = None) -> List[Dict[str, Any]]:
+        """The tool schemas exposed for a run, in the model's native tool shape.
+
+        G7: a workflow template names its OWN `tool_subset` — when `tools` is given it is
+        used DIRECTLY (validated against SCHEMAS — an unknown name is dropped, never
+        offered), so a template restricts the model to exactly its subset without a new
+        mode in `_MODE_TOOLS`. When `tools` is None (every existing caller), it falls back
+        to the mode map and is byte-identical to before. Purely additive."""
+        names = self.names(mode, tools=tools)
         return [SCHEMAS[n] for n in names if n in SCHEMAS]
 
-    def names(self, mode: str) -> List[str]:
+    def names(self, mode: str, *, tools: Optional[List[str]] = None) -> List[str]:
+        """The tool NAMES for a run. `tools` (a workflow's subset) takes precedence, kept
+        only where the name is a real registered tool (validated against SCHEMAS); else the
+        `_MODE_TOOLS[mode]` map. Additive — `tools=None` is the old behavior."""
+        if tools is not None:
+            return [n for n in tools if n in SCHEMAS]
         return list(_MODE_TOOLS.get(mode, _MODE_TOOLS["standard"]))
 
     def execute(self, call: ToolCall, scope: RunScope) -> Dict[str, Any]:
