@@ -3,8 +3,6 @@
 import React from "react";
 import { Table, Cpu, Activity, Zap, Layers, Workflow } from "lucide-react";
 import { Reveal } from "./Reveal";
-import { ParticleCard } from "../ui/MagicBento";
-import "../ui/MagicBento.css";
 
 type Feature = {
   icon: React.ElementType;
@@ -72,13 +70,8 @@ function FeatureCard({
 }: Feature & { delay: number; large?: boolean }) {
   return (
     <Reveal delay={delay} className="h-full">
-      <ParticleCard
-        className="card--border-glow h-full flex flex-col gap-5 rounded-[20px] cursor-default"
-        glowColor="14, 14, 14"
-        particleCount={6}
-        enableTilt={false}
-        enableMagnetism
-        clickEffect
+      <div
+        className="h-full flex flex-col gap-5 rounded-[20px]"
         style={{
           background: "var(--surface)",
           border: "1px solid var(--line)",
@@ -118,7 +111,7 @@ function FeatureCard({
             {detail}
           </p>
         </div>
-      </ParticleCard>
+      </div>
     </Reveal>
   );
 }

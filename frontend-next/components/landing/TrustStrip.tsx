@@ -2,7 +2,6 @@
 
 import { Shield, BookOpen, Lock, Server, CheckCircle2, ArrowRight, Upload, Search, FileCheck, KeyRound, EyeOff, ScrollText } from "lucide-react";
 import { Reveal } from "./Reveal";
-import { MagicBento } from "../ui/MagicBento";
 import Link from "next/link";
 
 const TRUST_ITEMS = [
@@ -104,20 +103,34 @@ export function TrustStrip() {
           </Reveal>
 
           <Reveal className="mb-12">
-            <MagicBento
-              cards={TRUST_ITEMS.map((item) => ({
-                icon: item.icon,
-                title: item.title,
-                description: item.desc,
-                detail: item.detail,
-              }))}
-              enableStars={false}
-              enableSpotlight
-              enableBorderGlow
-              enableMagnetism
-              clickEffect
-              glowColor="14, 14, 14"
-            />
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-5">
+              {TRUST_ITEMS.map((item, i) => {
+                const Icon = item.icon;
+                return (
+                  <div
+                    key={i}
+                    className="h-full flex flex-col gap-4 rounded-[20px] p-7"
+                    style={{ background: "var(--surface)", border: "1px solid var(--line)", boxShadow: "var(--shadow-sm)" }}
+                  >
+                    <div
+                      className="w-10 h-10 rounded-xl flex items-center justify-center shrink-0"
+                      style={{ background: "var(--ink)", color: "var(--on-ink)" }}
+                    >
+                      <Icon size={17} strokeWidth={1.7} />
+                    </div>
+                    <h3 className="font-semibold text-[15px]" style={{ color: "var(--ink)", letterSpacing: "-0.01em" }}>
+                      {item.title}
+                    </h3>
+                    <p className="text-[13px] leading-relaxed" style={{ color: "var(--ink-2)" }}>
+                      {item.desc}
+                    </p>
+                    <p className="text-[12px] leading-relaxed mt-auto pt-3" style={{ color: "var(--ink-3)", borderTop: "1px solid var(--line)" }}>
+                      {item.detail}
+                    </p>
+                  </div>
+                );
+              })}
+            </div>
           </Reveal>
 
           {/* ── Data-flow: how a document is handled, end to end ── */}
