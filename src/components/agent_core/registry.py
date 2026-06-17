@@ -21,6 +21,7 @@ from .tools import (
     compute as compute_tool,
     list_metrics as metrics_tool,
     read_document as read_tool,
+    search_knowledge as knowledge_tool,
     search_vault as search_tool,
     survey_collection as survey_tool,
     table_lookup as table_tool,
@@ -36,6 +37,11 @@ class RunScope:
     filenames: List[str] = field(default_factory=list)
     grids: List[Any] = field(default_factory=list)        # preloaded analyst.Grid for this scope
     retrieval_manager: Any = None                          # live RetrievalManager (search_vault)
+    # G8: a RetrievalManager scoped to the shared KB namespace (`kb_in`). Present ONLY
+    # when USE_KNOWLEDGE is on AND the route threads it — its presence is what makes
+    # `search_knowledge` offered (loop.py gates the schema on it) and executable. None
+    # ⇒ the tool is never offered ⇒ byte-identical to pre-G8.
+    kb_retrieval_manager: Any = None                       # live KB RetrievalManager (search_knowledge)
     db_client: Any = None                                  # live SupabaseClient (read_document)
     filename_by_doc: Dict[str, str] = field(default_factory=dict)
     question: Optional[str] = None                         # the run's question (grid relevance ranking)
@@ -47,6 +53,12 @@ class RunScope:
     # only). None ⇒ survey_collection returns an error envelope (never raises); the other
     # tools never read it.
     config: Any = None
+    # G8.7: the knowledge-source chips' SERVER-SIDE gate on the KB. When a chip narrows the
+    # legal sources (e.g. "Case law" off), the route sets the ALLOWED instrument types here;
+    # `search_knowledge` dispatch INTERSECTS the model's requested instrument_type with this
+    # allow-list, so the agent physically cannot retrieve a source the user turned off — the
+    # chip gates the backend, not just the UI. None ⇒ no restriction (all in-scope types).
+    kb_instrument_types: Optional[List[str]] = None
 
     def scope_dict(self) -> Dict[str, Any]:
         d: Dict[str, Any] = {
@@ -59,14 +71,22 @@ class RunScope:
         return d
 
 
-# Which tools each mode may use (§3.3 registry mechanics). draft/knowledge tools arrive
-# in later phases; survey_collection (G5) is the deep-mode breadth tool only.
+# G8: `search_knowledge` (the legal Knowledge Base) is allowed in these modes — but only
+# OFFERED when the run threads a KB retrieval manager (loop.py passes
+# include_knowledge=scope.kb_retrieval_manager is not None). It is listed centrally so the
+# allow-set is in one place; `names(...)` strips it when knowledge is off.
+_KNOWLEDGE_MODES = frozenset({"standard", "deep", "grid", "draft"})
+
+# Which tools each mode may use (§3.3 registry mechanics). survey_collection (G5) is the
+# deep-mode breadth tool only; search_knowledge (G8) is in _KNOWLEDGE_MODES, gated on.
 _MODE_TOOLS = {
-    "standard": ["search_vault", "read_document", "list_metrics", "table_lookup", "compute"],
+    "standard": ["search_vault", "read_document", "list_metrics", "table_lookup", "compute",
+                 "search_knowledge"],
     # G5: deep mode adds `survey_collection` — the broad whole-vault pass it opens with
     # before drilling. It is deliberately ABSENT from standard mode (breadth is the long
     # run's tool; a standard answer searches narrowly).
-    "deep": ["survey_collection", "search_vault", "read_document", "list_metrics", "table_lookup", "compute"],
+    "deep": ["survey_collection", "search_vault", "read_document", "list_metrics",
+             "table_lookup", "compute", "search_knowledge"],
     "fast": [],  # fast mode does not loop / call tools
     # Review-grid cell (B2): the run is locked to ONE document via RunScope, so
     # `search_vault` cannot leak across docs — and a PROSE document (a contract) needs
@@ -74,36 +94,52 @@ _MODE_TOOLS = {
     # then reads. (Without it, a contract grid starved on table-only preload and abstained
     # every cell — the finance-origin bug, fixed 2026-06-12.) Keeps read/compute for the
     # numeric columns that share the grid.
-    "grid": ["search_vault", "read_document", "list_metrics", "table_lookup", "compute"],
+    "grid": ["search_vault", "read_document", "list_metrics", "table_lookup", "compute",
+             "search_knowledge"],
     # G6.1: drafting is the SAME engine + the SAME gate — it only changes the shape of the
     # deliverable (a cited memo/summary/section). It needs to GATHER evidence, not a new
     # capability, so it gets the standard toolset; the draft prompt overlay (prompt.py)
     # supplies the deliverable shape. Recommended shape (a): prompt-overlay, no new tool.
-    "draft": ["search_vault", "read_document", "list_metrics", "table_lookup", "compute"],
+    "draft": ["search_vault", "read_document", "list_metrics", "table_lookup", "compute",
+              "search_knowledge"],
 }
 
 
 class ToolRegistry:
     """Schemas + dispatch. One instance per process is fine (stateless besides config)."""
 
-    def schemas(self, mode: str, *, tools: Optional[List[str]] = None) -> List[Dict[str, Any]]:
+    def schemas(self, mode: str, *, tools: Optional[List[str]] = None,
+                include_knowledge: bool = False) -> List[Dict[str, Any]]:
         """The tool schemas exposed for a run, in the model's native tool shape.
 
         G7: a workflow template names its OWN `tool_subset` — when `tools` is given it is
         used DIRECTLY (validated against SCHEMAS — an unknown name is dropped, never
         offered), so a template restricts the model to exactly its subset without a new
         mode in `_MODE_TOOLS`. When `tools` is None (every existing caller), it falls back
-        to the mode map and is byte-identical to before. Purely additive."""
-        names = self.names(mode, tools=tools)
+        to the mode map and is byte-identical to before. Purely additive.
+
+        G8: `include_knowledge` (default False — the byte-identical default) controls
+        whether `search_knowledge` is OFFERED. The loop passes
+        `include_knowledge=scope.kb_retrieval_manager is not None`, so the legal KB tool
+        appears only when USE_KNOWLEDGE is on AND a KB manager was threaded."""
+        names = self.names(mode, tools=tools, include_knowledge=include_knowledge)
         return [SCHEMAS[n] for n in names if n in SCHEMAS]
 
-    def names(self, mode: str, *, tools: Optional[List[str]] = None) -> List[str]:
+    def names(self, mode: str, *, tools: Optional[List[str]] = None,
+              include_knowledge: bool = False) -> List[str]:
         """The tool NAMES for a run. `tools` (a workflow's subset) takes precedence, kept
         only where the name is a real registered tool (validated against SCHEMAS); else the
-        `_MODE_TOOLS[mode]` map. Additive — `tools=None` is the old behavior."""
+        `_MODE_TOOLS[mode]` map. Additive — `tools=None` is the old behavior.
+
+        G8: unless `include_knowledge` is True, `search_knowledge` is stripped from the
+        result — so the default (every existing caller) is byte-identical to pre-G8."""
         if tools is not None:
-            return [n for n in tools if n in SCHEMAS]
-        return list(_MODE_TOOLS.get(mode, _MODE_TOOLS["standard"]))
+            out = [n for n in tools if n in SCHEMAS]
+        else:
+            out = list(_MODE_TOOLS.get(mode, _MODE_TOOLS["standard"]))
+        if not include_knowledge:
+            out = [n for n in out if n != "search_knowledge"]
+        return out
 
     def execute(self, call: ToolCall, scope: RunScope) -> Dict[str, Any]:
         """Dispatch one ToolCall to its adapter with scope-injected deps. Never raises."""
@@ -145,6 +181,25 @@ class ToolRegistry:
                     # Live (2026-06-11) the model read the right doc but compute
                     # couldn't see it — "document not in scope".
                     scope_grids=scope.grids,
+                )
+
+            if name == "search_knowledge":
+                # G8: the legal Knowledge Base hand. Threads the KB-scoped retrieval
+                # manager (a different namespace from the user vault). Absent ⇒ the
+                # adapter returns an error envelope (it never raises), but in practice
+                # the tool isn't even offered unless the manager is present (loop gating).
+                return knowledge_tool(
+                    args.get("query", "") or scope.question or "",
+                    scope.kb_retrieval_manager,
+                    jurisdiction=args.get("jurisdiction", "IN") or "IN",
+                    source=args.get("source"),
+                    instrument_type=args.get("instrument_type"),
+                    as_of=args.get("as_of"),
+                    k=args.get("k", 8),
+                    # G8.7: the chips' server-side allow-list. The tool drops any retrieved
+                    # span whose instrument_type isn't allowed — so "Case law off" means
+                    # judgments are unreachable even if the model asks for them.
+                    allowed_instrument_types=scope.kb_instrument_types,
                 )
 
             if name == "survey_collection":

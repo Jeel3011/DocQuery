@@ -35,7 +35,21 @@ interface ChatInputProps {
   vaultName?: string | null;
   onChooseVault?: () => void;
   centered?: boolean;
+  // G8.7: knowledge-source chips. `sources` is the set currently enabled (a subset of
+  // {"vault","statutes","caselaw"}); toggling one flips whether the agent may use + cite
+  // that authority. Only meaningful in Agent mode (the only mode that calls the tools).
+  // Absent ⇒ chips not rendered (no toggle wired) — byte-identical.
+  sources?: string[];
+  onToggleSource?: (key: string) => void;
 }
+
+// The three knowledge sources the agent can draw on. "Web" is intentionally absent —
+// agent-core has no web tool, so we don't ship a dead toggle (matches the backend).
+const SOURCE_CHIPS: { key: string; label: string }[] = [
+  { key: "vault", label: "This vault" },
+  { key: "statutes", label: "Indian statutes" },
+  { key: "caselaw", label: "Case law" },
+];
 
 type ModeKey = "fast" | "agent" | "brain";
 
@@ -60,6 +74,8 @@ export function ChatInput({
   vaultName,
   onChooseVault,
   centered = false,
+  sources,
+  onToggleSource,
 }: ChatInputProps) {
   const [value, setValue] = useState("");
   const [showSlash, setShowSlash] = useState(false);
@@ -209,6 +225,36 @@ export function ChatInput({
               <FolderOpen size={11} style={{ flexShrink: 0 }} />
               <span className="truncate max-w-[180px]">{vaultName || "No vault"}</span>
             </button>
+
+            {/* G8.7: knowledge-source chips — only in Agent mode (the tool-using path) and
+                only when a toggle is wired. A chip off ⇒ the agent cannot use/cite that
+                source (gated server-side, not just visually). */}
+            {agentCoreMode && onToggleSource && sources && (
+              <div className="flex items-center gap-1" role="group" aria-label="Knowledge sources">
+                {SOURCE_CHIPS.map((s) => {
+                  const on = sources.includes(s.key);
+                  return (
+                    <button
+                      key={s.key}
+                      type="button"
+                      onClick={() => onToggleSource(s.key)}
+                      aria-pressed={on}
+                      title={on ? `${s.label} — enabled (click to exclude)` : `${s.label} — excluded (click to enable)`}
+                      className="flex items-center gap-1 text-[11px] font-medium rounded-md px-1.5 py-0.5 transition-colors"
+                      style={{
+                        background: on ? "var(--surface-2)" : "transparent",
+                        color: on ? "var(--text-primary)" : "var(--text-muted)",
+                        border: on ? "1px solid var(--line)" : "1px solid transparent",
+                        textDecoration: on ? "none" : "line-through",
+                        opacity: on ? 1 : 0.6,
+                      }}
+                    >
+                      {s.label}
+                    </button>
+                  );
+                })}
+              </div>
+            )}
 
             {/* Streaming status — replaces mode label while active */}
             <span className="ml-auto flex items-center gap-1.5 text-[10px] select-none" style={{ color: "var(--text-muted)" }}>

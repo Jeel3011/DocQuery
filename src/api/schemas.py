@@ -101,6 +101,13 @@ class QueryRequest(BaseModel):
     # `question` so drafting rides the SAME loop — no new orchestrator. Ignored otherwise.
     doc_type: Optional[str] = Field(default=None, max_length=200)
     instructions: Optional[str] = Field(default=None, max_length=4000)
+    # G8.7: knowledge-source chips — which authorities the agent may use this run. Subset of
+    # {"vault","statutes","caselaw"}. The route GATES the backend from these: a source not
+    # listed is not offered (its tool stripped) or not retrievable (instrument-type allow-
+    # list), so a chip off ⇒ the agent CANNOT cite that source. None/absent ⇒ all enabled
+    # (byte-identical to pre-G8.7). ("Web" is intentionally not a chip — agent-core has no
+    # web tool; we don't ship a dead toggle.)
+    sources: Optional[List[str]] = None
 
 
 class QueryResponse(BaseModel):

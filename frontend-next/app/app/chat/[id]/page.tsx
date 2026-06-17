@@ -204,6 +204,16 @@ function ChatPageInner({ scopedCollectionId, conversationId, analysisMode = "sta
   const toolStepSeq = useRef(0);                 // each tool call = its own timeline step
   const lastToolStepId = useRef<string | null>(null);
 
+  // G8.7: knowledge-source chips — which authorities the agent may use. All on by default
+  // (byte-identical: an all-on set behaves like "no restriction"). State drives the chip
+  // UI; the ref is read by the stable handleSubmit when it builds the agentcore body.
+  const [sources, setSources] = useState<string[]>(["vault", "statutes", "caselaw"]);
+  const sourcesRef = useRef<string[]>(sources);
+  useEffect(() => { sourcesRef.current = sources; }, [sources]);
+  const toggleSource = useCallback((key: string) => {
+    setSources((prev) => prev.includes(key) ? prev.filter((s) => s !== key) : [...prev, key]);
+  }, []);
+
   // Keep refs in sync with state
   useEffect(() => { isStreamingRef.current = isStreaming; }, [isStreaming]);
   useEffect(() => { agenticModeRef.current = agenticMode; }, [agenticMode]);
@@ -373,6 +383,10 @@ function ChatPageInner({ scopedCollectionId, conversationId, analysisMode = "sta
             ...(analysisMode === "draft" && draftInstructions ? { instructions: draftInstructions } : {}),
             // G3 Step E: the active vault filter narrows retrieval scope conjunctively.
             ...(filtersRef.current ? { filters: filtersRef.current } : {}),
+            // G8.7: knowledge-source chips. Send only when the user has NARROWED the set
+            // (not all three on) — an all-on set is the default, so omitting it keeps the
+            // request byte-identical to pre-G8.7.
+            ...(sourcesRef.current.length < 3 ? { sources: sourcesRef.current } : {}),
           },
           {
             ...callbacks,
@@ -1051,6 +1065,8 @@ function ChatPageInner({ scopedCollectionId, conversationId, analysisMode = "sta
         vaultName={vaultName}
         onChooseVault={() => setShowVaultPicker(true)}
         centered={messages.length === 0 && !loading}
+        sources={sources}
+        onToggleSource={toggleSource}
       />
 
       {/* Vault picker — "Choose vault" is now functional (was display-only) */}

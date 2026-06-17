@@ -86,6 +86,10 @@ export interface StreamQueryRequest {
   // (never a stale store) → becomes the retriever's CONJUNCTIVE metadata_filter on the
   // backend (narrows the vault scope, never replaces it).
   filters?: Record<string, unknown> | null;
+  // G8.7: knowledge-source chips — which authorities the agent may use this run. Subset of
+  // {"vault","statutes","caselaw"}. A source omitted is GATED server-side (tool stripped or
+  // instrument-type filtered) so the agent cannot cite it. Absent ⇒ all enabled.
+  sources?: string[] | null;
 }
 
 // ─── Main streaming function ───────────────────────────────────────────────────

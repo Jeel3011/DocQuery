@@ -13,6 +13,7 @@ Each module also exposes a `SCHEMA` dict (name + JSON input_schema) for the regi
 """
 
 from .compute import SCHEMA as COMPUTE_SCHEMA, compute
+from .knowledge import SCHEMA as KNOWLEDGE_SCHEMA, search_knowledge
 from .metrics import SCHEMA as METRICS_SCHEMA, list_metrics
 from .read import SCHEMA as READ_SCHEMA, read_document
 from .search import SCHEMA as SEARCH_SCHEMA, search_vault
@@ -27,12 +28,15 @@ SCHEMAS = {
     "compute": COMPUTE_SCHEMA,
     # G5: the broad whole-vault pass — deep mode only (see registry._MODE_TOOLS).
     "survey_collection": SURVEY_SCHEMA,
+    # G8: the agent's hand into the shared legal Knowledge Base. Offered only when the
+    # run threads a kb_retrieval_manager (behind USE_KNOWLEDGE); off ⇒ never wired in.
+    "search_knowledge": KNOWLEDGE_SCHEMA,
 }
 
 __all__ = [
     "search_vault", "read_document", "list_metrics", "table_lookup", "compute",
-    "survey_collection",
+    "survey_collection", "search_knowledge",
     "SEARCH_SCHEMA", "READ_SCHEMA", "METRICS_SCHEMA", "TABLE_SCHEMA", "COMPUTE_SCHEMA",
-    "SURVEY_SCHEMA",
+    "SURVEY_SCHEMA", "KNOWLEDGE_SCHEMA",
     "SCHEMAS",
 ]

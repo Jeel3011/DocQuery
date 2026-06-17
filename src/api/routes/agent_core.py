@@ -33,6 +33,7 @@ from src.api.dependencies import (
     get_current_user,
     get_user_config,
     get_retrieval_mgr,
+    get_kb_retrieval_mgr,
     limiter,
 )
 from src.api.schemas import QueryRequest
@@ -90,6 +91,7 @@ async def agentcore_query_stream(
     sb=Depends(get_current_user),
     user_config: Config = Depends(get_user_config),
     retrieval_mgr=Depends(get_retrieval_mgr),
+    kb_retrieval_mgr=Depends(get_kb_retrieval_mgr),  # G8: None unless USE_KNOWLEDGE on
 ):
     """The agent core (§3.2). Flag-gated, SSE per §3.6, scope-scoped to a collection.
 
@@ -216,6 +218,43 @@ async def agentcore_query_stream(
                 return []
         history = await asyncio.to_thread(_load_history)
 
+    # ── G8.7 knowledge-source chips → SERVER-SIDE gate ─────────────────────────────
+    # `body.sources` (a subset of {"vault","statutes","caselaw"}) decides which authorities
+    # the agent may use THIS run. A source off is gated where it can't be bypassed:
+    #   • vault off    → drop the vault retrieval manager + strip vault/grid tools from the
+    #                    offered set, so the agent cannot search or cite the user's docs.
+    #   • statutes/caselaw → an instrument-type ALLOW-LIST on the KB (search_knowledge drops
+    #                    spans outside it); both off → the KB manager isn't passed at all.
+    # None/absent ⇒ everything enabled (byte-identical). Unknown chips are ignored.
+    _STATUTE_TYPES = ["act", "regulation", "circular", "article", "schedule", "rule"]
+    _CASELAW_TYPES = ["judgment"]
+    chips = body.sources
+    if chips is None:
+        vault_on = statutes_on = caselaw_on = True   # default: all sources enabled
+    else:
+        sel = {str(s).lower() for s in chips}
+        vault_on = "vault" in sel
+        statutes_on = "statutes" in sel
+        caselaw_on = "caselaw" in sel
+
+    # Vault gate: drop the manager AND strip the vault-dependent tools so they aren't offered.
+    effective_retrieval_mgr = retrieval_mgr if vault_on else None
+    run_tools = None  # None ⇒ the mode's default toolset
+    if not vault_on:
+        from src.components.agent_core.registry import _MODE_TOOLS
+        _VAULT_TOOLS = {"search_vault", "read_document", "list_metrics", "table_lookup",
+                        "compute", "survey_collection"}
+        run_tools = [t for t in _MODE_TOOLS.get(mode, _MODE_TOOLS["standard"])
+                     if t not in _VAULT_TOOLS]
+
+    # KB gate: pass the manager only if at least one legal source is on; build the
+    # instrument-type allow-list when exactly one of statutes/caselaw is selected.
+    effective_kb_mgr = kb_retrieval_mgr if (statutes_on or caselaw_on) else None
+    kb_instrument_types = None
+    if effective_kb_mgr is not None and not (statutes_on and caselaw_on):
+        kb_instrument_types = (_STATUTE_TYPES if statutes_on else []) + \
+                              (_CASELAW_TYPES if caselaw_on else [])
+
     # ── Build the run: scope + budget + model + system prompt ──────────────────────
     from src.components.agent_core.registry import RunScope, REGISTRY
     from src.components.agent_core.budgets import budget_for
@@ -228,7 +267,10 @@ async def agentcore_query_stream(
         doc_ids=scoped_doc_ids,
         filenames=list(filename_filters),
         grids=grids,
-        retrieval_manager=retrieval_mgr,
+        retrieval_manager=effective_retrieval_mgr,
+        # G8: present only when USE_KNOWLEDGE is on AND a legal source chip is enabled
+        # (else None ⇒ search_knowledge never offered). Shared + read-only — not the vault.
+        kb_retrieval_manager=effective_kb_mgr,
         db_client=sb,
         filename_by_doc=filename_by_doc,
         question=body.question,
@@ -236,6 +278,8 @@ async def agentcore_query_stream(
         filters=metadata_filter,
         # G5: the demoted Brain MAP step (survey_collection, deep mode) runs on this.
         config=user_config,
+        # G8.7: the source-chip instrument allow-list enforced in search_knowledge.
+        kb_instrument_types=kb_instrument_types,
     )
     budget = budget_for(mode, user_config)
     # G5: deep mode gets the Deep Analysis overlay (sectioned report + breadth-first
@@ -284,6 +328,7 @@ async def agentcore_query_stream(
                 history=history,            # G5: prior conversation turns (read-only memory)
                 registry=REGISTRY,
                 gate_fn=gate_fn,
+                tools=run_tools,            # G8.7: vault-off strips vault tools; None = default
             ):
                 tracer.record(ev)  # durable journal + health (never raises)
                 # Also log compactly to the API stdout for live tailing.

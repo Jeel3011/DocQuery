@@ -208,3 +208,22 @@ class Config:
     # call is possible without it (the offline gates use a mocked model, so they need
     # neither this nor the network).
     ANTHROPIC_API_KEY: str = os.getenv("ANTHROPIC_API_KEY", "")
+
+    # ── G8: The Indian Legal Knowledge Base (G8_KNOWLEDGE_BASE_PLAN §G8.0) ──
+    # A SHARED, read-only corpus of Indian legal authority the agent queries through the
+    # `search_knowledge` tool when the user's own documents don't contain the law it
+    # needs — then cites it through the SAME cite-or-abstain gate as everything else.
+    #
+    # KNOWLEDGE_NAMESPACE is a DEDICATED Pinecone namespace, separate from the per-user
+    # namespaces (PINECONE_NAMESPACE = user_id). It is read-only-shared by construction:
+    # the per-user upload path never targets it; only the KB ingestion CLI writes it. A
+    # KB RetrievalManager is built from a Config whose PINECONE_NAMESPACE = this value
+    # (same index, dedicated namespace — isolation is by namespace). Named (not hardcoded)
+    # so published KBs (G8.8) can use sibling namespaces later.
+    KNOWLEDGE_NAMESPACE: str = os.getenv("KNOWLEDGE_NAMESPACE", "kb_in")
+
+    # USE_KNOWLEDGE gates the whole G8 feature. OFF ⇒ the `search_knowledge` tool is
+    # never offered to any mode ⇒ byte-identical to pre-G8 (the prime directive). The KB
+    # ingestion CLI and the offline gates do NOT read this flag — they exercise the
+    # machine directly; the flag only governs the live agent's access to the tool.
+    USE_KNOWLEDGE: bool = os.getenv("USE_KNOWLEDGE", "false").lower() == "true"

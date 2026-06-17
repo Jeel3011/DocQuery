@@ -30,7 +30,8 @@ load_dotenv()
 from src.components.table_extraction import extract_tables_from_pdf
 from src.components.brain.analyst import Grid
 from src.components.agent_core.tools import (
-    compute, read_document, search_vault, table_lookup, list_metrics, SCHEMAS,
+    compute, read_document, search_vault, table_lookup, list_metrics,
+    search_knowledge, SCHEMAS,
 )
 
 CORPUS = "test docs"
@@ -432,10 +433,108 @@ def main() -> int:
     c.ok(is_envelope(list_metrics("x", [])) and not list_metrics("x", [])["ok"],
          "list_metrics: empty scope → error envelope (no raise)")
 
+    print("\n── search_knowledge (G8 legal KB adapter) ──────────────────────")
+    # A stub KB retrieval manager: captures the metadata_filter search_knowledge built
+    # and returns KB spans whose metadata carries citation/as_of (the version-in-force
+    # stamps). $0/offline — same shape contract as search_vault's stub.
+    class _StubKB:
+        def __init__(self, docs=None):
+            self.kw = None
+            self._docs = docs if docs is not None else [
+                _Doc("Art.21 — No person shall be deprived of his life or personal liberty…",
+                     {"citation": "Constitution Art.21", "source_key": "constitution_of_india",
+                      "instrument_type": "article", "section_or_article_id": "21",
+                      "jurisdiction": "IN", "as_of_date": "2025-01-01",
+                      "enacted_date": "1950-01-26", "chunk_id": "kb1", "page_number": 9}),
+            ]
+        def retrieve(self, query, **kw):
+            self.kw = kw
+            return list(self._docs)
+
+    kb = _StubKB()
+    r = search_knowledge("right to life", kb, jurisdiction="IN")
+    c.ok(is_envelope(r) and r["ok"], "search_knowledge: stub KB manager → ok envelope")
+    c.ok(r["provenance"] and r["provenance"][0]["kind"] == "knowledge"
+         and r["provenance"][0]["citation"] == "Constitution Art.21",
+         "search_knowledge: provenance is cited KB passages (citation carried)")
+    # the span's `doc` (the gate's bracket marker) IS the citation, so the cite gate
+    # binds `[Constitution Art.21]` exactly like a `[doc p.N]` vault marker.
+    c.ok(r["provenance"][0]["doc"] == "Constitution Art.21",
+         "search_knowledge: span.doc == citation (flows through the same cite gate)")
+    # filters: source + instrument_type + jurisdiction → conjunctive metadata_filter.
+    kb = _StubKB()
+    search_knowledge("directors", kb, jurisdiction="IN",
+                     source="companies_act_2013", instrument_type="act")
+    c.ok(kb.kw and kb.kw.get("metadata_filter") == {
+            "jurisdiction": "IN", "source_key": "companies_act_2013", "instrument_type": "act"},
+         "search_knowledge: source/instrument/jurisdiction → conjunctive metadata_filter")
+    # §G8.5 version-in-force: a repealed span is WITHHELD, never cited as current.
+    repealed_doc = _Doc("(old text)", {"citation": "X s.1", "source_key": "x",
+                                       "instrument_type": "act", "as_of_date": "2025-01-01",
+                                       "enacted_date": "1990-01-01", "repealed": True,
+                                       "chunk_id": "kb-r"})
+    r = search_knowledge("q", _StubKB([repealed_doc]))
+    c.ok(r["ok"] and r["data"]["passages"] == [] and r["data"]["withheld"] == 1,
+         "search_knowledge: a repealed provision is withheld (wrong-cell → not cited)")
+    # as_of PAST the snapshot horizon → withheld (we cannot vouch; never guess).
+    r = search_knowledge("right to life", _StubKB(), as_of="2030-01-01")
+    c.ok(r["ok"] and r["data"]["passages"] == [] and r["data"]["withheld"] == 1,
+         "search_knowledge: as_of past the snapshot horizon → withheld (version-or-abstain)")
+    # as_of INSIDE the window → the in-force provision is returned.
+    r = search_knowledge("right to life", _StubKB(), as_of="2020-06-01")
+    c.ok(r["ok"] and len(r["data"]["passages"]) == 1,
+         "search_knowledge: as_of inside the vouchable window → in-force provision returned")
+    # never-raise: empty query + missing manager + a raising manager → error envelopes.
+    c.ok(is_envelope(search_knowledge("", kb)) and not search_knowledge("", kb)["ok"],
+         "search_knowledge: empty query → error envelope")
+    c.ok(is_envelope(search_knowledge("q", None)) and not search_knowledge("q", None)["ok"],
+         "search_knowledge: no KB manager → error envelope")
+    class _BoomKB:
+        def retrieve(self, *a, **k): raise RuntimeError("boom")
+    c.ok(is_envelope(search_knowledge("q", _BoomKB())) and not search_knowledge("q", _BoomKB())["ok"],
+         "search_knowledge: raising KB manager → error envelope (never raises)")
+
+    # ── G8.7 source-chip allow-list (the chips' server-side gate) ────────────────────
+    # A mixed KB: one statute Article + one judgment. The allow-list must let only the
+    # enabled instrument types through — a chip off ⇒ that source is UNREACHABLE.
+    _art = _Doc("Art.21 — right to life…",
+                {"citation": "Constitution Art.21", "source_key": "constitution_of_india",
+                 "instrument_type": "article", "as_of_date": "2025-01-01",
+                 "enacted_date": "1950-01-26", "chunk_id": "kb-art"})
+    _judg = _Doc("Maneka Gandhi v. Union of India…",
+                 {"citation": "Maneka Gandhi (1978)", "source_key": "sc_judgments",
+                  "instrument_type": "judgment", "as_of_date": "2025-01-01",
+                  "enacted_date": "1978-01-25", "chunk_id": "kb-judg"})
+    mixed = _StubKB([_art, _judg])
+    # No allow-list ⇒ both returned (default, byte-identical).
+    r = search_knowledge("liberty", mixed)
+    c.ok(r["ok"] and len(r["data"]["passages"]) == 2,
+         "search_knowledge: no allow-list → all instrument types returned")
+    # "Case law off" ⇒ only statutes allowed ⇒ the judgment is dropped (blocked).
+    r = search_knowledge("liberty", _StubKB([_art, _judg]),
+                         allowed_instrument_types=["article", "act", "regulation"])
+    cits = {p["citation"] for p in r["data"]["passages"]}
+    c.ok(r["ok"] and cits == {"Constitution Art.21"} and r["data"]["blocked"] == 1,
+         "search_knowledge: statutes-only allow-list hides the judgment (chip gate)")
+    # "Statutes off" ⇒ only caselaw allowed ⇒ the Article is dropped.
+    r = search_knowledge("liberty", _StubKB([_art, _judg]),
+                         allowed_instrument_types=["judgment"])
+    cits = {p["citation"] for p in r["data"]["passages"]}
+    c.ok(r["ok"] and cits == {"Maneka Gandhi (1978)"},
+         "search_knowledge: caselaw-only allow-list hides the statute Article")
+    # A model-requested instrument_type OUTSIDE the allow-list ⇒ 0 results, flagged
+    # (the agent cannot bypass a disabled source by naming it).
+    r = search_knowledge("liberty", _StubKB([_art, _judg]),
+                         instrument_type="judgment",
+                         allowed_instrument_types=["article", "act"])
+    c.ok(r["ok"] and r["data"]["passages"] == []
+         and r["data"].get("blocked_by_source_filter"),
+         "search_knowledge: requesting a disabled instrument_type → 0 results (not bypassable)")
+
     print("\n── schemas (registry-ready, A2) ─────────────────────────────────")
     c.ok(set(SCHEMAS) == {"search_vault", "read_document", "list_metrics",
-                          "table_lookup", "compute", "survey_collection"},
-         "SCHEMAS: all tools registered (incl. G5 survey_collection)")
+                          "table_lookup", "compute", "survey_collection", "search_knowledge"},
+         "SCHEMAS: all tools registered (incl. G5 survey_collection, G8 search_knowledge)")
     c.ok(all("name" in s and "input_schema" in s for s in SCHEMAS.values()),
          "SCHEMAS: each has name + input_schema")
     # G5: survey_collection is deep-mode only — it must NOT leak into standard mode.
@@ -443,6 +542,16 @@ def main() -> int:
     c.ok("survey_collection" in _REG.names("deep")
          and "survey_collection" not in _REG.names("standard"),
          "registry: survey_collection in deep mode only (breadth tool, not standard)")
+    # G8: search_knowledge is OFF by default (byte-identical) — offered only when the run
+    # opts in via include_knowledge (loop passes scope.kb_retrieval_manager is not None).
+    _std_schema_names = {s["name"] for s in _REG.schemas("standard")}
+    c.ok("search_knowledge" not in _REG.names("standard")
+         and "search_knowledge" not in _std_schema_names,
+         "registry: search_knowledge NOT offered by default (USE_KNOWLEDGE off = byte-identical)")
+    c.ok("search_knowledge" in _REG.names("standard", include_knowledge=True)
+         and "search_knowledge" in _REG.names("grid", include_knowledge=True)
+         and "search_knowledge" not in _REG.names("fast", include_knowledge=True),
+         "registry: search_knowledge offered in standard/grid (not fast) when knowledge on")
 
     print("\n" + "=" * 64)
     print(f"  PASS: {c.passed}   FAIL: {c.failed}")

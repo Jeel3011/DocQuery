@@ -235,6 +235,30 @@ def get_retrieval_mgr(
         return _retrieval_cache[ns]
 
 
+def get_kb_retrieval_mgr(
+    user_config: Config = Depends(get_user_config),
+):
+    """G8: a RetrievalManager scoped to the SHARED, read-only legal KB namespace
+    (`KNOWLEDGE_NAMESPACE`, e.g. `kb_in`) — the corpus `search_knowledge` queries.
+
+    Returns None when USE_KNOWLEDGE is off, so the route threads nothing onto the
+    RunScope ⇒ the tool is never offered ⇒ byte-identical to pre-G8. Cached on the KB
+    namespace (shared across all users — it is read-only and identical for everyone),
+    distinct from the per-user vault caches above. Never targets a user namespace."""
+    if not getattr(user_config, "USE_KNOWLEDGE", False):
+        return None
+    kb_ns = getattr(user_config, "KNOWLEDGE_NAMESPACE", "kb_in")
+    cache_key = f"__kb__:{kb_ns}"
+    with _cache_lock:
+        if cache_key not in _retrieval_cache:
+            from copy import copy
+            from src.components.retrieval import RetrievalManager
+            kb_config = copy(user_config)
+            kb_config.PINECONE_NAMESPACE = kb_ns  # the shared KB namespace, NOT the user's
+            _retrieval_cache[cache_key] = RetrievalManager(kb_config)
+        return _retrieval_cache[cache_key]
+
+
 def get_generator(
     user_config: Config = Depends(get_user_config),
 ):

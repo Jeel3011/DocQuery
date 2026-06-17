@@ -133,7 +133,13 @@ def run_agent(
     # G7: a workflow template may restrict the run to its own `tools` subset (validated
     # against SCHEMAS by the registry); `tools=None` (every other caller) falls back to the
     # mode map — byte-identical to before.
-    tool_schemas = registry.schemas(budget.mode, tools=tools)
+    # G8: offer `search_knowledge` only when the run threaded a KB retrieval manager
+    # (USE_KNOWLEDGE on + route wired it). Off ⇒ the tool isn't in the schema list ⇒
+    # byte-identical to pre-G8.
+    tool_schemas = registry.schemas(
+        budget.mode, tools=tools,
+        include_knowledge=scope.kb_retrieval_manager is not None,
+    )
 
     messages: List[Dict[str, Any]] = list(history or [])
     messages.append({"role": "user", "content": question})
