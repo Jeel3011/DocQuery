@@ -3,8 +3,7 @@
 import React, { useEffect, useRef } from "react";
 import Link from "next/link";
 import { motion, useReducedMotion } from "framer-motion";
-import { ArrowRight, Sparkles, Shield, Zap, Brain, BookOpen } from "lucide-react";
-import { HeroChatPreview } from "./HeroChatPreview";
+import { ArrowRight, Brain } from "lucide-react";
 import { Threads } from "@/components/ui/Threads";
 
 const STATS = [
@@ -231,61 +230,6 @@ export function HeroProof() {
           </motion.div>
         </div>
 
-        {/* ── Chat preview window ── */}
-        <motion.div
-          initial={{ opacity: 0, y: rm ? 0 : 32 }}
-          whileInView={{ opacity: 1, y: 0 }}
-          viewport={{ once: true, margin: "-80px" }}
-          transition={{ duration: 0.72, ease }}
-          className="mt-16 w-full max-w-4xl mx-auto"
-        >
-          {/* Browser chrome */}
-          <div
-            className="rounded-[22px] overflow-hidden"
-            style={{
-              background: "rgba(255,255,255,0.72)",
-              backdropFilter: "blur(22px) saturate(1.0)",
-              WebkitBackdropFilter: "blur(22px) saturate(1.0)",
-              border: "1px solid rgba(255,255,255,0.80)",
-              boxShadow: "var(--shadow-xl), inset 0 1px 0 rgba(255,255,255,0.90)",
-            }}
-          >
-            {/* Title bar */}
-            <div
-              className="flex items-center gap-3 px-5 py-3.5"
-              style={{
-                background: "linear-gradient(180deg, rgba(255,255,255,0.90) 0%, rgba(255,255,255,0.55) 100%)",
-                borderBottom: "1px solid var(--glass-border)",
-              }}
-            >
-              <div className="flex gap-1.5">
-                {["#C4C4C4","#A8A8A8","#8C8C8C"].map((c,i) => (
-                  <div key={i} className="w-3 h-3 rounded-full opacity-90" style={{ background: c, boxShadow: `inset 0 1px 0 rgba(255,255,255,0.4)` }} />
-                ))}
-              </div>
-              <div
-                className="flex-1 mx-6 flex items-center justify-center gap-2 px-4 py-1.5 rounded-lg"
-                style={{ background: "rgba(244,244,244,0.70)", border: "1px solid var(--line)" }}
-              >
-                <Shield size={10} className="opacity-40" />
-                <span className="text-[11px] font-medium" style={{ color: "var(--ink-3)" }}>
-                  DocQuery — live demo
-                </span>
-                <div className="w-1.5 h-1.5 rounded-full ml-1" style={{ background: "var(--status-ready)", opacity: 0.85 }} />
-              </div>
-              <div className="flex items-center gap-1.5" style={{ color: "var(--ink-3)" }}>
-                {[Sparkles, BookOpen, Zap].map((Icon, i) => (
-                  <div key={i} className="w-6 h-6 flex items-center justify-center rounded-md" style={{ background: "rgba(244,244,244,0.60)" }}>
-                    <Icon size={11} />
-                  </div>
-                ))}
-              </div>
-            </div>
-
-            {/* Live chat demo — sidebar + chat, both driven by the active scenario */}
-            <HeroChatPreview />
-          </div>
-        </motion.div>
       </div>
     </section>
   );

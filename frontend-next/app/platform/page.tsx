@@ -2,11 +2,17 @@
 
 import Link from "next/link";
 import { motion } from "framer-motion";
-import { Table2, MessageSquare, Workflow as WorkflowIcon, ArrowRight } from "lucide-react";
+import { Table2, MessageSquare, Workflow as WorkflowIcon, Brain, ArrowRight } from "lucide-react";
 import { Reveal } from "@/components/landing/Reveal";
 import { PlatformPageShell, PlatformCTA, ease } from "@/components/landing/PlatformPageShell";
 
 const PILLARS = [
+  {
+    href: "/platform/brain",
+    icon: Brain,
+    title: "Brain",
+    description: "Route → Read → Synthesise → Verify. Every run.",
+  },
   {
     href: "/platform/vault",
     icon: Table2,
@@ -57,7 +63,7 @@ export default function PlatformOverviewPage() {
 
       <section className="relative z-10" style={{ paddingBottom: "clamp(100px, 12vw, 160px)" }}>
         <div className="section-container">
-          <div className="grid grid-cols-1 md:grid-cols-3" style={{ borderTop: "1px solid var(--line)" }}>
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4" style={{ borderTop: "1px solid var(--line)" }}>
             {PILLARS.map((p, i) => (
               <motion.div
                 key={p.href}
@@ -66,7 +72,7 @@ export default function PlatformOverviewPage() {
                 viewport={{ once: true, margin: "0px 0px -10% 0px" }}
                 transition={{ duration: 0.5, delay: i * 0.06, ease }}
                 style={{
-                  borderRight: i < PILLARS.length - 1 ? "1px solid var(--line)" : "none",
+                  borderRight: "1px solid var(--line)",
                   borderBottom: "1px solid var(--line)",
                 }}
               >

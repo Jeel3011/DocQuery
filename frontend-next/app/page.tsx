@@ -20,7 +20,7 @@ export default function RootPage() {
       <div className="relative z-10">
         <HeroSection />
         <HeroProof />
-        <BelowFold />
+<BelowFold />
 
         <footer
           className="py-16 relative z-10"
