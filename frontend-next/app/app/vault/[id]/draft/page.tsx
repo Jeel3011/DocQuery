@@ -9,18 +9,27 @@
 //
 // Scope (§9 risk #1): the vault [id] is authoritative — read from the route.
 
-import { useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import { motion } from "framer-motion";
 import { FileEdit, ChevronRight } from "lucide-react";
 import { toast } from "sonner";
 import { useAuthStore } from "@/stores/auth.store";
-import { createConversation } from "@/lib/api";
+import { createConversation, listDocTypes, type DocTypeCard } from "@/lib/api";
 import { BackToVault } from "@/components/app/BackToVault";
 
 const ease = [0.23, 1, 0.32, 1] as const;
 
-const DOC_TYPES = [
+// Practice-area display order (matches the catalog's PRACTICE_ORDER / the card grid).
+const PRACTICE_ORDER = [
+  "Litigation", "Transactional", "Financial services", "Real estate",
+  "Employment", "IP & Technology", "Tax", "Compliance (India)", "Family",
+];
+
+// Generic fallback (the pre-catalog behaviour) — used only when the catalog is empty
+// (USE_AGENT_CORE off ⇒ /doc-types 404s). A catalog doc-type id is expanded server-side
+// into the India-correct structure; these generic values are passed through as free text.
+const FALLBACK_DOC_TYPES = [
   { value: "memo",            label: "Legal memo" },
   { value: "summary",         label: "Summary / executive brief" },
   { value: "letter",          label: "Letter / correspondence" },
@@ -34,9 +43,39 @@ export default function VaultDraftPage() {
   const { token } = useAuthStore();
   const vaultId = params.id;
 
-  const [docType, setDocType] = useState(DOC_TYPES[0].value);
+  // §2.3: the picker is generated from the catalog table, not authored one-by-one. Add a
+  // DocType row → a card appears here. Empty (flag off) ⇒ the generic fallback list.
+  const [catalog, setCatalog] = useState<DocTypeCard[]>([]);
+  const [docType, setDocType] = useState(FALLBACK_DOC_TYPES[0].value);
+  const [docTypeTitle, setDocTypeTitle] = useState<string>("");
+  const [query, setQuery] = useState("");   // filter the picker (the catalog is large)
   const [instructions, setInstructions] = useState("");
   const [creating, setCreating] = useState(false);
+
+  useEffect(() => {
+    if (!token) return;
+    listDocTypes(token)
+      .then((cards) => {
+        if (cards.length) {
+          setCatalog(cards);
+          setDocType(cards[0].id);
+          setDocTypeTitle(cards[0].title);
+        }
+      })
+      .catch(() => { /* fall back to FALLBACK_DOC_TYPES */ });
+  }, [token]);
+
+  // Group catalog cards by practice area (the card grid layout), filtered by the search box.
+  const grouped = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    const match = (c: DocTypeCard) =>
+      !q || c.title.toLowerCase().includes(q) || c.practice_area.toLowerCase().includes(q);
+    const by: Record<string, DocTypeCard[]> = {};
+    for (const c of catalog) if (match(c)) (by[c.practice_area] ??= []).push(c);
+    return PRACTICE_ORDER.filter((p) => by[p]?.length).map((p) => ({ area: p, cards: by[p] }));
+  }, [catalog, query]);
+
+  const totalCards = catalog.length;
 
   async function startDraft() {
     const brief = instructions.trim();
@@ -46,6 +85,7 @@ export default function VaultDraftPage() {
       const c = await createConversation(token, brief.slice(0, 50));
       const params = new URLSearchParams({
         q: brief,
+        mode: "draft",          // explicit: the auto-submit must run the DRAFT path, not Agent
         doc_type: docType,
         instructions: brief,
       });
@@ -62,7 +102,9 @@ export default function VaultDraftPage() {
 
   return (
     <div className="flex-1 overflow-y-auto scrollbar-thin relative" style={{ background: "var(--canvas)" }}>
-      <div className="relative h-full flex flex-col items-center justify-center w-full max-w-2xl mx-auto px-4 md:px-8 py-10 text-left">
+      {/* Top-aligned (not vertically centered): with the full catalog the content is taller
+          than the viewport, so centering pushes the heading off-screen. Widen for the picker. */}
+      <div className="relative min-h-full flex flex-col items-stretch justify-start w-full max-w-3xl mx-auto px-4 md:px-8 py-10 text-left">
         <motion.div
           initial={{ opacity: 0, y: 14 }}
           animate={{ opacity: 1, y: 0 }}
@@ -106,25 +148,94 @@ export default function VaultDraftPage() {
               >
                 Document type
               </label>
-              <div className="flex flex-wrap gap-2">
-                {DOC_TYPES.map((t) => {
-                  const active = docType === t.value;
-                  return (
-                    <button
-                      key={t.value}
-                      onClick={() => setDocType(t.value)}
-                      className="px-3 py-1.5 rounded-full text-[13px] font-medium transition-colors"
+              {totalCards ? (
+                // Catalog picker (§2.3): searchable, grouped by practice area. The catalog is
+                // large (50+ types), so a flat chip wall is unusable — filter + bounded scroll.
+                <div>
+                  <div className="flex items-center gap-2 mb-2.5">
+                    <input
+                      type="text"
+                      value={query}
+                      onChange={(e) => setQuery(e.target.value)}
+                      placeholder={`Search ${totalCards} document types…`}
+                      className="flex-1 rounded-lg px-3 py-2 text-[13px] outline-none"
                       style={{
-                        background: active ? "var(--ink)" : "var(--surface)",
+                        background: "var(--surface)",
                         border: "1px solid var(--line)",
-                        color: active ? "var(--surface)" : "var(--ink-2)",
+                        color: "var(--text-primary)",
                       }}
-                    >
-                      {t.label}
-                    </button>
-                  );
-                })}
-              </div>
+                    />
+                    {docTypeTitle && (
+                      <span
+                        className="text-[12px] whitespace-nowrap px-2.5 py-1 rounded-full"
+                        style={{ background: "var(--ink)", color: "var(--surface)" }}
+                      >
+                        {docTypeTitle}
+                      </span>
+                    )}
+                  </div>
+                  <div
+                    className="max-h-[42vh] overflow-y-auto scrollbar-thin rounded-xl p-3 space-y-4"
+                    style={{ background: "var(--surface-2, var(--surface))", border: "1px solid var(--line)" }}
+                  >
+                    {grouped.length ? grouped.map(({ area, cards }) => (
+                      <div key={area}>
+                        <div
+                          className="text-[10px] font-semibold uppercase tracking-[0.12em] mb-2"
+                          style={{ color: "var(--text-muted)" }}
+                        >
+                          {area} <span style={{ opacity: 0.6 }}>· {cards.length}</span>
+                        </div>
+                        <div className="flex flex-wrap gap-2">
+                          {cards.map((c) => {
+                            const active = docType === c.id;
+                            return (
+                              <button
+                                key={c.id}
+                                onClick={() => { setDocType(c.id); setDocTypeTitle(c.title); }}
+                                title={c.description}
+                                className="px-3 py-1.5 rounded-full text-[13px] font-medium transition-colors"
+                                style={{
+                                  background: active ? "var(--ink)" : "var(--surface)",
+                                  border: active ? "1px solid var(--ink)" : "1px solid var(--line)",
+                                  color: active ? "var(--surface)" : "var(--ink-2)",
+                                }}
+                              >
+                                {c.title}
+                              </button>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    )) : (
+                      <p className="text-[13px] py-2" style={{ color: "var(--text-muted)" }}>
+                        No document type matches “{query}”.
+                      </p>
+                    )}
+                  </div>
+                </div>
+              ) : (
+                // Generic fallback (flag off / empty catalog).
+                <div className="flex flex-wrap gap-2">
+                  {FALLBACK_DOC_TYPES.map((t) => {
+                    const active = docType === t.value;
+                    return (
+                      <button
+                        key={t.value}
+                        onClick={() => setDocType(t.value)}
+                        className="px-3 py-1.5 rounded-full text-[13px] font-medium transition-colors"
+                        style={{
+                          background: active ? "var(--ink)" : "var(--surface)",
+                          border: "1px solid var(--line)",
+                          color: active ? "var(--surface)" : "var(--ink-2)",
+                        }}
+                      >
+                        {t.label}
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
             </div>
 
             {/* Instructions */}

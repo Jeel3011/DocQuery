@@ -48,6 +48,18 @@ class BaseModel:
     def invoke(self, messages: List[Dict[str, Any]], tools: List[Dict[str, Any]]) -> ModelResponse:  # noqa: D401
         raise NotImplementedError
 
+    def stream(self, messages: List[Dict[str, Any]], tools: List[Dict[str, Any]]):
+        """Stream a response. Yields ("delta", text) tuples as text is generated, then a
+        final ("done", ModelResponse). The DEFAULT implementation calls invoke() and emits
+        the whole text as one delta — so a model without real streaming still satisfies the
+        contract (used by ScriptedModel + the offline gate). Live models override this with
+        the vendor's token stream so the loop can surface text as it is written (the UX fix:
+        no 13s freeze, the draft appears live)."""
+        resp = self.invoke(messages, tools)
+        if resp.text:
+            yield ("delta", resp.text)
+        yield ("done", resp)
+
 
 # ── Live Anthropic (Claude) — native tool use ───────────────────────────────────
 
@@ -107,6 +119,57 @@ class AnthropicModel(BaseModel):
                 "out": getattr(usage, "output_tokens", 0) if usage else 0,
             },
         )
+
+    def stream(self, messages: List[Dict[str, Any]], tools: List[Dict[str, Any]]):
+        """Native Claude streaming. Yields ("delta", text) per text chunk, accumulates the
+        final message (text + tool_use + usage) into a ModelResponse, then ("done", resp).
+        Falls back to the base (invoke-once) path on any streaming error so a run never dies
+        on a stream hiccup."""
+        import anthropic  # lazy
+
+        client = anthropic.Anthropic(api_key=self.api_key)
+        kwargs: Dict[str, Any] = {
+            "model": self.model,
+            "max_tokens": self.max_tokens,
+            "temperature": self.temperature,
+            "messages": messages,
+        }
+        if self.system:
+            kwargs["system"] = self.system
+        if tools:
+            kwargs["tools"] = tools
+
+        try:
+            with client.messages.stream(**kwargs) as stream:
+                for text in stream.text_stream:        # incremental text deltas
+                    if text:
+                        yield ("delta", text)
+                final = stream.get_final_message()
+        except Exception:  # noqa: BLE001 — never die on a stream error; fall back to invoke
+            yield from super().stream(messages, tools)
+            return
+
+        text_parts: List[str] = []
+        tool_calls: List[ToolCall] = []
+        for block in final.content or []:
+            btype = getattr(block, "type", None)
+            if btype == "text":
+                text_parts.append(getattr(block, "text", "") or "")
+            elif btype == "tool_use":
+                tool_calls.append(ToolCall(
+                    id=getattr(block, "id", ""),
+                    name=getattr(block, "name", ""),
+                    args=getattr(block, "input", {}) or {},
+                ))
+        usage = getattr(final, "usage", None)
+        yield ("done", ModelResponse(
+            text="".join(text_parts) or None,
+            tool_calls=tool_calls,
+            usage={
+                "in": getattr(usage, "input_tokens", 0) if usage else 0,
+                "out": getattr(usage, "output_tokens", 0) if usage else 0,
+            },
+        ))
 
 
 # ── OpenAI (native tool use) — the dev-now vendor, behind a shape adapter ───────
@@ -247,6 +310,77 @@ class OpenAIModel(BaseModel):
                 "out": getattr(usage, "completion_tokens", 0) if usage else 0,
             },
         )
+
+    def stream(self, messages: List[Dict[str, Any]], tools: List[Dict[str, Any]]):
+        """OpenAI streaming. Yields ("delta", text) per content chunk; accumulates tool_call
+        fragments (name/arguments arrive split across chunks) and usage, then ("done", resp).
+        Falls back to invoke-once on any stream error."""
+        import json as _json
+        from openai import OpenAI  # lazy
+
+        client = OpenAI(api_key=self.api_key)
+        kwargs: Dict[str, Any] = {
+            "model": self.model,
+            "messages": self._messages_to_openai(messages),
+            "stream": True,
+            "stream_options": {"include_usage": True},
+        }
+        oai_tools = self._tools_to_openai(tools)
+        if oai_tools:
+            kwargs["tools"] = oai_tools
+        if self._is_reasoning_model(self.model):
+            kwargs["max_completion_tokens"] = self.max_tokens
+        else:
+            kwargs["max_tokens"] = self.max_tokens
+            kwargs["temperature"] = self.temperature
+
+        text_parts: List[str] = []
+        # tool calls arrive as fragments keyed by index: {idx: {"id","name","args_str"}}
+        tc_acc: Dict[int, Dict[str, str]] = {}
+        usage_in = usage_out = 0
+        try:
+            for chunk in client.chat.completions.create(**kwargs):
+                ch_usage = getattr(chunk, "usage", None)
+                if ch_usage:
+                    usage_in = getattr(ch_usage, "prompt_tokens", 0) or usage_in
+                    usage_out = getattr(ch_usage, "completion_tokens", 0) or usage_out
+                choices = getattr(chunk, "choices", None) or []
+                if not choices:
+                    continue
+                delta = choices[0].delta
+                piece = getattr(delta, "content", None)
+                if piece:
+                    text_parts.append(piece)
+                    yield ("delta", piece)
+                for tc in (getattr(delta, "tool_calls", None) or []):
+                    i = tc.index
+                    slot = tc_acc.setdefault(i, {"id": "", "name": "", "args": ""})
+                    if getattr(tc, "id", None):
+                        slot["id"] = tc.id
+                    fn = getattr(tc, "function", None)
+                    if fn:
+                        if getattr(fn, "name", None):
+                            slot["name"] = fn.name
+                        if getattr(fn, "arguments", None):
+                            slot["args"] += fn.arguments
+        except Exception:  # noqa: BLE001 — never die on a stream error; fall back to invoke
+            yield from super().stream(messages, tools)
+            return
+
+        tool_calls: List[ToolCall] = []
+        for i in sorted(tc_acc):
+            slot = tc_acc[i]
+            try:
+                args = _json.loads(slot["args"] or "{}")
+            except Exception:  # noqa: BLE001
+                args = {}
+            tool_calls.append(ToolCall(id=slot["id"], name=slot["name"], args=args))
+
+        yield ("done", ModelResponse(
+            text="".join(text_parts) or None,
+            tool_calls=tool_calls,
+            usage={"in": usage_in, "out": usage_out},
+        ))
 
 
 # ── Offline scripted model (the gate's mocked orchestrator) ─────────────────────

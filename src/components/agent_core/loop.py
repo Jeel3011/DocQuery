@@ -199,15 +199,40 @@ def run_agent(
         step = budget.steps_used
         yield {"type": "agent_step", "n": step}
 
+        # Stream the model so text surfaces live (the UX fix: no freeze; the draft appears
+        # token-by-token). Deltas are emitted as `token_delta` events; the loop still gets a
+        # final ModelResponse (text + tool_calls + usage) to drive the tool/gate logic exactly
+        # as before. A stream error inside model.stream() falls back to invoke-once there, so
+        # this layer just retries the whole stream once on a hard failure, then degrades.
+        def _run_stream():
+            """Drive one model.stream(), forwarding ('delta', text) up and returning the
+            final ModelResponse. Raises on a hard failure (caught below for retry/degrade)."""
+            final_resp = None
+            for kind, payload in model.stream(messages, tool_schemas):
+                if kind == "delta":
+                    yield ("delta", payload)
+                elif kind == "done":
+                    final_resp = payload
+            return final_resp
+
+        resp = None
         try:
             try:
-                resp = model.invoke(messages, tool_schemas)
+                gen = _run_stream()
+                while True:
+                    try:
+                        kind, payload = next(gen)
+                    except StopIteration as si:
+                        resp = si.value
+                        break
+                    if kind == "delta" and payload:
+                        yield {"type": "token_delta", "text": payload}
             except Exception as first_exc:  # noqa: BLE001 — one retry for transient API blips
-                logger.warning("[agent_core.loop] model.invoke failed at step %d (retrying once): %s",
+                logger.warning("[agent_core.loop] model.stream failed at step %d (retrying once): %s",
                                step, first_exc)
                 resp = model.invoke(messages, tool_schemas)
         except Exception as exc:  # noqa: BLE001 — surfaced as a degrade signal to the caller
-            logger.warning("[agent_core.loop] model.invoke failed at step %d: %s", step, exc)
+            logger.warning("[agent_core.loop] model call failed at step %d: %s", step, exc)
             yield {"type": "gate", "name": "model_error", "pass": False, "detail": str(exc)}
             final_text = None
             abstained = True
@@ -216,6 +241,9 @@ def run_agent(
                    "tokens": budget.tokens_used, "abstained": True,
                    "error": f"model_error: {exc}", "degrade": True}
             return
+
+        if resp is None:  # stream produced no 'done' — treat as a model error / degrade
+            resp = model.invoke(messages, tool_schemas)
 
         budget.tokens_used += (resp.usage or {}).get("in", 0) + (resp.usage or {}).get("out", 0)
         if resp.text:

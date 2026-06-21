@@ -25,6 +25,15 @@ import { Search, Download, FolderOpen, GitCompare, Globe, X, ChevronRight, Trend
 // A clean doc label from a filename ("goog-20231231.pdf" → "goog 2023"; the SEC accession
 // "0000950170-23-035122.pdf" → "MSFT FY23" via a small known map; else the bare stem).
 const _DOC_ALIAS: Record<string, string> = { "0000950170-23-035122": "MSFT FY23" };
+// A catalog doc-type id ("tax_opinion", "writ_petition") → a human title for the artifact
+// ("Tax Opinion", "Writ Petition"). The picker sent the id; this is its display form.
+function prettifyDocType(id: string): string {
+  return id
+    .split(/[_-]/)
+    .map((w) => (w ? w[0].toUpperCase() + w.slice(1) : w))
+    .join(" ");
+}
+
 function _docLabel(raw?: string): string | null {
   if (!raw) return null;
   const stem = raw.replace(/\.(pdf|htm|html|docx?|txt)$/i, "").trim();
@@ -319,7 +328,14 @@ function ChatPageInner({ scopedCollectionId, conversationId, analysisMode = "sta
             // standard Ask answers stay inline (sectioned=false → unchanged).
             const completed = updated.find((m) => m.id === assistantMsgId);
             if (completed) {
-              const detected = detectArtifact(completed.content, { sectioned: analysisMode === "deep" || analysisMode === "draft" });
+              // A draft opens in the artifact panel as a titled document (the doc-type name,
+              // e.g. "Tax Opinion") even when abstain-heavy — not raw markdown in the bubble.
+              const draftTitle = analysisMode === "draft"
+                ? (draftDocType ? prettifyDocType(draftDocType) : "Draft") : undefined;
+              const detected = detectArtifact(completed.content, {
+                sectioned: analysisMode === "deep" || analysisMode === "draft",
+                title: draftTitle,
+              });
               if (detected) setArtifact(detected);
             }
             return updated;
@@ -390,6 +406,23 @@ function ChatPageInner({ scopedCollectionId, conversationId, analysisMode = "sta
           },
           {
             ...callbacks,
+            // Live generation preview: append each delta as the model writes it (typewriter).
+            onTokenDelta: (chunk: string) => {
+              setMessages((prev) =>
+                prev.map((m) =>
+                  m.id === assistantMsgId ? { ...m, content: m.content + chunk } : m
+                )
+              );
+            },
+            // Final authoritative answer: REPLACE the streamed preview with the gated text
+            // (the gate may have redacted unverifiable claims, so it differs from the preview).
+            onToken: (tok: string) => {
+              setMessages((prev) =>
+                prev.map((m) =>
+                  m.id === assistantMsgId ? { ...m, content: tok } : m
+                )
+              );
+            },
             onDone: () => {
               steps = steps.map((s) =>
                 s.status === "active" || s.status === "pending" ? { ...s, status: "done" as const } : s
@@ -1054,6 +1087,7 @@ function ChatPageInner({ scopedCollectionId, conversationId, analysisMode = "sta
         isStreaming={isStreaming}
         agentCoreMode={agentCoreMode}
         onToggleAgentCore={() => { setAgentCoreMode((v) => !v); setBrainMode(false); setAgenticMode(false); }}
+        analysisMode={analysisMode}
         brainMode={brainMode}
         // Brain stays reachable ONLY as the internal Gate-A comparator (dev builds). The
         // agentic/Deep toggle is gone entirely. Normal users see just the Agent pill.

@@ -643,3 +643,29 @@ export async function listWorkflows(token: string): Promise<WorkflowCard[]> {
     handleAxiosError(err);
   }
 }
+
+// LEGAL_TASK_CATALOG §2.3: the DRAFT card picker, generated from the catalog table.
+// A card launches the EXISTING draft route (mode="draft") with its `id` as doc_type;
+// the server expands the catalog id into the India-correct structure + cite-or-bracket
+// instructions via render_draft_request.
+export interface DocTypeCard {
+  id: string;
+  title: string;
+  practice_area: string;    // "Litigation" | "Transactional" | "Financial services" | "Compliance (India)"
+  jurisdiction: string;     // "IN" — the vocabulary moat
+  description: string;
+  required_inputs: string[];
+  verb: string;             // "Draft" — the §0 primitive verb this card launches
+}
+
+export async function listDocTypes(token: string): Promise<DocTypeCard[]> {
+  try {
+    const res = await makeClient(token).get<{ doc_types: DocTypeCard[] }>(`/doc-types`);
+    return res.data.doc_types ?? [];
+  } catch (err) {
+    // Flag off ⇒ 404 (the catalog doesn't exist). Treat as "no catalog", not an error —
+    // the draft page falls back to its generic doc-type list.
+    if ((err as AxiosError)?.response?.status === 404) return [];
+    handleAxiosError(err);
+  }
+}

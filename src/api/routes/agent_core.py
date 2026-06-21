@@ -63,6 +63,11 @@ def _translate(ev: dict) -> dict:
     t = ev.get("type")
     if t == "token":
         return {"type": "token", "content": ev.get("text", "")}
+    if t == "token_delta":
+        # Live preview chunk during generation (the UX fix: text appears as it's written).
+        # `content` matches the `token` convention; the FINAL `token` event still carries the
+        # gated/redacted authoritative text the frontend replaces the preview with.
+        return {"type": "token_delta", "content": ev.get("text", "")}
     if t == "sources":
         # The ledger emits each source with a `doc` field (the filename), but the
         # frontend SourceInfo expects `filename` + `source_id` — without the remap every
@@ -121,6 +126,23 @@ async def agentcore_query_stream(
     if mode == "draft":
         _doc_type = (getattr(body, "doc_type", None) or "").strip()
         _instr = (getattr(body, "instructions", None) or "").strip()
+
+        # LEGAL_TASK_CATALOG §2.1/§2.3: when `doc_type` is a CATALOG id (e.g. "spa",
+        # "writ_petition"), the catalog supplies the India-correct ordered STRUCTURE +
+        # the cite-or-bracket REQUIRED INPUTS + the version-in-force AUTHORITY refs — the
+        # §2.1 "assemble structure → bracket gaps → cite governing law" path, as DATA. The
+        # user's free-text brief is folded in as the matter context. NON-catalog doc types
+        # (free text, or the legacy memo/summary/letter values) fall through unchanged ⇒
+        # byte-identical to pre-catalog drafting.
+        if _doc_type:
+            from src.components.agent_core.doc_catalog import get_doc_type, render_draft_request
+            _dt = get_doc_type(_doc_type)
+            if _dt is not None:
+                req = render_draft_request(_dt, facts={})
+                _doc_type = req["doc_type"]                          # the human-facing card title
+                catalog_instr = req["instructions"]
+                _instr = (catalog_instr + ("\n\nMatter brief: " + _instr if _instr else "")).strip()
+
         if _doc_type or _instr:
             composed = "Produce a client-ready " + (_doc_type or "deliverable")
             if _instr:

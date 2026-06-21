@@ -32,6 +32,10 @@ interface ChatInputProps {
   onToggleBrain?: () => void;
   agentCoreMode?: boolean;
   onToggleAgentCore?: () => void;
+  // G6.1: the conversation's analysis mode. "draft" presents a DRAFTING composer (distinct
+  // placeholder + "Drafting…" label) so a draft conversation is not visually identical to
+  // Agent chat — the "it shifted to the agent box" bug. Absent/"standard" ⇒ unchanged.
+  analysisMode?: "standard" | "deep" | "draft";
   vaultName?: string | null;
   onChooseVault?: () => void;
   centered?: boolean;
@@ -64,6 +68,7 @@ export function ChatInput({
   onCancel,
   isStreaming,
   placeholder = "Ask about a clause, term, or risk…",
+  analysisMode = "standard",
   disabled = false,
   agenticMode = false,
   onToggleAgentic,
@@ -87,7 +92,10 @@ export function ChatInput({
 
   const activeMode: ModeKey = agentCoreMode ? "agent" : brainMode ? "brain" : "fast";
   const activeLabel = MODES.find((m) => m.key === activeMode)?.label ?? "Direct";
-  const hasModeToggle = !!onToggleAgentCore || !!onToggleBrain;
+  // G6.1: a Draft conversation has a FIXED mode — hide the Agent/Brain mode pill so it can't
+  // be flipped to Agent mid-draft (the "it shifted to the agent box" confusion).
+  const isDraft = analysisMode === "draft";
+  const hasModeToggle = !isDraft && (!!onToggleAgentCore || !!onToggleBrain);
 
   function selectMode(key: ModeKey) {
     setModeOpen(false);
@@ -262,12 +270,14 @@ export function ChatInput({
                 <>
                   <Loader2 size={10} className="animate-spin" />
                   <span>
-                    {agentCoreMode ? "Agent working…" : brainMode ? "Brain synthesizing…" : "Generating…"}
+                    {analysisMode === "draft" ? "Drafting…"
+                      : agentCoreMode ? "Agent working…" : brainMode ? "Brain synthesizing…" : "Generating…"}
                   </span>
                 </>
               ) : (
                 <span>
-                  {agentCoreMode ? "Agent · verified tool loop"
+                  {analysisMode === "draft" ? "Draft · cited deliverable, grounded or withheld"
+                    : agentCoreMode ? "Agent · verified tool loop"
                     : brainMode ? "Brain · cross-doc synthesis"
                     : "Direct · fast answer"}
                 </span>
@@ -285,7 +295,9 @@ export function ChatInput({
               onFocus={() => setFocused(true)}
               onBlur={() => setFocused(false)}
               placeholder={
-                agentCoreMode
+                analysisMode === "draft"
+                  ? "Describe the deliverable — the agent drafts it section by section, citing every fact or bracketing it…"
+                  : agentCoreMode
                   ? "Ask about a clause, term, or risk — the agent quotes and cites every answer…"
                   : brainMode
                   ? "Ask a cross-document question (Brain synthesis)…"

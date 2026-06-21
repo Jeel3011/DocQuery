@@ -232,7 +232,7 @@ const SECTION_RE = /^##\s+\S/gm;
 
 export function detectArtifact(
   content: string,
-  opts: { sectioned?: boolean } = {},
+  opts: { sectioned?: boolean; title?: string } = {},
 ): Artifact | null {
   // Explicit artifact fence
   const explicit = ARTIFACT_RE.exec(content);
@@ -263,11 +263,17 @@ export function detectArtifact(
   // that happens to contain a table is still treated as the report, not just its table.
   if (opts.sectioned) {
     const sections = content.match(SECTION_RE);
-    if (sections && sections.length >= 2 && content.length > 400) {
+    // A draft opens as a document even when SHORTER / abstain-heavy (it still has the
+    // doc-type's section structure) — a tax opinion that honestly withholds is still a
+    // document, not a chat reply. Drafts use a lower bar (≥1 section, >120 chars); deep
+    // reports keep the ≥2-section/>400-char bar.
+    const minSections = opts.title ? 1 : 2;
+    const minLen = opts.title ? 120 : 400;
+    if (sections && sections.length >= minSections && content.length > minLen) {
       return {
         id: String(Date.now()),
         kind: "markdown",
-        title: "Analysis report",
+        title: opts.title || "Analysis report",
         content: content,
       };
     }

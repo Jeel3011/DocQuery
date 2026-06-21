@@ -111,11 +111,38 @@ def _has_substantive_figure(text: str) -> bool:
 
 # ── Gate 2: every factual sentence carries a resolvable citation ────────────────
 
+# Draft scaffolding that is NOT a factual assertion and must never require a citation:
+#   - markdown headings  (`# Non-Disclosure Agreement`, `## 8. Governing law`)
+#   - explicit input placeholders  (`[INPUT NEEDED: disclosing_party]`) — the OPPOSITE of an
+#     invented fact: the model is honestly flagging a gap, per the drafting contract
+#   - the abstain line  (`_Insufficient evidence in the vault to draft this section._`)
+# Flagging these as "uncited claims" makes a correct, honest draft over-abstain (observed
+# live 2026-06-21: an NDA skeleton redacted because the gate flagged the title + brackets).
+_SCAFFOLD_RE = re.compile(
+    r"^\s*#{1,6}\s"                       # a markdown heading line
+    r"|^\s*_?Insufficient evidence",     # the honest-withhold line
+    re.IGNORECASE,
+)
+
+
 def _is_factual(sentence: str) -> bool:
     s = sentence.strip()
     if len(s) < 25:
         return False
-    return bool(re.search(r"\d", s)) or bool(_CONTENT_WORD.search(s))
+    if _SCAFFOLD_RE.search(s):
+        return False                      # headings / abstain lines are structure, not claims
+    # A sentence carrying an `[INPUT NEEDED: …]` placeholder is the model HONESTLY flagging a
+    # gap (the drafting contract), not asserting a fact. Once the placeholder is removed, the
+    # remainder is a stub ("The Disclosing Party is .") — verifiable only if it still states a
+    # concrete FIGURE. So: a bracketed sentence with no digit in its non-bracket text is not a
+    # factual claim. (A bracketed sentence that ALSO states a number stays checkable.)
+    has_placeholder = "[INPUT NEEDED" in s.upper()
+    stripped = re.sub(r"\[INPUT NEEDED:[^\]]*\]", "", s, flags=re.IGNORECASE).strip()
+    if has_placeholder and not re.search(r"\d", stripped):
+        return False
+    if len(stripped) < 25:
+        return False
+    return bool(re.search(r"\d", stripped)) or bool(_CONTENT_WORD.search(stripped))
 
 
 def verify_citations(draft: str, ledger: EvidenceLedger, llm=None) -> Dict[str, Any]:
@@ -126,7 +153,12 @@ def verify_citations(draft: str, ledger: EvidenceLedger, llm=None) -> Dict[str, 
     checked against ledger spans with `verify_claims` — off in the offline gate.
     """
     sentences = [s for s in _SENT_SPLIT.split(draft or "") if s.strip()]
-    uncited = [s.strip() for s in sentences if _is_factual(s) and not _CITE_RE.search(s)]
+    # An `[INPUT NEEDED: …]` placeholder is a GAP marker, not a citation — it must not let an
+    # uncited figure ride along ("…but the deposit was 50,000." beside a bracket). Strip the
+    # placeholders before asking "does this sentence carry a real citation marker?".
+    def _has_citation(s: str) -> bool:
+        return bool(_CITE_RE.search(re.sub(r"\[INPUT NEEDED:[^\]]*\]", "", s, flags=re.IGNORECASE)))
+    uncited = [s.strip() for s in sentences if _is_factual(s) and not _has_citation(s)]
     if uncited:
         return {"name": "verify_citations", "pass": False,
                 "detail": f"uncited factual sentence(s): {uncited[:2]}",

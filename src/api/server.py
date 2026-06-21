@@ -24,6 +24,7 @@ from src.api.routes import review_grid as review_grid_routes  # B2: /review-grid
 from src.api.routes import playbooks as playbooks_routes      # G6.2: playbook CRUD
 from src.api.routes import redline as redline_routes          # G6.3: redline stream + export
 from src.api.routes import workflows as workflows_routes      # G7: workflow templates (flag-gated)
+from src.api.routes import doc_catalog as doc_catalog_routes  # Legal catalog §2.3: /doc-types (flag-gated)
 from src.api.middleware import CorrelationIDMiddleware, SecurityHeadersMiddleware
 
 from slowapi.errors import RateLimitExceeded
@@ -135,6 +136,7 @@ app.include_router(review_grid_routes.router, prefix=API_PREFIX, tags=["ReviewGr
 app.include_router(playbooks_routes.router,   prefix=API_PREFIX, tags=["Playbooks"])  # G6.2
 app.include_router(redline_routes.router,     prefix=API_PREFIX, tags=["Redline"])    # G6.3
 app.include_router(workflows_routes.router,   prefix=API_PREFIX, tags=["Workflows"])  # G7 (flag-gated)
+app.include_router(doc_catalog_routes.router, prefix=API_PREFIX, tags=["DocCatalog"])  # Legal catalog §2.3 (flag-gated)
 
 
 # -- Prometheus Metrics --

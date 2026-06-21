@@ -14,7 +14,10 @@ export interface StreamEvent {
     // Brain (map-reduce) step events — emitted by /query/brain/stream
     | "brain_start" | "brain_analyst" | "brain_map" | "brain_verify" | "brain_reduce" | "brain_meta"
     // Agent-core loop events (§3.6) — emitted by /query/agentcore/stream
-    | "agent_step" | "agent_thought" | "tool_call" | "tool_result" | "gate" | "artifact";
+    | "agent_step" | "agent_thought" | "tool_call" | "tool_result" | "gate" | "artifact"
+    // Live generation preview (the UX fix): incremental text as the model writes it. The
+    // final `token` event carries the gated/authoritative text that REPLACES the preview.
+    | "token_delta";
   // ── Agent-core event fields (§3.6) ──
   n?: number;                 // agent_step (step number)
   text?: string;              // agent_thought
@@ -468,6 +471,9 @@ export interface AgentCoreStreamCallbacks extends StreamCallbacks {
   onToolResult?: (ev: { name: string; ok: boolean; summary?: string; nProvenance?: number }) => void;
   onGate?: (ev: { name: string; pass: boolean; detail?: string }) => void;
   onAgentMeta?: (meta: { mode?: string; steps?: number; tokens?: number; abstained?: boolean; degrade?: boolean }) => void;
+  // Live generation preview chunk (the UX fix). Append to the bubble as it streams; the
+  // final onToken() carries the authoritative gated text that REPLACES the accumulated preview.
+  onTokenDelta?: (chunk: string) => void;
 }
 
 export async function streamAgentCoreQuery(
@@ -571,6 +577,11 @@ export async function streamAgentCoreQuery(
               break;
             case "sources":
               callbacks.onSources(event.sources ?? []);
+              break;
+            case "token_delta":
+              // Live preview as the model writes — appended incrementally. Falls back to
+              // onToken (a plain append) if the consumer didn't wire the delta handler.
+              if (event.content) (callbacks.onTokenDelta ?? callbacks.onToken)(event.content);
               break;
             case "token":
               if (event.content) callbacks.onToken(event.content);

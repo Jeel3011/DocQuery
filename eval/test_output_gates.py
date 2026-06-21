@@ -103,6 +103,22 @@ def main() -> int:
     r = verify_citations("Here is a brief summary of what I found.", led)
     c.ok(r["pass"], "short connective sentence exempt (no citation needed)")
 
+    # Draft scaffolding is NOT a factual claim — must not force a draft to over-abstain.
+    # (Regression: 2026-06-21 an NDA skeleton was redacted because the gate flagged its
+    # title "# Non-Disclosure Agreement" and its [INPUT NEEDED] brackets as uncited claims.)
+    print("\n── verify_citations (draft scaffolding exempt) ──────────────────")
+    r = verify_citations("# Non-Disclosure Agreement", led)
+    c.ok(r["pass"], "a markdown document TITLE needs no citation")
+    r = verify_citations("## 8. Governing law and dispute resolution", led)
+    c.ok(r["pass"], "a markdown SECTION HEADING needs no citation")
+    r = verify_citations('The "Disclosing Party" is [INPUT NEEDED: disclosing_party].', led)
+    c.ok(r["pass"], "an [INPUT NEEDED] placeholder sentence needs no citation (honest gap)")
+    r = verify_citations("_Insufficient evidence in the vault to draft this section._", led)
+    c.ok(r["pass"], "the honest-withhold line needs no citation")
+    # …but a real uncited claim — even alongside a placeholder — is STILL caught.
+    r = verify_citations("The consideration is [INPUT NEEDED: amount] but the deposit was 50,000.", led)
+    c.ok(not r["pass"], "a stated figure beside a placeholder is STILL flagged (moat intact)")
+
     print("\n── run_output_gates (combined + redaction) ──────────────────────")
     out = run_output_gates("Net sales were 513,983 [amzn-2022 p.41].", led)
     c.ok(out.passed, "clean draft → passed")
