@@ -238,6 +238,30 @@ _T: List[WorkflowTemplate] = [
             "its source span [doc p.N]. Do not assert a holding you cannot ground in the vault."),
     ),
 
+    # G7 wedge §2.2 — Litigation intake → case timeline + dates/events + issues (→ F6 Layer A).
+    WorkflowTemplate(
+        id="litigation-intake",
+        title="Litigation intake — timeline, dates & events, issues",
+        practice_area="Litigation", output_type="Output", shape="output", base_mode="deep",
+        tool_subset=_PROSE, step_count=4,
+        description="From the pleadings and filings in this vault, build a chronological case "
+                    "timeline, a list of dates & events, and the issues in dispute — each tied to "
+                    "the document that establishes it.",
+        params_schema=[{"name": "matter", "label": "Matter / parties (optional)", "type": "text",
+                        "required": False, "help": "e.g. ABC Ltd v. XYZ Pvt Ltd — helps frame the parties."}],
+        question_format="Conduct litigation intake over the pleadings and filings in this vault "
+                        "for the matter {matter}: build the case timeline, the list of dates & "
+                        "events, and the issues in dispute.",
+        prompt_overlay=_output_overlay(
+            "Produce three markdown sections. `## Case Timeline` — a chronological ordered list, "
+            "each entry: the date, the event/filing, and the [doc p.N] citation that establishes "
+            "it (sort by date; an undated event goes last, marked _undated_). `## List of Dates & "
+            "Events` — the same facts as a compact table-style bullet list (Date — Event — Source). "
+            "`## Issues in Dispute` — the legal issues joined between the parties, each a cited "
+            "bullet quoting the plaint/written-statement text that raises it. Never assert a date, "
+            "event, or issue you cannot cite to a filing; omit anything ungrounded."),
+    ),
+
     # ── Transactional ────────────────────────────────────────────────────────────
     WorkflowTemplate(
         id="extract-terms-supply-agreements",
@@ -316,6 +340,74 @@ _T: List[WorkflowTemplate] = [
             "you cannot ground in a clause."),
     ),
 
+    # G7 wedge §2.2 — NDA review → intake → extract → issue-detect vs playbook → memo.
+    WorkflowTemplate(
+        id="nda-review",
+        title="NDA review against the playbook",
+        practice_area="Transactional", output_type="Review", shape="grid", base_mode="grid",
+        tool_subset=_PROSE, step_count=5,
+        description="Review an NDA clause-by-clause against the firm's standard positions — for "
+                    "each topic, the clause as drafted, whether it conforms or deviates, and the "
+                    "issue flagged — each cited to the document or marked missing.",
+        params_schema=[{"name": "doc_ids", "label": "NDA(s)", "type": "doc_multiselect",
+                        "required": False, "help": "Leave empty to review every document in the vault."}],
+        columns=[
+            {"key": "term", "label": "Confidentiality Term", "kind": "clause",
+             "prompt": "Find the confidentiality survival/term clause. Quote it.",
+             "risk_rubric": "standard if a defined finite term (e.g. 2-5 years); non_standard if perpetual or undefined; missing if absent"},
+            {"key": "definition", "label": "Definition of Confidential Info", "kind": "clause",
+             "prompt": "Find how 'Confidential Information' is defined. Quote the definition.",
+             "risk_rubric": "standard if scoped with carve-outs (public/independently-developed); non_standard if unbounded; missing if absent"},
+            {"key": "permitted", "label": "Permitted Disclosures", "kind": "clause",
+             "prompt": "Find the permitted-disclosure / need-to-know carve-out. Quote it, or MISSING."},
+            {"key": "mutual", "label": "Mutual vs One-Way", "kind": "clause",
+             "prompt": "Is the NDA mutual or one-way? Quote the operative obligation that shows which.",
+             "risk_rubric": "standard if mutual; non_standard if one-way against us; missing if unclear"},
+            {"key": "governing_law", "label": "Governing Law / Seat", "kind": "clause",
+             "prompt": "Find the governing-law and dispute-resolution/seat clause. Quote it.",
+             "risk_rubric": "standard if Indian law with a named seat; else non_standard; missing if absent"},
+        ],
+        fanout={"max_cells": 120},
+    ),
+    # G7 wedge §2.2 — Contract abstraction → key terms across a portfolio into a grid.
+    WorkflowTemplate(
+        id="contract-abstraction",
+        title="Contract abstraction across a portfolio",
+        practice_area="Transactional", output_type="Review", shape="grid", base_mode="grid",
+        tool_subset=_PROSE, step_count=6,
+        description="Abstract the key commercial terms from every contract in the vault into one "
+                    "grid — parties, effective date, term, value, renewal, termination, and "
+                    "governing law — each cell quoted to its source or flagged.",
+        params_schema=[{"name": "doc_ids", "label": "Contracts", "type": "doc_multiselect",
+                        "required": False, "help": "Leave empty to abstract every document in the vault."}],
+        columns=[
+            {"key": "parties", "label": "Parties", "kind": "clause", "prompt": "Identify the contracting parties. Quote the parties clause."},
+            {"key": "effective_date", "label": "Effective Date", "kind": "clause", "prompt": "Find the effective/commencement date. Quote it, or MISSING."},
+            {"key": "term", "label": "Term", "kind": "clause", "prompt": "Find the term/duration clause. Quote the period."},
+            {"key": "value", "label": "Contract Value", "kind": "clause", "prompt": "Find the consideration / contract value / fees. Quote it, or MISSING."},
+            {"key": "renewal", "label": "Renewal", "kind": "clause", "prompt": "Find the renewal / auto-renewal clause. Quote it, or MISSING."},
+            {"key": "termination", "label": "Termination", "kind": "clause", "prompt": "Find the termination clause + notice period. Quote it."},
+            {"key": "governing_law", "label": "Governing Law", "kind": "clause", "prompt": "Find the governing-law clause. Quote it."},
+        ],
+        fanout={"max_cells": 120},
+    ),
+    # G7 wedge §2.2 — M&A due-diligence → request list → ingest data-room → present/partial/missing.
+    WorkflowTemplate(
+        id="ma-due-diligence",
+        title="M&A due-diligence — data-room request review",
+        practice_area="Transactional", output_type="Review", shape="grid", base_mode="grid",
+        tool_subset=_PROSE, step_count=6,
+        description="Provide the due-diligence request list, and DocQuery sweeps the data-room "
+                    "documents to determine whether each item is present, partial, or missing — "
+                    "each answer cited to the supporting document — the red-flag report.",
+        params_schema=[{"name": "doc_ids", "label": "Data-room documents", "type": "doc_multiselect",
+                        "required": False, "help": "Leave empty to search the whole data room (vault)."},
+                       {"name": "items", "label": "Due-diligence request items (one per line)", "type": "textarea",
+                        "required": True, "help": "e.g. Certificate of incorporation\\nMOA & AOA\\nBoard resolutions\\nMaterial contracts\\nShareholding pattern\\nLitigation summary"}],
+        columns=[],  # NOTE: dynamic — one column per request item at resolve time (see _dynamic_columns)
+        fanout={"max_cells": 120},
+    ),
+
     # ── Financial services ───────────────────────────────────────────────────────
     WorkflowTemplate(
         id="filings-compare-memo",
@@ -348,6 +440,29 @@ _T: List[WorkflowTemplate] = [
             "One `## <Covenant>` section each: threshold, the computed actual (via `compute`, "
             "cited), and a bold PASS or BREACH. If a figure isn't in the documents, say so and "
             "abstain on that covenant — never guess a value."),
+    ),
+    # G7 wedge §2.2 — Covenant compliance → extract covenants → compute current state → breach report (→ F3).
+    WorkflowTemplate(
+        id="covenant-compliance",
+        title="Covenant compliance — extract, compute, breach report",
+        practice_area="Financial services", output_type="Draft", shape="report", base_mode="deep",
+        tool_subset=_NUMERIC, step_count=5,
+        description="Extract the financial covenants from the credit agreement, compute each ratio "
+                    "from the borrower's filings, and produce a breach report — PASS or BREACH per "
+                    "covenant, every figure traced to its source cell.",
+        params_schema=[{"name": "focus", "label": "Covenants to focus on (optional)", "type": "text",
+                        "required": False, "help": "e.g. leverage ratio, interest cover, DSCR — leave empty to cover all found."}],
+        question_format="Extract the financial covenants from the credit agreement(s) in this "
+                        "vault, compute each from the borrower's financials, and report PASS or "
+                        "BREACH for each. {focus}",
+        prompt_overlay=_draft_overlay(
+            "Structure: `## Covenants` — for EACH covenant found in the agreement, a sub-heading "
+            "with: the covenant as drafted (cited to the clause [doc p.N]), the threshold, the "
+            "computed actual value (via `compute`/`table_lookup`, cited to the source cell), and a "
+            "bold **PASS** or **BREACH**. Then `## Summary` — the count of passes and breaches and "
+            "any covenant you could not test. NEVER guess a ratio: if a figure needed to test a "
+            "covenant is not in the documents, mark that covenant **UNTESTED** and say which input "
+            "was missing — never a fabricated value."),
     ),
     WorkflowTemplate(
         id="extract-terms-credit-agreements",
@@ -461,7 +576,7 @@ def _dynamic_columns(template: WorkflowTemplate, params: Dict[str, Any]) -> List
     """A few grid templates build their columns from a free-text param (e.g. the diligence
     request list = one column per item). Keeps the template DATA while letting the user define
     the axis. Falls back to the template's static columns when no dynamic param is present."""
-    if template.id == "check-diligence-request-list":
+    if template.id in ("check-diligence-request-list", "ma-due-diligence"):
         raw = str(params.get("items", "") or "")
         items = [ln.strip() for ln in raw.replace("\\n", "\n").splitlines() if ln.strip()][:10]
         cols = []

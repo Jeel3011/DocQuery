@@ -172,10 +172,16 @@ def main() -> int:
                  and f"[INPUT NEEDED: {probe}]" not in req_filled["instructions"],
                  f"[{d.id}] a provided required fact is carried through (not bracketed)")
 
-        # (c) the rendered instruction forbids law-from-memory (retrieve, version-in-force).
+        # (c) the rendered instruction forbids law-from-memory AND is ACTIONABLE: it names the
+        # `search_knowledge` tool (G8), instructs an as-of retrieval, and gives the unverified
+        # fallback — so the agent retrieves the real provision, never paraphrases from training.
         instr = render_draft_request(d, facts={})["instructions"]
-        c.ok("version-in-force" in instr or "never paraphrase from memory" in instr,
-             f"[{d.id}] instruction requires citing law by retrieval, version-in-force")
+        c.ok("never from memory" in instr or "never paraphrase the section from memory" in instr,
+             f"[{d.id}] instruction forbids stating law from memory")
+        c.ok("search_knowledge" in instr,
+             f"[{d.id}] instruction names the search_knowledge tool (law comes from G8, §3.3)")
+        c.ok("as_of" in instr and "[AUTHORITY UNVERIFIED:" in instr,
+             f"[{d.id}] instruction directs an as-of retrieval + brackets an unverified authority")
 
     # ── 3. THE RENDER FEEDS THE EXISTING DRAFT ROUTE (one engine) ──────────────────
     print("\n── 3. render → the draft route's (doc_type, instructions) ───────")
@@ -223,6 +229,62 @@ def main() -> int:
              f"[{d.id}] render returns exactly the route's fields") if d.id == dts[0].id else None
     bad = [d.id for d in dts if set(render_draft_request(d).keys()) != {"doc_type", "instructions"}]
     c.ok(not bad, f"every row renders only the route's fields (offenders: {bad or 'none'})")
+
+    # ── 6. GOLDEN-MATTER FIXTURES (§4 area gate) — a known matter, end-to-end ──────
+    # The per-row checks above prove structure/vocab/cite-or-bracket in isolation. The
+    # plan's area gate (§4) wants a KNOWN MATTER per shipped doc type: realistic facts →
+    # assert the composed draft request has all four properties together (structure carried ·
+    # provided facts folded · missing facts bracketed · law-by-G8-retrieval), then the SAME
+    # gate binds a draft built from it. One representative doc type per wedge practice area.
+    print("\n── 6. golden-matter fixtures: a known matter, end-to-end ─────────")
+    _GOLDEN = [
+        # (doc_type, matter facts present, a required label deliberately OMITTED to prove
+        #  it brackets, a structure section that must appear, a vocab token that must appear)
+        ("nda", {"disclosing_party": "Veridian Labs Pvt Ltd", "receiving_party": "Nodal AI Inc",
+                 "purpose": "evaluating a data-licensing partnership", "governing_law": "India, seat at Bengaluru"},
+         "term", "Definition of Confidential Information", "Confidential Information"),
+        ("plaint", {"plaintiff": "Meera Iyer", "relief": "recovery of INR 12,40,000 with interest"},
+         "court", "prayer", "plaintiff"),
+        ("facility_agreement", {"facility_amount": "INR 200 crore term loan",
+                                "governing_law": "India"},
+         "borrower", "Events of default", "drawdown"),
+        ("will", {"testator": "Rustom F. Mistry", "bequests": "the Colaba flat to my daughter Aban"},
+         "executor", "Attestation by two witnesses", "testator"),
+    ]
+    for did, facts, omit_label, must_section, must_vocab in _GOLDEN:
+        d = get_doc_type(did)
+        if d is None:
+            c.ok(False, f"[golden:{did}] doc type exists"); continue
+        instr = render_draft_request(d, facts=facts)["instructions"]
+
+        # (a) structure carried — the named India-correct section appears in the request.
+        c.ok(must_section in instr, f"[golden:{did}] structure carries the '{must_section}' section")
+        c.ok(must_vocab in instr, f"[golden:{did}] Indian vocabulary '{must_vocab}' is present")
+        # (b) provided matter facts are folded through verbatim.
+        a_value = next(iter(facts.values()))
+        c.ok(a_value in instr, f"[golden:{did}] a provided matter fact is folded into the draft request")
+        # (b) a required fact NOT in the matter is bracketed, never invented.
+        c.ok(f"[INPUT NEEDED: {omit_label}]" in instr,
+             f"[golden:{did}] the missing required fact '{omit_label}' brackets [INPUT NEEDED]")
+        # (c) the law is sourced from G8 by retrieval, never memory (actionable instruction).
+        c.ok("search_knowledge" in instr,
+             f"[golden:{did}] the matter draft cites law by G8 retrieval (search_knowledge)")
+
+    # (d) the SAME gate binds a golden-matter draft — a grounded, cited figure survives, an
+    # uncited asserted figure is redacted (the no-softer-path rule, on a realistic facility
+    # draft). A figure is what the citation gate scrutinizes; a wrong drafted number is the
+    # legal equivalent of a confident-wrong cell.
+    led_g = EvidenceLedger()
+    led_g.record("read", 1, [{"kind": "cell", "doc": "facility-draft", "page": 2,
+                              "value": 2000000000.0, "label": "Facility amount",
+                              "display": "INR 200 crore"}])
+    gd = ("## The facility — commitment amount\nThe facility amount is INR 200 crore "
+          "[facility-draft p.2].\n\n## Interest\nThe applicable interest rate is 9.5% per annum.")
+    og = gate_sectioned(gd, led_g)
+    rg = og.redacted_draft or gd
+    c.ok("INR 200 crore" in rg, "[golden] the gate preserves the grounded, cited facility figure")
+    c.ok(not og.passed and "9.5%" not in rg,
+         "[golden] an uncited drafted figure is redacted (same gate, no exemption for a card draft)")
 
     # ── summary ────────────────────────────────────────────────────────────────
     print(f"\n{'='*60}")

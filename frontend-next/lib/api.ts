@@ -385,6 +385,25 @@ export async function exportDraftPdf(
   }
 }
 
+// G6.3: export a completed redline (the streamed findings) as a tracked-changes .docx.
+export async function exportRedlineDocx(
+  token: string,
+  title: string,
+  docName: string,
+  findings: Array<Record<string, unknown>>
+): Promise<Blob> {
+  try {
+    const res = await makeClient(token).post(
+      `/export/redline-docx`,
+      { title, doc_name: docName, findings },
+      { responseType: "blob", timeout: 60_000 }
+    );
+    return res.data;
+  } catch (err) {
+    handleAxiosError(err);
+  }
+}
+
 // ─── Playbook (G6.2) ──────────────────────────────────────────────────────────
 
 export interface PlaybookRow {

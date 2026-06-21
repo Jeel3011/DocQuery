@@ -146,6 +146,63 @@ def main() -> int:
     c.ok(gate_for(rc_grid.shape) is run_output_gates,
          "grid shape → the whole-answer gate family (the per-cell grid gate runs in build_cell)")
 
+    # ── 1b. THE G7 WEDGE TEMPLATES (§2.2) — 5 verb-sequences, no new engine ───────
+    print("\n── 1b. the 5 wedge workflows resolve over the shared engine ─────")
+    WEDGE = {"nda-review", "ma-due-diligence", "contract-abstraction",
+             "litigation-intake", "covenant-compliance"}
+    ids = {t.id for t in ts}
+    c.ok(WEDGE.issubset(ids), f"all 5 §2.2 wedge templates are registered (missing: {WEDGE - ids})")
+
+    # Each wedge template resolves to a RunConfig with a known shape + the SAME gate-by-shape
+    # rule + a non-empty tool subset — proving it's data over the one loop, not a new path.
+    gate_for = lambda shape: gate_sectioned if shape == "report" else run_output_gates
+    EXPECT = {  # id → (shape, output_type)
+        "nda-review": ("grid", "Review"),
+        "ma-due-diligence": ("grid", "Review"),
+        "contract-abstraction": ("grid", "Review"),
+        "litigation-intake": ("output", "Output"),
+        "covenant-compliance": ("report", "Draft"),
+    }
+    for wid, (shape, otype) in EXPECT.items():
+        t = get_template(wid)
+        rc = resolve_run(t, {})
+        c.ok(rc.shape == shape and rc.output_type == otype,
+             f"{wid} resolves to shape={shape}, type={otype}")
+        c.ok(bool(rc.tool_subset), f"{wid} carries a non-empty tool subset (precision over breadth)")
+        c.ok(gate_for(rc.shape) in (gate_sectioned, run_output_gates),
+             f"{wid} is bound by the shape's gate (no softer path)")
+
+    # NDA review (grid) yields its 5 typed clause columns with the playbook-style risk rubric.
+    nda = resolve_run(get_template("nda-review"), {"doc_ids": []})
+    c.ok(len(nda.columns) == 5 and all(isinstance(x, GridColumn) for x in nda.columns),
+         "nda-review yields 5 typed GridColumns")
+    c.ok(any(x.key == "term" and x.risk_rubric for x in nda.columns),
+         "nda-review's confidentiality-term column carries a risk rubric (issue-detect vs playbook)")
+
+    # Contract abstraction (grid) is the portfolio key-terms grid — 7 columns.
+    abst = resolve_run(get_template("contract-abstraction"), {"doc_ids": []})
+    c.ok(len(abst.columns) == 7 and abst.columns[0].key == "parties",
+         "contract-abstraction is a 7-column portfolio key-terms grid")
+
+    # M&A DD (grid) builds its axis dynamically from the request-list param (one column per item).
+    dd_cols = resolve_grid_columns(get_template("ma-due-diligence"),
+                                   {"items": "Certificate of incorporation\nMOA & AOA\nBoard resolutions"})
+    c.ok([x.label for x in dd_cols] == ["Certificate of incorporation", "MOA & AOA", "Board resolutions"],
+         "ma-due-diligence builds one grid column per request-list item")
+
+    # Litigation intake (output) folds the matter into the question + shapes a timeline deliverable.
+    li = resolve_run(get_template("litigation-intake"), {"matter": "ABC Ltd v. XYZ Pvt Ltd"})
+    c.ok("ABC Ltd v. XYZ Pvt Ltd" in li.question, "litigation-intake folds the matter into the question")
+    c.ok("Case Timeline" in li.system_prompt and "Issues in Dispute" in li.system_prompt,
+         "litigation-intake overlay shapes the timeline + dates/events + issues deliverable")
+
+    # Covenant compliance (report) composes a breach-report question + the draft overlay.
+    cov = resolve_run(get_template("covenant-compliance"), {"focus": "leverage ratio"})
+    c.ok(cov.shape == "report" and "leverage ratio" in cov.question,
+         "covenant-compliance composes a breach-report question from the focus param")
+    c.ok(cov.system_prompt.startswith(SYSTEM_PROMPT_V1) and "BREACH" in cov.system_prompt,
+         "covenant-compliance overlay shapes the PASS/BREACH report on the base contract")
+
     # ── 2. RESTRICTION IS A FEATURE — only the subset reaches the model ───────────
     print("\n── 2. tool restriction: the model sees ONLY the subset ──────────")
 

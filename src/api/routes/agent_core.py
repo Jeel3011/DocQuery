@@ -123,6 +123,14 @@ async def agentcore_query_stream(
     # G6.1 drafting: the deliverable request (doc_type + instructions) is composed into the
     # question so drafting rides the SAME loop — no second orchestrator. The draft prompt
     # overlay (prompt.py) supplies the deliverable shape; the gate binds it like any answer.
+    # UX: a PROSE/legal draft never queries numeric table grids — so we can skip the slow
+    # sequential grid preload (the per-doc document_chunks fetch that makes the first step
+    # ~10-15s on a big vault). Set when the catalog doc type is a clearly-prose practice area;
+    # finance/transactional drafts (an SPA with consideration, a facility with amounts) keep
+    # grids. Defaults to False ⇒ byte-identical for every non-draft and non-catalog run.
+    skip_grids = False
+    _PROSE_AREAS = {"Litigation", "Family", "IP & Technology", "Employment",
+                    "Real estate", "Compliance (India)"}
     if mode == "draft":
         _doc_type = (getattr(body, "doc_type", None) or "").strip()
         _instr = (getattr(body, "instructions", None) or "").strip()
@@ -142,6 +150,9 @@ async def agentcore_query_stream(
                 _doc_type = req["doc_type"]                          # the human-facing card title
                 catalog_instr = req["instructions"]
                 _instr = (catalog_instr + ("\n\nMatter brief: " + _instr if _instr else "")).strip()
+                # A prose-practice draft (a plaint, a will, a POSH policy) has no numeric
+                # grids to consult — skip the preload to cut the cold-start latency.
+                skip_grids = _dt.practice_area in _PROSE_AREAS
 
         if _doc_type or _instr:
             composed = "Produce a client-ready " + (_doc_type or "deliverable")
@@ -214,7 +225,11 @@ async def agentcore_query_stream(
             logger.warning("[agentcore] grid preload failed: %s", exc)
             return []
 
-    grids = await asyncio.to_thread(_load_grids)
+    # Skip the (slow, sequential) grid preload for a prose/legal draft — it has no numeric
+    # tables to consult, so the fetch is pure cold-start latency for those matters.
+    grids = [] if skip_grids else await asyncio.to_thread(_load_grids)
+    if skip_grids:
+        logger.info("[agentcore] prose-draft — skipped grid preload (no numeric tables needed)")
 
     # ── Conversation memory (G5 Ask polish): thread PRIOR turns into the run so a
     # follow-up ("what about 2022?", "and the termination clause?") resolves against the
@@ -353,11 +368,15 @@ async def agentcore_query_stream(
                 tools=run_tools,            # G8.7: vault-off strips vault tools; None = default
             ):
                 tracer.record(ev)  # durable journal + health (never raises)
-                # Also log compactly to the API stdout for live tailing.
-                try:
-                    logger.info("[agentcore.ev] %s", json.dumps(ev, default=str)[:2000])
-                except Exception:  # noqa: BLE001 — logging must never break the stream
-                    logger.info("[agentcore.ev] <unserialisable %s>", ev.get("type"))
+                # Also log compactly to the API stdout for live tailing — but NOT the
+                # per-word `token_delta` previews (one INFO line per word floods the log and
+                # buries the trace events you actually debug from). The tracer still journals
+                # them; the final `token` event still logs the authoritative answer.
+                if ev.get("type") != "token_delta":
+                    try:
+                        logger.info("[agentcore.ev] %s", json.dumps(ev, default=str)[:2000])
+                    except Exception:  # noqa: BLE001 — logging must never break the stream
+                        logger.info("[agentcore.ev] <unserialisable %s>", ev.get("type"))
                 yield _sse(_translate(ev))
         except Exception as exc:  # noqa: BLE001 — the loop shouldn't raise, but never 500 the stream
             logger.error("[agentcore] loop raised — degrading: %s", exc)

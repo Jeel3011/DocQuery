@@ -220,6 +220,66 @@ def test_redline_docx_roundtrip():
     check("Anti-Bribery topic present", "Anti-Bribery" in full_text)
 
 
+# ── Test 6: §2.1 — redline FROM a catalog doc type (structure → playbook rows) ────
+
+def test_doc_type_to_playbook_rows():
+    print("\nTest 6 — catalog→redline bridge: DocType.structure → playbook rows")
+    from src.components.agent_core.doc_catalog import (
+        get_doc_type, playbook_rows_for_doc_type,
+    )
+
+    nda = get_doc_type("nda")
+    check("nda catalog row exists", nda is not None)
+
+    # 6a. No firm playbook → structure-driven presence/on-market rows for the clauses only.
+    rows = playbook_rows_for_doc_type(nda, user_playbook_rows=[])
+    topics = [r["clause_topic"] for r in rows]
+    check("derives redline rows from the NDA structure", len(rows) >= 3, f"{len(rows)} rows")
+    check("includes the confidentiality clause", any("Confidential" in t for t in topics), str(topics))
+    check("includes the governing-law clause", any(t == "Governing Law" for t in topics), str(topics))
+    # The NDA structure's non-clause items (parties, return/destruction, boilerplate-as-such)
+    # must NOT each become a redline row — only redlineable clauses do.
+    check("non-clause structural items are excluded (no 'Parties and effective date' row)",
+          not any("Parties and effective" in t for t in topics), str(topics))
+    check("every structure-only row carries an on-market standard_position",
+          all(r["standard_position"] and r.get("source") == "catalog_structure" for r in rows))
+    # De-dupe: a topic appears at most once even if several structure items brush it.
+    check("clause topics are de-duped", len(topics) == len(set(topics)), str(topics))
+
+    # 6b. WITH a firm playbook → the firm's position governs that clause (§3.4 split).
+    firm = [{
+        "clause_topic": "Governing Law",
+        "standard_position": "FIRM POSITION: the laws of India, seat at Mumbai.",
+        "fallback_position": "Singapore for cross-border MNC deals.",
+    }]
+    rows2 = playbook_rows_for_doc_type(nda, user_playbook_rows=firm)
+    gov = next((r for r in rows2 if r["clause_topic"] == "Governing Law"), None)
+    check("firm playbook position is preferred over the structure default", gov is not None)
+    check("the firm's standard_position governs the governing-law row",
+          gov is not None and "FIRM POSITION" in gov["standard_position"])
+    check("the firm's fallback is carried through",
+          gov is not None and "Singapore" in (gov.get("fallback_position") or ""))
+    check("the firm-sourced row is tagged firm_playbook",
+          gov is not None and gov.get("source") == "firm_playbook")
+    # Clauses with NO firm position still fall back to the structure check (mixed sources).
+    conf = next((r for r in rows2 if "Confidential" in r["clause_topic"]), None)
+    check("an un-played clause still falls back to the structure check",
+          conf is not None and conf.get("source") == "catalog_structure")
+
+    # 6c. The max_rows ceiling is honoured (matches the route's _MAX_REDLINE_TOPICS guard).
+    spa = get_doc_type("spa")
+    capped = playbook_rows_for_doc_type(spa, user_playbook_rows=[], max_rows=3)
+    check("max_rows caps the derived row count", len(capped) <= 3, f"{len(capped)} rows")
+
+    # 6d. A doc type whose structure has no redlineable clause yields an empty list (no-op,
+    # never a crash) — e.g. a pure-recital instrument.
+    from src.components.agent_core.doc_catalog import DocType
+    recital_only = DocType(id="x", title="Recital", practice_area="Litigation",
+                           structure=["Cause title", "Recital of facts", "Verification"])
+    check("a structure with no redlineable clause yields an empty list",
+          playbook_rows_for_doc_type(recital_only) == [])
+
+
 if __name__ == "__main__":
     print("=" * 64)
     print("G6.3 REDLINE GATE — bind-or-flag + .docx round-trip ($0)")
@@ -229,6 +289,7 @@ if __name__ == "__main__":
     test_missing()
     test_bind_or_flag_demotion()
     test_redline_docx_roundtrip()
+    test_doc_type_to_playbook_rows()
     print("\n" + "=" * 64)
     if _failures:
         print(f"{FAIL}: {len(_failures)} check(s) failed: {_failures}")

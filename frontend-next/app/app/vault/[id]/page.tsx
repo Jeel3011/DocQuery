@@ -21,7 +21,7 @@ import { useParams, useRouter } from "next/navigation";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   ArrowLeft, FolderOpen, Table2, FileEdit, FileText, CheckCircle, AlertCircle,
-  RefreshCw, Search, Trash2, Telescope, Workflow,
+  RefreshCw, Search, Trash2, Telescope, Workflow, Highlighter,
 } from "lucide-react";
 import { toast } from "sonner";
 import { useAuthStore } from "@/stores/auth.store";
@@ -282,6 +282,13 @@ export default function VaultWorkspacePage() {
                 label: "Workflows",
                 icon: <Workflow size={18} />,
                 onClick: () => router.push(`/app/vault/${encodeURIComponent(vaultId)}/workflows`),
+              },
+              {
+                // G6.3: Redline — review a contract clause-by-clause vs a catalog doc type
+                // or the firm playbook; each finding is quoted to the doc or flagged.
+                label: "Redline",
+                icon: <Highlighter size={18} />,
+                onClick: () => router.push(`/app/vault/${encodeURIComponent(vaultId)}/redline`),
               },
             ]}
           />

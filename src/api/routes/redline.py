@@ -49,9 +49,12 @@ _MAX_REDLINE_TOPICS = 30   # hard ceiling per run (cost guard × N topics)
 class RedlineRequest(BaseModel):
     collection_id: str
     doc_id: str                                   # the single target document to redline
+    # Either pass explicit playbook_rows, OR a catalog doc_type to derive them from
+    # (§2.1 REDLINE-from-a-catalog-doc-type link). At least one must be present.
     playbook_rows: List[Dict[str, Any]] = Field(  # [{clause_topic, standard_position, ...}]
-        ..., min_length=1, max_length=_MAX_REDLINE_TOPICS
+        default_factory=list, max_length=_MAX_REDLINE_TOPICS
     )
+    doc_type: Optional[str] = None                # a catalog DocType id (e.g. "nda", "spa")
     title: Optional[str] = None
 
 
@@ -67,6 +70,37 @@ async def redline_stream(
 
     if not cfg.USE_AGENT_CORE:
         raise HTTPException(status_code=404, detail="Redline is unavailable (USE_AGENT_CORE is off).")
+
+    # §2.1 — redline FROM a catalog doc type. If no explicit playbook_rows were passed but a
+    # catalog doc_type was, derive the clause-topic rows from the doc type's structure,
+    # preferring the firm's stored playbook positions where they exist (§3.4 split).
+    if not body.playbook_rows and body.doc_type:
+        from src.components.agent_core.doc_catalog import get_doc_type, playbook_rows_for_doc_type
+
+        dt = get_doc_type(body.doc_type)
+        if dt is None:
+            raise HTTPException(status_code=404, detail=f"Unknown doc type '{body.doc_type}'.")
+
+        # Pull the firm's playbook (best-effort; an empty/failed fetch → structure-only check).
+        user_rows: List[Dict[str, Any]] = []
+        try:
+            q = sb.client.table("playbooks").select(
+                "clause_topic, standard_position, fallback_position"
+            ).eq("user_id", sb.user_id)
+            res = q.execute()
+            user_rows = res.data or []
+        except Exception as exc:  # noqa: BLE001 — a playbook fetch failure must not 500 the run
+            logger.warning("[redline] playbook fetch failed (structure-only fallback): %s", exc)
+
+        body.playbook_rows = playbook_rows_for_doc_type(
+            dt, user_rows, max_rows=_MAX_REDLINE_TOPICS
+        )
+
+    if not body.playbook_rows:
+        raise HTTPException(
+            status_code=400,
+            detail="Provide either playbook_rows or a known catalog doc_type to redline against.",
+        )
 
     n_topics = len(body.playbook_rows)
     if n_topics > _MAX_REDLINE_TOPICS:

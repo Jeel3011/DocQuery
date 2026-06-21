@@ -996,3 +996,113 @@ export async function streamWorkflowReport(
     reader.releaseLock();
   }
 }
+
+// ─── Redline (G6.3) — clause-by-clause review of one document vs a playbook OR a ──────
+// catalog doc type (LEGAL_TASK_CATALOG §2.1). The backend streams one `finding` per clause
+// topic, then a `redline_done` summary. Each finding is grounded (a quoted clause span) or
+// a flagged MISSING/ABSTAIN — never a silent gap. Mirrors streamWorkflowRun's SSE plumbing.
+export interface RedlineFindingEvent {
+  type: "finding";
+  clause_topic: string;
+  status: "deviation" | "conforming" | "missing" | "abstain";
+  target_quote: string | null;
+  deviation: string | null;
+  suggested_edit: string | null;
+  rationale: string | null;
+  playbook_standard: string;
+  grounded: boolean;
+}
+export interface RedlineDoneEvent {
+  type: "redline_done";
+  deviations: number;
+  conforming: number;
+  missing: number;
+  abstained: number;
+}
+export interface RedlineRunBody {
+  collection_id: string;
+  doc_id: string;
+  // Pass EITHER a catalog doc_type (the §2.1 link — derives clause topics from the doc
+  // type's structure + the firm's stored playbook) OR explicit playbook_rows.
+  doc_type?: string | null;
+  playbook_rows?: Array<{ clause_topic: string; standard_position: string; fallback_position?: string | null }>;
+  title?: string | null;
+}
+export interface RedlineCallbacks {
+  onFinding: (f: RedlineFindingEvent) => void;
+  onDone: (d: RedlineDoneEvent) => void;
+  onError: (message: string) => void;
+}
+
+export async function streamRedline(
+  token: string,
+  body: RedlineRunBody,
+  callbacks: RedlineCallbacks,
+  signal?: AbortSignal
+): Promise<void> {
+  let response: Response;
+  try {
+    response = await fetch(`${API_BASE}/api/v1/redline/stream`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "application/json",
+        Accept: "text/event-stream",
+      },
+      body: JSON.stringify(body),
+      signal,
+    });
+  } catch (err) {
+    if ((err as Error).name === "AbortError") return;
+    callbacks.onError("Network error — could not connect to server.");
+    return;
+  }
+
+  if (!response.ok) {
+    const text = await response.text().catch(() => "Unknown error");
+    if (response.status === 404) {
+      callbacks.onError("Redline is unavailable (agent core is off).");
+      return;
+    }
+    callbacks.onError(`Server error ${response.status}: ${text}`);
+    return;
+  }
+  if (!response.body) {
+    callbacks.onError("No response body — streaming not supported.");
+    return;
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split("\n");
+      buffer = lines.pop() ?? "";
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (!trimmed || !trimmed.startsWith("data: ")) continue;
+        const dataStr = trimmed.slice(6);
+        if (dataStr === "[DONE]") return;
+        try {
+          const ev = JSON.parse(dataStr) as Record<string, unknown>;
+          if (ev.type === "finding") callbacks.onFinding(ev as unknown as RedlineFindingEvent);
+          else if (ev.type === "redline_done") callbacks.onDone(ev as unknown as RedlineDoneEvent);
+          else if (ev.type === "error") callbacks.onError(String(ev.message ?? "Redline error"));
+        } catch {
+          console.warn("[redline] malformed SSE line:", dataStr);
+        }
+      }
+    }
+  } catch (err) {
+    if ((err as Error).name !== "AbortError") {
+      callbacks.onError("Stream interrupted. Please try again.");
+    }
+  } finally {
+    reader.releaseLock();
+  }
+}

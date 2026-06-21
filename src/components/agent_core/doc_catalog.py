@@ -99,15 +99,152 @@ def render_draft_request(dt: DocType, facts: Optional[Dict[str, Any]] = None) ->
                      + "\n".join(resolved))
 
     if dt.authority_refs:
+        # §3.3 non-negotiable — the law comes from G8, never the model's memory. Make this
+        # ACTIONABLE: name the `search_knowledge` tool and instruct a retrieval PER authority
+        # ref, version-in-force. The agent quotes what the tool returns (cited, as-of) or
+        # brackets the citation as unverified — it never states a section from training.
+        refs = "; ".join(dt.authority_refs)
         lines.append(
-            "Cite governing law ONLY by retrieving it from the knowledge base, version-in-force "
-            "(never paraphrase from memory): " + "; ".join(dt.authority_refs) + "."
+            "Governing law — cite ONLY by retrieving it, never from memory:\n"
+            "  - For EACH of these authorities, call the `search_knowledge` tool to fetch the "
+            "actual provision text in force, then quote and cite it: " + refs + ".\n"
+            "  - Pass the matter/transaction date as `as_of` so the version cited matches the "
+            "facts' date; a provision the tool withholds (not vouchably in force) must NOT be "
+            "stated as current.\n"
+            "  - If `search_knowledge` returns nothing for an authority, write the citation as "
+            "`[AUTHORITY UNVERIFIED: <ref>]` — never paraphrase the section from memory."
         )
 
     if dt.template_ref:
         lines.append(f"Use the firm template/playbook '{dt.template_ref}' as the gold standard where available.")
 
     return {"doc_type": dt.title, "instructions": "\n\n".join(lines)}
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# REDLINE bridge (§2.1 REDLINE verb) — a catalog DocType.structure → the playbook
+# clause-topic rows the redline engine (redline.py) already consumes.
+#
+# The split (§3.4 "templates/playbooks are the firm's"):
+#   - the CATALOG says WHICH clauses a doc type of this kind should have (the structure),
+#   - the firm PLAYBOOK says what the STANDARD POSITION on each clause is.
+# So redline can run from a catalog doc type WITH a firm playbook (use its positions) or
+# WITHOUT one (fall back to a structure-driven "is this clause present and on-market?"
+# check). Either way redline's contract is unchanged — it still gets `playbook_rows`.
+#
+# PURE + data-driven: branches on the structure text, never on `dt.id`. A non-clause
+# structural item (recitals, schedules, attestations) is NOT a redline row — you don't
+# compare a "Certified true copy attestation" against a market standard.
+# ──────────────────────────────────────────────────────────────────────────────
+
+# A structure item maps to a redlineable clause when it contains one of these signal
+# words. Each maps to the CANONICAL clause topic the seed playbook uses (so a user's
+# "Governing Law" row binds to a structure item worded "Governing law and dispute
+# resolution"). Order matters: the FIRST match wins (most-specific first).
+_REDLINE_CLAUSE_SIGNALS: List[tuple] = [
+    # (signal substrings, canonical clause topic)
+    (("governing law", "dispute resolution", "arbitration", "jurisdiction"), "Governing Law"),
+    (("confidential", "non-disclosure", "nda"), "Confidentiality / NDA Term"),
+    (("indemnif", "indemnity"), "Indemnity Scope"),
+    (("limitation of liability", "liability cap", "liability"), "Liability Cap"),
+    (("termination",), "Termination for Cause"),
+    (("term and surviv", "term and renew", "renewal", "term"), "Term and Renewal"),
+    (("intellectual property", "ip ownership", "ip "), "Intellectual Property Ownership"),
+    (("data protection", "dpdp", "personal data"), "Data Protection / DPDPA Compliance"),
+    (("non-solicit", "non solicit"), "Non-Solicitation"),
+    (("force majeure",), "Force Majeure"),
+    (("assignment", "change of control", "change-of-control"), "Assignment"),
+    (("entire agreement", "supersession"), "Entire Agreement / Supersession"),
+    (("notices",), "Notices"),
+    (("amendment",), "Amendments"),
+    (("representations and warranties", "reps and warranties", "warranties"), "Representations & Warranties"),
+    (("conditions precedent", "conditions to closing", "closing"), "Conditions to Closing"),
+    (("consideration", "purchase price", "pricing", "payment"), "Consideration / Price"),
+]
+
+
+def _redline_topic_for(structure_item: str) -> Optional[str]:
+    """Return the canonical redline clause topic a structure item names, or None if the
+    item is a non-clause structural element (recital / schedule / attestation / parties)."""
+    s = structure_item.lower()
+    for signals, topic in _REDLINE_CLAUSE_SIGNALS:
+        if any(sig in s for sig in signals):
+            return topic
+    return None
+
+
+def _match_user_position(topic: str, user_rows: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    """Find the firm playbook row whose clause_topic matches `topic` (case-insensitive,
+    exact-then-contains). Returns the row dict or None."""
+    if not user_rows:
+        return None
+    tl = topic.lower()
+    # Exact match first (don't let "Liability Cap" shadow "Exclusion of Consequential Loss").
+    for r in user_rows:
+        if str(r.get("clause_topic", "")).lower() == tl:
+            return r
+    # Then a contains match either direction (the structure topic ⊆ a richer playbook label).
+    for r in user_rows:
+        rt = str(r.get("clause_topic", "")).lower()
+        if rt and (rt in tl or tl in rt):
+            return r
+    return None
+
+
+def playbook_rows_for_doc_type(
+    dt: DocType,
+    user_playbook_rows: Optional[List[Dict[str, Any]]] = None,
+    max_rows: int = 30,
+) -> List[Dict[str, Any]]:
+    """Map a catalog DocType.structure → the `{clause_topic, standard_position, ...}` rows
+    the redline engine consumes. The §2.1 REDLINE-from-a-catalog-doc-type link.
+
+    For each structure item that names a redlineable clause:
+      - if the firm has a playbook position for that topic → use the FIRM's position
+        (the §3.4 non-negotiable: the standard is the firm's, learned over time);
+      - else → a structure-driven presence/on-market check (so redline still flags a
+        missing or non-standard clause even with no firm playbook yet).
+
+    De-dupes by clause topic (the SPA structure names "termination" once even if several
+    items brush it). Returns at most `max_rows` (the redline route's hard ceiling).
+    Never raises; an empty structure yields an empty list (redline then no-ops cleanly).
+    """
+    user_rows = user_playbook_rows or []
+    out: List[Dict[str, Any]] = []
+    seen: set = set()
+
+    for item in dt.structure:
+        topic = _redline_topic_for(item)
+        if not topic or topic in seen:
+            continue
+        seen.add(topic)
+
+        firm = _match_user_position(topic, user_rows)
+        if firm is not None:
+            # The firm's standard governs (carry its fallback/notes through unchanged).
+            out.append({
+                "clause_topic": firm.get("clause_topic", topic),
+                "standard_position": firm.get("standard_position", ""),
+                "fallback_position": firm.get("fallback_position"),
+                "source": "firm_playbook",
+            })
+        else:
+            # No firm position yet → a structure-driven presence + on-market check.
+            out.append({
+                "clause_topic": topic,
+                "standard_position": (
+                    f"A {dt.title} should contain a clear, on-market '{topic}' clause "
+                    f"(this clause appears in the standard structure for this document type, "
+                    f"as '{item}'). Flag it as MISSING if absent, or as a deviation if it is "
+                    f"one-sided, unusual, or unenforceable under Indian law."
+                ),
+                "fallback_position": None,
+                "source": "catalog_structure",
+            })
+        if len(out) >= max_rows:
+            break
+
+    return out
 
 
 # ══════════════════════════════════════════════════════════════════════════════
