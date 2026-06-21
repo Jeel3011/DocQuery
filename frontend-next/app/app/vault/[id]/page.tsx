@@ -31,6 +31,7 @@ import {
 } from "@/lib/api";
 import { ChatInput } from "@/components/chat/ChatInput";
 import { UploadZone } from "@/components/app/UploadZone";
+import { ConnectorImport } from "@/components/app/ConnectorImport";
 import { PipelineTrack } from "@/components/app/PipelineTrack";
 import { DocTypeChip, FidelityDot } from "@/components/app/DocMeta";
 import { EmptyState } from "@/components/ui/EmptyState";
@@ -409,8 +410,11 @@ export default function VaultWorkspacePage() {
         )}
 
         {/* Ingress — slim command bar + full-page drag overlay (the NEW hybrid UX). */}
-        <div className="mb-3">
+        <div className="mb-3 space-y-2">
           <UploadZone token={token ?? ""} collectionId={vaultId} onUploaded={loadDocs} />
+          {/* G8.6 connectors — import from Drive/email into THIS vault (same pipeline).
+              Renders nothing when USE_CONNECTORS is off (config 404s). */}
+          <ConnectorImport token={token ?? ""} onImported={loadDocs} />
         </div>
 
         {/* Live pipeline tracks — processing docs visibly walk Parse→Chunk→Embed→Ready.

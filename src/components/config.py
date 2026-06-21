@@ -227,3 +227,11 @@ class Config:
     # ingestion CLI and the offline gates do NOT read this flag — they exercise the
     # machine directly; the flag only governs the live agent's access to the tool.
     USE_KNOWLEDGE: bool = os.getenv("USE_KNOWLEDGE", "false").lower() == "true"
+
+    # USE_CONNECTORS gates the G8.6 vault connectors (Google Drive import, then email).
+    # OFF ⇒ the /connectors/* routes 404 ⇒ byte-identical to pre-G8.6. A connector is a
+    # SOURCE only: it pulls files and hands them to the SAME ingestion pipeline a manual
+    # upload uses (no new parser path). GOOGLE_DRIVE_CLIENT_ID is the public OAuth client
+    # id the frontend uses for the browser-side token flow (no server secret stored in v1).
+    USE_CONNECTORS: bool = os.getenv("USE_CONNECTORS", "false").lower() == "true"
+    GOOGLE_DRIVE_CLIENT_ID: str = os.getenv("GOOGLE_DRIVE_CLIENT_ID", "")

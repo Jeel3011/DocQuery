@@ -149,6 +149,79 @@ export async function deleteDocument(
   }
 }
 
+// ─── Connectors (G8.6) ──────────────────────────────────────────────────────────
+// A connector is a SOURCE: it pulls files from Drive/email and routes them into the SAME
+// ingestion pipeline a manual upload uses. All endpoints 404 when USE_CONNECTORS is off
+// (byte-identical guarantee) — the UI hides the entry point when getConnectorConfig 404s.
+
+export interface ConnectorConfig {
+  enabled: boolean;
+  google_drive: { client_id: string; scope: string };
+  email: { available: boolean; default_port?: number };
+}
+
+export interface ImportFileResult {
+  name: string;
+  status: "queued" | "skipped" | "error";
+  doc_id: string;
+  reason: string;
+}
+
+export interface ImportResult {
+  source: string;
+  folder: string;
+  queued: number;
+  skipped: number;
+  errored: number;
+  files: ImportFileResult[];
+  message: string;
+}
+
+export async function getConnectorConfig(token: string): Promise<ConnectorConfig | null> {
+  try {
+    const res = await makeClient(token).get<ConnectorConfig>("/connectors/config");
+    return res.data;
+  } catch (err) {
+    // 404 = feature off → caller hides the connector UI; not an error to surface.
+    if (axios.isAxiosError(err) && err.response?.status === 404) return null;
+    handleAxiosError(err);
+  }
+}
+
+export async function importGoogleDriveFolder(
+  token: string,
+  accessToken: string,
+  folderId: string,
+  folderName: string
+): Promise<ImportResult> {
+  try {
+    const res = await makeClient(token).post<ImportResult>(
+      "/connectors/google-drive/import",
+      { access_token: accessToken, folder_id: folderId, folder_name: folderName },
+      { timeout: 120_000 } // listing + fetching a folder can be slow
+    );
+    return res.data;
+  } catch (err) {
+    handleAxiosError(err);
+  }
+}
+
+export async function importEmailAttachments(
+  token: string,
+  body: { host: string; username: string; password: string; mailbox?: string; port?: number; max_messages?: number }
+): Promise<ImportResult> {
+  try {
+    const res = await makeClient(token).post<ImportResult>(
+      "/connectors/email/import",
+      body,
+      { timeout: 120_000 }
+    );
+    return res.data;
+  } catch (err) {
+    handleAxiosError(err);
+  }
+}
+
 // ─── Conversations ────────────────────────────────────────────────────────────
 
 export async function listConversations(
