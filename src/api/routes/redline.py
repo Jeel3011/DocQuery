@@ -37,7 +37,6 @@ from src.api.dependencies import (
     limiter,
 )
 from src.components.config import Config
-from src.api.routes.chat import _resolve_collection_filters, _embed_query
 from src.api.routes.agent_core import _sse
 
 router = APIRouter()
@@ -84,7 +83,7 @@ async def redline_stream(
         # Pull the firm's playbook (best-effort; an empty/failed fetch → structure-only check).
         user_rows: List[Dict[str, Any]] = []
         try:
-            q = sb.client.table("playbooks").select(
+            q = sb.read_client.table("playbooks").select(
                 "clause_topic, standard_position, fallback_position"
             ).eq("user_id", sb.user_id)
             res = q.execute()
@@ -109,6 +108,33 @@ async def redline_stream(
             detail=f"Too many clause topics ({n_topics}); limit is {_MAX_REDLINE_TOPICS}.",
         )
 
+    # ── Scope assembly + vault-membership check (H6) ────────────────────────────────────
+    # Build the vault's full doc map (id ↔ filename) the SAME way the agent-core route does
+    # (routes/agent_core.py:192-196): join via collections.user_id so a foreign collection_id
+    # resolves to nothing (no cross-user read), and the map IS the vault's membership set that
+    # read_document's H2 guard checks against. This runs OUTSIDE the SSE generator so a bad
+    # request fails fast with a real status code (a 400/404), not a mid-stream `error` event.
+    all_doc_ids = sb.get_collection_document_ids(body.collection_id) or []
+    if not all_doc_ids:
+        raise HTTPException(status_code=400, detail="The collection has no documents.")
+    docs = sb.read_client.table("documents").select("id,filename").in_(
+        "id", all_doc_ids
+    ).eq("user_id", sb.user_id).execute()
+    filename_by_doc: Dict[str, str] = {d["id"]: d["filename"] for d in (docs.data or [])}
+
+    # H6: REJECT a target doc_id that is not a member of this vault. The redline is scoped to
+    # ONE document; if it isn't in the collection we must NOT silently fall back to all vault
+    # docs (the pre-fix behaviour) — that would either review the wrong document or, worse,
+    # widen the scope. A foreign/unknown id is a hard 404 (the agent-core floor would refuse
+    # it anyway, but failing here is honest and immediate). This is the cross-vault membership
+    # check the data layer already enforces (read_document H2) surfaced up front.
+    if body.doc_id not in filename_by_doc:
+        raise HTTPException(
+            status_code=404,
+            detail="doc_id is not a document in this collection.",
+        )
+    doc_name = filename_by_doc[body.doc_id]
+
     async def _stream():
         try:
             from src.components.agent_core.model import build_model
@@ -116,32 +142,38 @@ async def redline_stream(
             from src.components.agent_core.redline import build_redline_cell
             from src.components.agent_core.registry import RunScope
 
-            # Scope assembly: resolve the target doc's filename + preload grids.
-            # We scope to ONE document (the redline target).
-            try:
-                embed = await _embed_query(
-                    body.playbook_rows[0].get("clause_topic", "clause"),
-                    cfg.EMBEDDING_MODEL, cfg.OPENAI_API_KEY,
-                )
-                filenames, doc_map = await asyncio.to_thread(
-                    _resolve_collection_filters,
-                    sb, body.collection_id, None, retrieval_mgr, embed,
-                )
-            except Exception as exc:
-                yield _sse({"type": "error", "message": f"Scope assembly failed: {exc}"})
-                return
+            # Preload the target doc's grids ONCE (shared across every clause-topic cell).
+            # Off the event loop — load_grids_for_docs does blocking DB reads. Best-effort:
+            # a contract is prose, so a failed/empty grid load just means cells lean on
+            # search_vault(kind="text") — never a 500. The membership check + filename map
+            # were resolved above (outside the stream), so this only fetches grids.
+            def _load_grids():
+                try:
+                    from src.components.brain.table_intent import load_grids_for_docs
+                    return load_grids_for_docs(
+                        sb, [body.doc_id],
+                        question=None, filename_by_doc=filename_by_doc, per_doc_top=20,
+                    ) or []
+                except Exception as exc:  # noqa: BLE001 — grids best-effort; cells degrade to read
+                    logger.warning("[redline] grid preload failed: %s", exc)
+                    return []
 
-            # Find the target doc filename
-            doc_name = doc_map.get(body.doc_id, body.doc_id)
-            target_filenames = [doc_name] if doc_name in filenames else filenames
+            grids = await asyncio.to_thread(_load_grids)
 
+            # Scope to ONE document (the redline target). doc_ids is the stable, ingest-stamped
+            # axis the agent-core vault-scope FLOOR (search.py) and the H2 read-membership guard
+            # (read.py, via filename_by_doc) both enforce — so every clause cell is provably
+            # locked to this one doc in this one vault. filename_by_doc is the FULL vault map so
+            # read_document's membership check has the real vault boundary to test against.
             scope = RunScope(
                 collection_id=body.collection_id,
                 doc_ids=[body.doc_id],
-                filenames=target_filenames,
+                filenames=[doc_name],
+                grids=grids,
                 retrieval_manager=retrieval_mgr,
                 db_client=sb,
-                filename_by_doc=doc_map,
+                filename_by_doc=filename_by_doc,
+                question=None,
                 config=cfg,
             )
 

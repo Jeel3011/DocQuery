@@ -154,7 +154,7 @@ async def get_usage_summary(
     """Get resource usage summary for the current user."""
     # Documents count
     try:
-        docs_res = sb.client.table("documents").select("id", count="exact").eq(
+        docs_res = sb.read_client.table("documents").select("id", count="exact").eq(
             "user_id", sb.user_id
         ).execute()
         docs_count = docs_res.count or 0
@@ -163,7 +163,7 @@ async def get_usage_summary(
 
     # Total chunks
     try:
-        chunks_res = sb.client.table("document_chunks").select("id", count="exact").eq(
+        chunks_res = sb.read_client.table("document_chunks").select("id", count="exact").eq(
             "user_id", sb.user_id
         ).execute()
         chunks_count = chunks_res.count or 0
@@ -172,7 +172,7 @@ async def get_usage_summary(
 
     # Collections count
     try:
-        colls_res = sb.client.table("collections").select("id", count="exact").eq(
+        colls_res = sb.read_client.table("collections").select("id", count="exact").eq(
             "user_id", sb.user_id
         ).execute()
         colls_count = colls_res.count or 0

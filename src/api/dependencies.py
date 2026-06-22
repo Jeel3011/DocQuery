@@ -194,6 +194,13 @@ async def get_current_user(
     # User identity is confirmed above; _user is set here.
     sb = SupabaseManager(use_service_role=True)
     sb._user = user
+    # F1 RLS hardening (defense-in-depth): attach the VERIFIED token so user-facing READS
+    # run through an RLS-enforced client (`sb.read_client`) where auth.uid() resolves and the
+    # existing `auth.uid() = user_id` policies are a real data-layer backstop — a forgotten
+    # app-layer `.eq(user_id)` filter can no longer leak across users. Writes/Storage stay on
+    # the service-role `sb.client`. A null token (shouldn't happen post-verify) just keeps the
+    # service-role fallback, so nothing breaks.
+    sb.attach_access_token(token)
     return sb
 
 

@@ -27,13 +27,16 @@ import { toast } from "sonner";
 import { useAuthStore } from "@/stores/auth.store";
 import {
   listCollections, getCollectionDocuments, createConversation, deleteDocument,
+  updateCollection, updateDocument,
   CollectionResponse, DocumentResponse,
 } from "@/lib/api";
 import { ChatInput } from "@/components/chat/ChatInput";
 import { UploadZone } from "@/components/app/UploadZone";
 import { ConnectorImport } from "@/components/app/ConnectorImport";
 import { PipelineTrack } from "@/components/app/PipelineTrack";
-import { DocTypeChip, FidelityDot } from "@/components/app/DocMeta";
+import {
+  DocTypeChip, FidelityDot, LifecycleControl, PrivilegeToggle, MatterStatus,
+} from "@/components/app/DocMeta";
 import { EmptyState } from "@/components/ui/EmptyState";
 import Dock from "@/components/ui/Dock";
 
@@ -190,6 +193,39 @@ export default function VaultWorkspacePage() {
     }
   }
 
+  // F1e: change the vault's matter lifecycle (active / on_hold / closed / archived /
+  // legal_hold). Optimistic; reverts on failure. F2 will partner-gate who may do this.
+  async function handleStatusChange(next: MatterStatus) {
+    if (!token || !vault) return;
+    const prev = vault;
+    setVault({ ...vault, status: next });
+    try {
+      const updated = await updateCollection(token, vaultId, { status: next });
+      if (updated) setVault(updated);
+      toast.success(`Matter set to ${next.replace("_", " ")}`);
+    } catch {
+      setVault(prev);
+      toast.error("Failed to update matter status");
+    }
+  }
+
+  // F1e: mark / unmark a document as privileged (attorney-client / work-product). A
+  // privileged doc is excluded from shared / cross-vault surfaces and watermarked in
+  // exports — it is NOT hidden from its own vault. Optimistic; reverts on failure.
+  async function handleTogglePrivilege(doc: DocumentResponse) {
+    if (!token) return;
+    const next = !doc.privileged;
+    setDocs((p) => p.map((d) => (d.id === doc.id ? { ...d, privileged: next } : d)));
+    try {
+      const updated = await updateDocument(token, doc.id, { privileged: next });
+      if (updated) setDocs((p) => p.map((d) => (d.id === doc.id ? updated : d)));
+      toast.success(next ? "Marked privileged" : "Privilege removed");
+    } catch {
+      setDocs((p) => p.map((d) => (d.id === doc.id ? { ...d, privileged: !next } : d)));
+      toast.error("Failed to update privilege");
+    }
+  }
+
   // Chip option lists, derived from the REAL doc metadata in this vault (so a chip only
   // appears when at least one doc carries that value — no dead chips).
   const typeOptions = Array.from(
@@ -233,7 +269,7 @@ export default function VaultWorkspacePage() {
           >
             <FolderOpen size={19} />
           </span>
-          <div className="min-w-0">
+          <div className="min-w-0 flex-1">
             <h1
               className="truncate"
               style={{ fontFamily: "Fraunces, Georgia, serif", fontSize: 27, fontWeight: 500, letterSpacing: "-0.025em", color: "var(--ink)" }}
@@ -244,6 +280,14 @@ export default function VaultWorkspacePage() {
               {docs.length} file{docs.length === 1 ? "" : "s"}
             </p>
           </div>
+          {/* F1e: matter lifecycle control. Hidden until the vault loads (legacy/null →
+              Active). F2 partner-gates who may change it; F1e ships the control. */}
+          {vault && (
+            <LifecycleControl
+              status={vault.status}
+              onChange={handleStatusChange}
+            />
+          )}
         </div>
 
         {/* Action row — Review · Deep Analysis · Draft · Workflows as siblings above the
@@ -492,7 +536,9 @@ export default function VaultWorkspacePage() {
                         </span>
                       )}
                     </td>
-                    {/* Delete — hover-revealed trash that flips to an inline confirm */}
+                    {/* Actions — F1e privilege lock + hover-revealed delete (inline confirm).
+                        The lock stays visible when the doc IS privileged (a persistent
+                        boundary marker); otherwise it reveals on row hover like delete. */}
                     <td className="px-3 py-3 text-right whitespace-nowrap">
                       {confirmDel === d.id ? (
                         <span className="inline-flex items-center gap-1.5">
@@ -511,14 +557,20 @@ export default function VaultWorkspacePage() {
                           </button>
                         </span>
                       ) : (
-                        <button
-                          onClick={() => setConfirmDel(d.id)}
-                          title="Delete document"
-                          aria-label={`Delete ${d.filename}`}
-                          className="p-1.5 rounded-lg text-[var(--text-muted)] opacity-0 group-hover:opacity-100 hover:text-[var(--status-failed)] hover:bg-[var(--bg-hover)] transition-[color,opacity] focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)]"
-                        >
-                          <Trash2 size={14} />
-                        </button>
+                        <span className="inline-flex items-center gap-0.5">
+                          <PrivilegeToggle
+                            privileged={!!d.privileged}
+                            onToggle={() => handleTogglePrivilege(d)}
+                          />
+                          <button
+                            onClick={() => setConfirmDel(d.id)}
+                            title="Delete document"
+                            aria-label={`Delete ${d.filename}`}
+                            className="p-1.5 rounded-lg text-[var(--text-muted)] opacity-0 group-hover:opacity-100 hover:text-[var(--status-failed)] hover:bg-[var(--bg-hover)] transition-[color,opacity] focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)]"
+                          >
+                            <Trash2 size={14} />
+                          </button>
+                        </span>
                       )}
                     </td>
                   </tr>

@@ -72,7 +72,7 @@ async def review_grid_stream(
     # rows reviewed ("review only FY2023 contracts") — the review-grid equivalent of the
     # router pre-narrow (a cell is locked to one doc, so cross-vault leak isn't the risk;
     # the filter just picks WHICH docs become rows).
-    docs = sb.client.table("documents").select("id,filename,doc_type,fiscal_year").in_(
+    docs = sb.read_client.table("documents").select("id,filename,doc_type,fiscal_year").in_(
         "id", all_doc_ids
     ).eq("user_id", sb.user_id).execute()
     rows_by_doc = {d["id"]: d for d in (docs.data or [])}

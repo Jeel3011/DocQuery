@@ -9,7 +9,7 @@
 import { Suspense, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useAuthStore } from "@/stores/auth.store";
-import { listCollections, getCollectionDocuments, CollectionResponse, DocumentResponse } from "@/lib/api";
+import { listCollections, getCollectionDocuments, getPracticeTemplate, CollectionResponse, DocumentResponse } from "@/lib/api";
 import {
   streamReviewGrid, GridCellEvent, GridStart, GridDone, ReviewGridColumnSpec,
 } from "@/lib/streaming";
@@ -118,7 +118,19 @@ function ReviewGridInner({ scopedCollectionId }: ReviewGridProps) {
   const [collections, setCollections] = useState<CollectionResponse[]>([]);
   const [collectionId, setCollectionId] = useState<string>(scopedCollection ?? "");
   const [docs, setDocs] = useState<DocumentResponse[]>([]);
-  const [columns, setColumns] = useState<ReviewGridColumnSpec[]>(PRESETS.slice(0, 3));
+  // Columns start empty; the vault-default effect below sets them as soon as the active vault
+  // resolves (template columns if the vault is typed, else the generic PRESETS). One source of
+  // truth per vault — no competing hardcoded initial that the effect then has to overwrite.
+  const [columns, setColumns] = useState<ReviewGridColumnSpec[]>([]);
+  // F1c: the practice template gives REAL value past the create dialog — it sets THIS grid's
+  // default columns from the vault's matter_kind, so a litigation vault opens with the
+  // litigation columns and an M&A vault with M&A columns. `appliedDefaultFor` records which
+  // vault we last applied a default for, so the default is re-applied ONLY when the vault
+  // actually changes (not on every doc reload / re-render) — the user's edits in between
+  // survive. Switching vaults always resets to the new vault's correct default (typed→untyped
+  // included), so columns never leak across vaults.
+  const appliedDefaultFor = useRef<string | null>(null);
+  const [templateKind, setTemplateKind] = useState<string | null>(null);
 
   const [running, setRunning] = useState(false);
   const [start, setStart] = useState<GridStart | null>(null);
@@ -154,6 +166,39 @@ function ReviewGridInner({ scopedCollectionId }: ReviewGridProps) {
     if (!token || !collectionId) return;
     getCollectionDocuments(token, collectionId).then(setDocs).catch(() => setDocs([]));
   }, [token, collectionId]);
+
+  // F1c: apply the active vault's DEFAULT columns. Runs when the vault actually changes (the
+  // ref-guard makes it idempotent across re-renders / doc reloads, so a user's edits survive).
+  // The default is the vault's practice-template columns when it's typed, else the generic
+  // PRESETS. Switching vaults ALWAYS resets to the new vault's default — typed→untyped included
+  // — so columns never leak from a previous vault. A typed-template lookup failure falls back
+  // to the presets rather than leaving the grid empty.
+  useEffect(() => {
+    if (!token || !collectionId) return;
+    if (!collections.length) return;                 // wait until collections resolve
+    if (appliedDefaultFor.current === collectionId) return;  // already applied for this vault
+    appliedDefaultFor.current = collectionId;
+
+    const vault = collections.find((c) => c.id === collectionId);
+    const kind = vault?.matter_kind ?? null;
+    setTemplateKind(kind);
+
+    if (!kind) {
+      setColumns(PRESETS.slice(0, 3));               // untyped vault → generic default
+      return;
+    }
+    let live = true;
+    getPracticeTemplate(token, kind)
+      .then((tpl) => {
+        if (!live || appliedDefaultFor.current !== collectionId) return; // vault changed mid-fetch
+        const cols = tpl?.grid_columns ?? [];
+        setColumns(cols.length
+          ? cols.map((c) => ({ key: c.key, label: c.label, prompt: c.prompt, kind: c.kind, risk_rubric: c.risk_rubric }))
+          : PRESETS.slice(0, 3));                    // empty template → fall back to presets
+      })
+      .catch(() => { if (live && appliedDefaultFor.current === collectionId) setColumns(PRESETS.slice(0, 3)); });
+    return () => { live = false; };
+  }, [token, collectionId, collections]);
 
   const cellCount = docs.length * columns.length;
   const tooMany = cellCount > 120;
@@ -264,26 +309,44 @@ function ReviewGridInner({ scopedCollectionId }: ReviewGridProps) {
             </select>
           )}
 
-          {/* Column presets */}
+          {/* Column toggles — the union of the generic PRESETS and any columns seeded from the
+              vault's practice template (F1c), so template columns are visible AND removable, not
+              silently active. Dedup by key; template columns first when a vault is typed. */}
           <div className="flex items-center gap-1.5 flex-wrap">
-            {PRESETS.map((p) => {
-              const on = !!columns.find((c) => c.key === p.key);
-              return (
-                <button
-                  key={p.key}
-                  onClick={() => toggleColumn(p)}
-                  className="text-[11px] px-2.5 py-1 rounded-full border transition-colors"
-                  style={{
-                    background: on ? "linear-gradient(180deg,#2A2A2A,#0E0E0E)" : "transparent",
-                    color: on ? "#fff" : "var(--text-muted)",
-                    borderColor: on ? "transparent" : "var(--glass-border)",
-                  }}
-                  title={p.prompt}
-                >
-                  {p.label}
-                </button>
-              );
-            })}
+            {templateKind && (
+              <span className="text-[10px] uppercase tracking-wide px-2 py-1 rounded-full"
+                style={{ background: "var(--surface-3)", color: "var(--text-muted)", border: "1px solid var(--glass-border)" }}
+                title={`Columns seeded from the ${templateKind} practice template`}>
+                {templateKind} template
+              </span>
+            )}
+            {(() => {
+              const seen = new Set<string>();
+              const togglable: ReviewGridColumnSpec[] = [];
+              for (const c of [...columns, ...PRESETS]) {
+                if (seen.has(c.key)) continue;
+                seen.add(c.key);
+                togglable.push(c);
+              }
+              return togglable.map((p) => {
+                const on = !!columns.find((c) => c.key === p.key);
+                return (
+                  <button
+                    key={p.key}
+                    onClick={() => toggleColumn(p)}
+                    className="text-[11px] px-2.5 py-1 rounded-full border transition-colors"
+                    style={{
+                      background: on ? "linear-gradient(180deg,#2A2A2A,#0E0E0E)" : "transparent",
+                      color: on ? "#fff" : "var(--text-muted)",
+                      borderColor: on ? "transparent" : "var(--glass-border)",
+                    }}
+                    title={p.prompt}
+                  >
+                    {p.label}
+                  </button>
+                );
+              });
+            })()}
           </div>
 
           <div className="ml-auto flex items-center gap-2">

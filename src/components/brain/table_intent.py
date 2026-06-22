@@ -163,28 +163,40 @@ def load_grids_for_docs(
         # that contributed to the local OOM. The JSONB filter keeps it to the few
         # hundred table rows. Falls back to the full pull if the filter is
         # unsupported, so it can never break.
+        # F1b/H2 (cross-user leak fix): the live client runs with the SERVICE ROLE, so RLS is
+        # bypassed — the app-layer user_id filter below is one layer. Without it, any
+        # document_id (from another user/vault, e.g. injected into the agent) would load its
+        # chunks. Filter by the verified user_id at the DB. `_uid` may be None on offline/test
+        # clients (no user); there we don't add the filter (no live data to leak).
+        # F1 RLS hardening (defense-in-depth): READ through `read_client` when present — on the
+        # request path it carries the user's JWT so Postgres RLS ALSO enforces auth.uid()=user_id
+        # (a second, data-layer guard). Falls back to `.client` on the worker/offline/test path
+        # (no JWT) — byte-identical there.
+        _uid = getattr(db_client, "user_id", None)
+        _reader = getattr(db_client, "read_client", None) or db_client.client
         rows = None
         try:
-            rows = (
-                db_client.client.table("document_chunks")
+            q = (
+                _reader.table("document_chunks")
                 .select("content,metadata")
                 .eq("document_id", did)
                 .eq("metadata->>chunk_type", "table")
-                .execute()
-                .data
             )
+            if _uid:
+                q = q.eq("user_id", _uid)
+            rows = q.execute().data
         except Exception:
             rows = None
         if rows is None:
             try:
-                rows = (
-                    db_client.client.table("document_chunks")
+                q = (
+                    _reader.table("document_chunks")
                     .select("content,metadata")
                     .eq("document_id", did)
-                    .execute()
-                    .data
-                    or []
                 )
+                if _uid:
+                    q = q.eq("user_id", _uid)
+                rows = q.execute().data or []
             except Exception as exc:
                 logger.warning("[table_intent] grid load failed for doc %s: %s", did, exc)
                 continue

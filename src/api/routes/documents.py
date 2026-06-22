@@ -18,7 +18,7 @@ import aiofiles
 from fastapi import APIRouter, HTTPException, Depends, UploadFile, File, Request
 from fastapi.responses import JSONResponse
 
-from src.api.schemas import DocumentResponse, DocumentListResponse
+from src.api.schemas import DocumentResponse, DocumentListResponse, UpdateDocumentRequest
 from src.api.dependencies import get_current_user, get_user_config, limiter
 from src.components.config import Config
 from src.components.metrics import uploads_total
@@ -225,10 +225,47 @@ async def list_documents(sb=Depends(get_current_user)):
                 processing_progress=d.get("processing_progress", 0),
                 doc_type=d.get("doc_type"),
                 fidelity=d.get("fidelity"),
+                privileged=bool(d.get("privileged", False)),
             )
             for d in docs
         ],
         total=len(docs),
+    )
+
+
+@router.patch("/{doc_id}", response_model=DocumentResponse)
+async def update_document(
+    doc_id: str,
+    body: UpdateDocumentRequest,
+    sb=Depends(get_current_user),
+):
+    """F1e: mark/unmark a document as privileged (attorney-client / work-product).
+
+    A privileged doc is excluded from shared / cross-vault surfaces and watermarked in exports.
+    Ownership is enforced by the db method's `.eq(user_id)`; a doc the user doesn't own → 404.
+    F2 will partner-gate WHO may set this; F1e ships the control + the data-layer flag.
+    """
+    existing = sb.get_document(doc_id)
+    if not existing:
+        raise HTTPException(status_code=404, detail="Document not found.")
+    try:
+        updated = sb.set_document_privileged(doc_id, body.privileged) or existing
+    except Exception:
+        logger.exception("Failed to set privilege on document %s", doc_id)
+        raise HTTPException(status_code=500, detail="Failed to update document.")
+    log_audit(sb, "document.set_privileged", "document", doc_id, {"privileged": body.privileged})
+    return DocumentResponse(
+        id=updated["id"],
+        filename=updated["filename"],
+        file_type=updated.get("file_type"),
+        status=updated["status"],
+        chunk_count=updated.get("chunk_count", 0),
+        file_size_bytes=updated.get("file_size_bytes"),
+        created_at=updated.get("created_at"),
+        processing_progress=updated.get("processing_progress", 0),
+        doc_type=updated.get("doc_type"),
+        fidelity=updated.get("fidelity"),
+        privileged=bool(updated.get("privileged", False)),
     )
 
 

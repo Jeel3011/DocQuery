@@ -49,16 +49,18 @@ class Checks:
 # Vault A = {docA1 (FY2022 filing), docA2 (FY2023 contract)}
 # Vault B = {docB1 (FY2023 filing)}  — a DIFFERENT vault, must never leak into A.
 CORPUS = [
-    # (doc_id, filename, chunk_type, doc_type, fiscal_year, text)
-    ("docA1", "amzn-2022.pdf", "text",  "financial_filing", 2022, "amazon net sales 2022"),
-    ("docA1", "amzn-2022.pdf", "table", "financial_filing", 2022, "amzn income statement"),
-    ("docA2", "nda-acme.pdf",  "text",  "legal_contract",   2023, "governing law new york"),
-    ("docB1", "msft-2023.pdf", "text",  "financial_filing", 2023, "microsoft net sales 2023"),
-    ("docB1", "msft-2023.pdf", "table", "financial_filing", 2023, "msft income statement"),
+    # (doc_id, filename, chunk_type, doc_type, fiscal_year, text, collection_id)
+    ("docA1", "amzn-2022.pdf", "text",  "financial_filing", 2022, "amazon net sales 2022", "vault-A"),
+    ("docA1", "amzn-2022.pdf", "table", "financial_filing", 2022, "amzn income statement",  "vault-A"),
+    ("docA2", "nda-acme.pdf",  "text",  "legal_contract",   2023, "governing law new york", "vault-A"),
+    ("docB1", "msft-2023.pdf", "text",  "financial_filing", 2023, "microsoft net sales 2023", "vault-B"),
+    ("docB1", "msft-2023.pdf", "table", "financial_filing", 2023, "msft income statement",   "vault-B"),
 ]
 
 VAULT_A = ["docA1", "docA2"]
 VAULT_B = ["docB1"]
+VAULT_A_ID = "vault-A"
+VAULT_B_ID = "vault-B"
 
 
 class _Doc:
@@ -94,19 +96,22 @@ class FakeManager:
         self.last_filter = None
 
     def _rows(self):
-        for doc_id, fn, ct, dt, fy, text in CORPUS:
+        for doc_id, fn, ct, dt, fy, text, cid in CORPUS:
             yield _Doc(text, {
                 "doc_id": doc_id, "filename": fn, "chunk_type": ct,
                 "doc_type": dt, "fiscal_year": fy, "page_number": 1,
+                "collection_id": cid,
                 "chunk_id": f"{doc_id}-{ct}-{hash(text) & 0xffff}",
             })
 
     def retrieve(self, query, *, doc_ids=None, filename_filters=None,
                  filename_filter=None, metadata_filter=None, top_k=8,
-                 apply_threshold=False, use_reranker=True):
+                 apply_threshold=False, use_reranker=True, collection_id=None):
+        # F1b: collection_id is now a first-class scope axis on the text path too — the
+        # `_build_filter` cascade emits {collection_id: <id>} when no doc_id/filename wins.
         f = RetrievalManager._build_filter(
             filename_filter=filename_filter, filename_filters=filename_filters,
-            doc_ids=doc_ids, metadata_filter=metadata_filter,
+            doc_ids=doc_ids, collection_id=collection_id, metadata_filter=metadata_filter,
         )
         self.last_filter = f
         return [d for d in self._rows()
@@ -115,11 +120,14 @@ class FakeManager:
     def retrieve_table_chunks(self, query, *, doc_ids=None, filename_filters=None,
                               collection_id=None, doc_id=None, metadata_filter=None, k=8):
         # Mirror retrieve_table_chunks' own filter logic (chunk_type pinned to table).
+        # F1b: collection_id is a valid table scope now (ingest stamps it on table chunks).
         f = {"chunk_type": "table"}
         if doc_id:
             f["doc_id"] = doc_id
         elif doc_ids:
             f["doc_id"] = {"$in": doc_ids}
+        elif collection_id:
+            f["collection_id"] = collection_id
         elif filename_filters:
             f["filename"] = {"$in": filename_filters}
         if metadata_filter:
@@ -193,6 +201,41 @@ def main():
     got = {d.metadata["doc_id"] for d in res}
     c.ok(got == {"docA1"},
          "no doc_ids → filename $in still scopes (degrades, not return-everything)")
+
+    print("\n── 6. F1b: collection_id floor + refuse-unscoped-active-vault ────")
+    # 6a. collection_id is a valid vault-scope axis ON ITS OWN — a vault with no preloaded
+    #     doc_ids still binds to its collection (both the text and table paths). 0 vault-B leak.
+    mgr = FakeManager()
+    r = search_vault("net sales", mgr, scope={"collection_id": VAULT_A_ID}, k=8, kind="both")
+    prov_vaults = {p.get("collection_id") for p in (r.get("provenance") or [])
+                   if p.get("collection_id")}
+    leaked = [ch for ch in (r.get("data", {}) or {}).get("chunks", [])
+              if ch.get("source") == "msft-2023.pdf" or ch.get("doc") == "msft-2023.pdf"]
+    c.ok(r.get("ok") and not leaked and prov_vaults <= {VAULT_A_ID},
+         f"collection_id-only scope binds vault A, 0 vault-B leak (got {sorted(prov_vaults)})")
+
+    # 6b. THE FLOOR fires: a vault is ACTIVE (vault_active flag, as RunScope.scope_dict sets it)
+    #     but every scope key was stripped to empty → the query is REFUSED (an error envelope),
+    #     NEVER fanned out across the shared user namespace. This is the cross-vault leak class.
+    mgr = FakeManager()
+    r_refuse = search_vault("net sales", mgr,
+                            scope={"vault_active": True, "collection_id": None,
+                                   "doc_ids": [], "filenames": []}, k=8, kind="both")
+    c.ok(r_refuse.get("ok") is False and r_refuse.get("error"),
+         "active-vault + no scope key → REFUSED (no unscoped fan-out)")
+    c.ok(not r_refuse.get("provenance"),
+         "refused query returns 0 chunks (nothing leaked)")
+
+    # 6c. The same active-vault run WITH the collection_id present is allowed and isolated —
+    #     the floor permits the legitimate query and blocks only the unscoped one.
+    mgr = FakeManager()
+    r_ok = search_vault("net sales", mgr,
+                        scope={"vault_active": True, "collection_id": VAULT_A_ID},
+                        k=8, kind="both")
+    ok_vaults = {p.get("collection_id") for p in (r_ok.get("provenance") or [])
+                 if p.get("collection_id")}
+    c.ok(r_ok.get("ok") and ok_vaults <= {VAULT_A_ID},
+         f"active-vault + collection_id ⇒ allowed, isolated to A (got {sorted(ok_vaults)})")
 
     print("\n" + "=" * 64)
     print(f"  PASS: {c.passed}   FAIL: {c.failed}")

@@ -90,6 +90,26 @@ def search_vault(
     # never a replacement (a bug there would be a cross-vault leak).
     metadata_filter: Optional[Dict[str, Any]] = scope.get("filters") or None
 
+    # ── F1b: the VAULT-SCOPE FLOOR (the cross-vault leak guard) ──────────────────────────
+    # Within a user, multiple vaults share the per-user Pinecone namespace, so an UNSCOPED
+    # query (no doc_id / collection_id / filename filter) would fan out across ALL the user's
+    # vaults — a cross-vault leak. The agent-core route ALWAYS runs inside a vault (it requires
+    # collection_id; routes/agent_core.py), so the run carries `vault_active=True`. F1b makes
+    # the vault scope a HARD FLOOR: when vault_active is set, the query MUST resolve to at
+    # least one vault-scoping key (doc_ids / collection_id / filenames) — else we ERROR rather
+    # than run unscoped. `collection_id` ALONE is a valid floor (the retriever filters on the
+    # stamped field — vectors carry doc_id + collection_id from ingest, so NO re-ingest), which
+    # binds a vault whose doc_ids weren't preloaded. The flag is separate from the scope keys
+    # precisely so that "active but unscoped" is detectable (a key, not a falsy collection_id).
+    vault_active = bool(scope.get("vault_active") or collection_id)
+    has_vault_scope = bool(doc_ids or collection_id or filenames)
+    if vault_active and not has_vault_scope:
+        # A vault is active but nothing scopes the query → refuse (never fan out).
+        return error_result(
+            "search_vault refused an unscoped query inside an active vault "
+            "(cross-vault leak guard). Scope to the vault's documents."
+        )
+
     docs: List[Any] = []
 
     if kind in ("text", "both"):
@@ -102,6 +122,10 @@ def search_vault(
             filename_filters=(filenames if filenames and len(filenames) > 1 else None) if not doc_ids else None,
             filename_filter=(filenames[0] if filenames and len(filenames) == 1 else None) if not doc_ids else None,
             metadata_filter=metadata_filter,
+            # F1b: bind the text query to the active vault when doc_ids/filenames aren't the
+            # scope axis — the floor's collection_id-only case (the retriever filters on the
+            # stamped `collection_id` field via _build_filter's scope cascade).
+            collection_id=(collection_id if not doc_ids and not filenames else None),
             top_k=k,
             apply_threshold=False,
             use_reranker=True,
@@ -110,12 +134,18 @@ def search_vault(
 
     if kind in ("table", "both"):
         # G3: scope table chunks by doc_id (stable, ingest-stamped) when present, else
-        # fall back to FILENAME. (Never collection_id — ingest never stamps it on
-        # chunks, so {chunk_type:table, collection_id:<id>} matched ZERO; BUG-F 2026-06-11.)
+        # fall back to FILENAME. F1b: ingest NOW stamps collection_id on every chunk
+        # (text AND table — worker/tasks.py:157-161, after build_langchain_documents), so
+        # the collection_id-only floor binds table chunks too. (The BUG-F 2026-06-11 note
+        # predates that stamping; collection_id is a valid table scope now.)
         table_docs = retrieval_manager.retrieve_table_chunks(
             query,
             doc_ids=doc_ids if doc_ids else None,
-            filename_filters=filenames,
+            collection_id=(collection_id if not doc_ids and not filenames else None),
+            # Normalize an empty list to None here (consistent with the text path's
+            # `doc_ids or None`): the floor above already refused an unscoped active vault,
+            # so reaching here with no scope is a non-vault run, not an empty vault.
+            filename_filters=(filenames or None),
             metadata_filter=metadata_filter,
             k=k,
         )

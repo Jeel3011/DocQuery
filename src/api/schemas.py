@@ -2,7 +2,7 @@
 Pydantic models for request validation and response serialization.
 """
 
-from pydantic import BaseModel, EmailStr, Field
+from pydantic import BaseModel, EmailStr, Field, field_validator
 from typing import Optional, List, Any
 from datetime import datetime
 
@@ -60,11 +60,21 @@ class DocumentResponse(BaseModel):
     # G3 Step C: structurally-derived fiscal year (int). None = unknown/legacy → the FY
     # filter treats it as "don't exclude". Persisted at ingest (migration 008).
     fiscal_year: Optional[int] = None
+    # F1e privilege firewall: true = attorney-client / work-product → excluded from shared /
+    # cross-vault surfaces and watermarked in exports. Defaults false (migration 011); legacy
+    # rows read false → byte-identical pre-F1e behavior.
+    privileged: Optional[bool] = False
 
 
 class DocumentListResponse(BaseModel):
     documents: List[DocumentResponse]
     total: int
+
+
+class UpdateDocumentRequest(BaseModel):
+    """F1e: mark/unmark a document as privileged (attorney-client / work-product). Only the
+    privilege flag is mutable here; rename/other doc edits are out of scope for F1e."""
+    privileged: bool
 
 
 # ─────────────────────────────────────────
@@ -173,14 +183,112 @@ class HealthResponse(BaseModel):
 # COLLECTIONS
 # ─────────────────────────────────────────
 
+# F1a (plans/F1_VAULT_PLAN.md §1): a collection is now a typed MATTER/VAULT. These two closed
+# sets MIRROR the CHECK constraints in docs/migrations/010_matter_vaults.sql — keep them in
+# lockstep so a bad value is rejected the same way at the API boundary and the DB.
+MATTER_KINDS = (
+    "litigation", "m&a", "lending", "arbitration", "ip",
+    "regulatory", "employment", "advisory", "compliance",
+)
+MATTER_STATUSES = ("active", "on_hold", "closed", "archived", "legal_hold")
+
+
+class MatterParty(BaseModel):
+    """A named party on a matter (for F1c's metadata-only conflict scan)."""
+    name: str = Field(..., min_length=1, max_length=200)
+    role: Optional[str] = Field(None, max_length=100)  # e.g. "client", "opposing", "counsel"
+
+
+# ── F1c — practice-aware self-config (templates + metadata-only conflict scan) ────────────────
+
+class TemplateColumnResponse(BaseModel):
+    """One seed review-grid column from a practice template (maps 1:1 onto GridColumnRequest)."""
+    key: str
+    label: str
+    prompt: str
+    kind: str = "clause"
+    risk_rubric: Optional[str] = None
+
+
+class PracticeTemplateResponse(BaseModel):
+    """The starting config a matter_kind suggests (F1c). All fields are DEFAULTS the user
+    overrides — grid columns to seed a review grid, the default KB source chips, and which
+    flagship surface to foreground. Served by GET /collections/practice-template/{matter_kind}.
+    """
+    matter_kind: Optional[str] = None
+    label: str
+    grid_columns: List[TemplateColumnResponse] = Field(default_factory=list)
+    kb_scope: List[str] = Field(default_factory=list)   # subset of {vault,statutes,caselaw}
+    flagship: str = "review_grid"
+    summary: Optional[str] = None
+
+
+class ConflictFinding(BaseModel):
+    """One conflict-scan hit. `severity='adverse'` = a true ethical-wall collision (our side
+    here vs the other side on another matter); `same_party` = an informational note (the firm
+    already touches this name elsewhere). Carries only matter METADATA — no document content."""
+    party: str
+    matched_party: str
+    collection_id: Optional[str] = None
+    matter_name: Optional[str] = None
+    matter_kind: Optional[str] = None
+    severity: str                       # "adverse" | "same_party"
+    new_side: Optional[str] = None      # "our" | "other" | "neutral"
+    existing_side: Optional[str] = None
+
+
+class ConflictScanRequest(BaseModel):
+    """Pre-create ethical-wall screen (F1c). Parties only — metadata, never content. The scan
+    compares these party names against the firm's OTHER matters' parties for adverse collisions.
+    `exclude_collection_id` skips a matter being edited so it doesn't conflict with itself."""
+    parties: List[MatterParty] = Field(default_factory=list)
+    exclude_collection_id: Optional[str] = None
+
+
+class ConflictScanResponse(BaseModel):
+    """The scan result. Non-blocking: `conflicts` may be non-empty and the create still proceeds;
+    the UI renders a banner. `has_adverse` is the headline the banner keys its tone off."""
+    conflicts: List[ConflictFinding] = Field(default_factory=list)
+    has_adverse: bool = False
+
+
 class CreateCollectionRequest(BaseModel):
     name: str = Field(..., min_length=1, max_length=100)
     description: Optional[str] = None
+    # F1a matter fields — all optional ⇒ a pre-F1 client that omits them still creates a vault
+    # (status defaults to 'active' at the DB), so the legacy create path is byte-identical.
+    matter_kind: Optional[str] = None
+    parties: Optional[List[MatterParty]] = None
+
+    @field_validator("matter_kind")
+    @classmethod
+    def _kind_in_set(cls, v):
+        if v is not None and v not in MATTER_KINDS:
+            raise ValueError(f"matter_kind must be one of {MATTER_KINDS}")
+        return v
 
 
 class UpdateCollectionRequest(BaseModel):
     name: Optional[str] = Field(None, min_length=1, max_length=100)
     description: Optional[str] = None
+    # Lifecycle / typing updates (F1a). Each optional ⇒ a rename-only PATCH is unchanged.
+    matter_kind: Optional[str] = None
+    status: Optional[str] = None
+    parties: Optional[List[MatterParty]] = None
+
+    @field_validator("matter_kind")
+    @classmethod
+    def _kind_in_set(cls, v):
+        if v is not None and v not in MATTER_KINDS:
+            raise ValueError(f"matter_kind must be one of {MATTER_KINDS}")
+        return v
+
+    @field_validator("status")
+    @classmethod
+    def _status_in_set(cls, v):
+        if v is not None and v not in MATTER_STATUSES:
+            raise ValueError(f"status must be one of {MATTER_STATUSES}")
+        return v
 
 
 class CollectionResponse(BaseModel):
@@ -190,6 +298,16 @@ class CollectionResponse(BaseModel):
     document_count: Optional[int] = 0
     created_at: Optional[str] = None
     updated_at: Optional[str] = None
+    # F1a matter fields (legacy rows: matter_kind/firm_id None, status 'active', parties []).
+    matter_kind: Optional[str] = None
+    status: Optional[str] = "active"
+    parties: Optional[List[MatterParty]] = None
+    firm_id: Optional[str] = None
+    # F1c: the metadata-only conflict-scan result, populated ONLY on create when parties were
+    # supplied (None on list/get/patch and on a no-party create ⇒ legacy shape is unchanged).
+    # Non-blocking — the create succeeds regardless; the UI shows a banner when present.
+    conflicts: Optional[List[ConflictFinding]] = None
+    has_adverse: Optional[bool] = None
 
 
 class CollectionListResponse(BaseModel):

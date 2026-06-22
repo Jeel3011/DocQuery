@@ -10,13 +10,23 @@
 // touch collection.store — the route becomes the source of truth only once you open a
 // vault (VaultScopeSync handles that in the shell).
 
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, useRef } from "react";
 import { useRouter } from "next/navigation";
 import { motion } from "framer-motion";
-import { FolderOpen, FileText, Plus } from "lucide-react";
+import { FolderOpen, FileText, Plus, X, ShieldAlert } from "lucide-react";
 import { toast } from "sonner";
 import { useAuthStore } from "@/stores/auth.store";
-import { listCollections, createCollection, CollectionResponse } from "@/lib/api";
+import {
+  listCollections,
+  createCollection,
+  getPracticeTemplate,
+  scanConflicts,
+  CollectionResponse,
+  PracticeTemplate,
+  ConflictFinding,
+  MatterParty,
+  MATTER_KINDS,
+} from "@/lib/api";
 import Folder from "@/components/ui/Folder";
 import {
   Dialog,
@@ -27,6 +37,20 @@ import {
 } from "@/components/ui/Dialog";
 
 const ease = [0.23, 1, 0.32, 1] as const;
+
+// F1c: which flagship a matter kind foregrounds → a human label for the "pins" line.
+const FLAGSHIP_LABEL: Record<string, string> = {
+  review_grid: "Review grid",
+  covenant_cockpit: "Covenant cockpit",
+  obligation_sentinel: "Obligation sentinel",
+  argument_engine: "Argument engine",
+  case_file: "Case file",
+};
+const KB_LABEL: Record<string, string> = {
+  vault: "Your documents",
+  statutes: "Statutes",
+  caselaw: "Case law",
+};
 
 function timeAgo(d: string | null): string {
   if (!d) return "";
@@ -46,6 +70,12 @@ export default function VaultHomePage() {
   const [showNew, setShowNew] = useState(false);
   const [newName, setNewName] = useState("");
   const [creating, setCreating] = useState(false);
+  // F1c: matter typing + practice template + conflict scan, all in the create dialog.
+  const [matterKind, setMatterKind] = useState<string | null>(null);
+  const [parties, setParties] = useState<MatterParty[]>([]);
+  const [template, setTemplate] = useState<PracticeTemplate | null>(null);
+  const [conflicts, setConflicts] = useState<ConflictFinding[]>([]);
+  const conflictTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const load = useCallback(async () => {
     if (!token) return;
@@ -66,13 +96,60 @@ export default function VaultHomePage() {
     load();
   }, [load]);
 
+  // F1c: load the practice template when a matter kind is picked. $0 on the server (static
+  // map); the dialog shows the seed grid columns, KB defaults, and flagship pin it returns.
+  useEffect(() => {
+    if (!token || !showNew || !matterKind) {
+      setTemplate(null);
+      return;
+    }
+    let live = true;
+    getPracticeTemplate(token, matterKind)
+      .then((t) => { if (live) setTemplate(t); })
+      .catch(() => { if (live) setTemplate(null); });
+    return () => { live = false; };
+  }, [token, showNew, matterKind]);
+
+  // F1c: metadata-only conflict scan, debounced as parties are edited (pre-create, so the
+  // banner can show before committing). Only named parties are sent; nothing else.
+  useEffect(() => {
+    if (conflictTimer.current) clearTimeout(conflictTimer.current);
+    const named = parties.filter((p) => p.name.trim());
+    if (!token || !showNew || named.length === 0) {
+      setConflicts([]);
+      return;
+    }
+    conflictTimer.current = setTimeout(() => {
+      scanConflicts(token, named)
+        .then((r) => setConflicts(r.conflicts || []))
+        .catch(() => setConflicts([]));
+    }, 450);
+    return () => { if (conflictTimer.current) clearTimeout(conflictTimer.current); };
+  }, [token, showNew, parties]);
+
+  function resetDialog() {
+    setNewName("");
+    setMatterKind(null);
+    setParties([]);
+    setTemplate(null);
+    setConflicts([]);
+  }
+
   async function handleCreate() {
     if (!token || !newName.trim() || creating) return;
     setCreating(true);
     try {
-      const c = await createCollection(token, newName.trim());
-      setNewName("");
+      const named = parties.filter((p) => p.name.trim());
+      const c = await createCollection(token, newName.trim(), undefined, {
+        matter_kind: matterKind,
+        parties: named.length ? named : null,
+      });
+      // The create response carries the authoritative conflict result; surface adverse hits.
+      if (c.has_adverse) {
+        toast.warning("Conflict check flagged an adverse party. Review in vault settings.");
+      }
       setShowNew(false);
+      resetDialog();
       toast.success(`Created vault "${c.name}"`);
       router.push(`/app/vault/${c.id}`);
     } catch {
@@ -81,6 +158,8 @@ export default function VaultHomePage() {
       setCreating(false);
     }
   }
+
+  const adverseCount = conflicts.filter((c) => c.severity === "adverse").length;
 
   return (
     <div className="flex-1 overflow-y-auto scrollbar-thin relative">
@@ -205,29 +284,195 @@ export default function VaultHomePage() {
         )}
       </div>
 
-      {/* New-vault dialog (this page's own entry point — the switcher has its own in the shell) */}
-      <Dialog open={showNew} onOpenChange={setShowNew}>
-        <DialogContent maxWidth="420px">
+      {/* New-vault dialog (this page's own entry point — the switcher has its own in the shell).
+          F1c: matter-kind picker + parties → the practice template loads (grid columns, KB
+          default chips, flagship pin) and a metadata-only conflict scan runs. */}
+      <Dialog
+        open={showNew}
+        onOpenChange={(o) => { setShowNew(o); if (!o) resetDialog(); }}
+      >
+        <DialogContent maxWidth="520px">
           <DialogHeader>
             <DialogTitle>New vault</DialogTitle>
           </DialogHeader>
-          <div className="px-5 py-5">
-            <label className="block text-[12px] font-medium text-[var(--text-secondary)] mb-2">Vault name</label>
-            <input
-              value={newName}
-              onChange={(e) => setNewName(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter") handleCreate();
-                if (e.key === "Escape") setShowNew(false);
-              }}
-              placeholder="e.g. Acme acquisition contracts"
-              autoFocus
-              className="w-full px-3 py-2.5 rounded-xl text-[14px] outline-none focus:border-[var(--accent)]"
-              style={{ background: "var(--surface-2)", border: "1px solid var(--line)", color: "var(--ink)" }}
-            />
+          <div className="px-5 py-5 flex-1 min-h-0 overflow-y-auto scrollbar-thin flex flex-col gap-5">
+            {/* Vault name */}
+            <div>
+              <label className="block text-[12px] font-medium text-[var(--text-secondary)] mb-2">Vault name</label>
+              <input
+                value={newName}
+                onChange={(e) => setNewName(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") handleCreate();
+                  if (e.key === "Escape") setShowNew(false);
+                }}
+                placeholder="e.g. Acme acquisition contracts"
+                autoFocus
+                className="w-full px-3 py-2.5 rounded-xl text-[14px] outline-none focus:border-[var(--accent)]"
+                style={{ background: "var(--surface-2)", border: "1px solid var(--line)", color: "var(--ink)" }}
+              />
+            </div>
+
+            {/* Matter-kind picker — the 9 kinds as toggles. Picking one loads the template. */}
+            <div>
+              <label className="block text-[12px] font-medium text-[var(--text-secondary)] mb-2">
+                Matter type <span className="text-[var(--ink-3)] font-normal">(optional)</span>
+              </label>
+              <div className="flex flex-wrap gap-1.5">
+                {MATTER_KINDS.map((k) => {
+                  const on = matterKind === k.value;
+                  return (
+                    <button
+                      key={k.value}
+                      type="button"
+                      onClick={() => setMatterKind(on ? null : k.value)}
+                      className="px-2.5 py-1 rounded-lg text-[12px] font-medium transition-colors duration-[120ms]"
+                      style={{
+                        background: on ? "var(--accent)" : "var(--surface-3)",
+                        color: on ? "#fff" : "var(--ink-2)",
+                        border: `1px solid ${on ? "var(--accent)" : "var(--line)"}`,
+                      }}
+                    >
+                      {k.label}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
+            {/* Practice-template preview — visibly loads on pick (the plan's hard rule). */}
+            {template && matterKind && (
+              <motion.div
+                initial={{ opacity: 0, y: 6 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ duration: 0.3, ease }}
+                className="rounded-xl p-4"
+                style={{ background: "var(--surface-2)", border: "1px solid var(--line)" }}
+              >
+                <p className="text-[12px] font-semibold text-[var(--ink-2)] mb-0.5">Practice template</p>
+                {template.summary && (
+                  <p className="text-[12px] text-[var(--ink-3)] mb-3">{template.summary}</p>
+                )}
+                {/* Seed review-grid columns */}
+                <div className="mb-3">
+                  <p className="text-[11px] uppercase tracking-wide text-[var(--ink-3)] mb-1.5">
+                    Review columns ({template.grid_columns.length})
+                  </p>
+                  <div className="flex flex-wrap gap-1.5">
+                    {template.grid_columns.map((c) => (
+                      <span
+                        key={c.key}
+                        className="px-2 py-0.5 rounded text-[11px]"
+                        style={{ background: "var(--surface-3)", color: "var(--ink-2)", border: "1px solid var(--line)" }}
+                      >
+                        {c.label}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+                {/* KB default source chips + flagship pin */}
+                <div className="flex flex-wrap items-center gap-x-5 gap-y-2">
+                  <div className="flex items-center gap-1.5">
+                    <span className="text-[11px] uppercase tracking-wide text-[var(--ink-3)]">Knowledge</span>
+                    {template.kb_scope.map((s) => (
+                      <span key={s} className="text-[11px] text-[var(--ink-2)]">{KB_LABEL[s] ?? s}</span>
+                    ))}
+                  </div>
+                  <div className="flex items-center gap-1.5">
+                    <span className="text-[11px] uppercase tracking-wide text-[var(--ink-3)]">Opens</span>
+                    <span className="text-[11px] text-[var(--ink-2)]">
+                      {FLAGSHIP_LABEL[template.flagship] ?? template.flagship}
+                    </span>
+                  </div>
+                </div>
+              </motion.div>
+            )}
+
+            {/* Parties — optional; drives the metadata-only conflict scan. */}
+            <div>
+              <label className="block text-[12px] font-medium text-[var(--text-secondary)] mb-2">
+                Parties <span className="text-[var(--ink-3)] font-normal">(optional — used to screen conflicts)</span>
+              </label>
+              <div className="flex flex-col gap-2">
+                {parties.map((p, i) => (
+                  <div key={i} className="flex items-center gap-2">
+                    <input
+                      value={p.name}
+                      onChange={(e) => setParties((prev) => prev.map((q, j) => j === i ? { ...q, name: e.target.value } : q))}
+                      placeholder="Party name"
+                      className="flex-1 px-3 py-2 rounded-lg text-[13px] outline-none focus:border-[var(--accent)]"
+                      style={{ background: "var(--surface-2)", border: "1px solid var(--line)", color: "var(--ink)" }}
+                    />
+                    <input
+                      value={p.role ?? ""}
+                      onChange={(e) => setParties((prev) => prev.map((q, j) => j === i ? { ...q, role: e.target.value } : q))}
+                      placeholder="Role (e.g. client, opposing)"
+                      className="w-[170px] px-3 py-2 rounded-lg text-[13px] outline-none focus:border-[var(--accent)]"
+                      style={{ background: "var(--surface-2)", border: "1px solid var(--line)", color: "var(--ink)" }}
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setParties((prev) => prev.filter((_, j) => j !== i))}
+                      className="p-1.5 rounded-lg text-[var(--ink-3)] hover:text-[var(--ink)] hover:bg-[var(--surface-3)] transition-colors"
+                      aria-label="Remove party"
+                    >
+                      <X size={14} />
+                    </button>
+                  </div>
+                ))}
+                <button
+                  type="button"
+                  onClick={() => setParties((prev) => [...prev, { name: "", role: "" }])}
+                  className="self-start flex items-center gap-1 text-[12px] font-medium text-[var(--ink-2)] hover:text-[var(--ink)] transition-colors"
+                >
+                  <Plus size={13} /> Add party
+                </button>
+              </div>
+            </div>
+
+            {/* Conflict-check banner — non-blocking. Adverse hits use --status-failed tone;
+                same-party notes use --status-processing. Never blocks create. */}
+            {conflicts.length > 0 && (
+              <motion.div
+                initial={{ opacity: 0, y: 6 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ duration: 0.25, ease }}
+                className="rounded-xl p-3.5 flex gap-2.5"
+                style={{
+                  background: "var(--surface-2)",
+                  border: `1px solid ${adverseCount > 0 ? "var(--status-failed)" : "var(--status-processing)"}`,
+                }}
+              >
+                <ShieldAlert
+                  size={16}
+                  className="mt-0.5 flex-shrink-0"
+                  style={{ color: adverseCount > 0 ? "var(--status-failed)" : "var(--status-processing)" }}
+                />
+                <div className="min-w-0">
+                  <p className="text-[12px] font-semibold text-[var(--ink)]">
+                    {adverseCount > 0
+                      ? `Conflict check found ${adverseCount} adverse-party ${adverseCount === 1 ? "match" : "matches"}`
+                      : `Conflict check found ${conflicts.length} related ${conflicts.length === 1 ? "matter" : "matters"}`}
+                  </p>
+                  <ul className="mt-1 flex flex-col gap-0.5">
+                    {conflicts.slice(0, 4).map((c, i) => (
+                      <li key={i} className="text-[11px] text-[var(--ink-3)]">
+                        <span className="text-[var(--ink-2)]">{c.party}</span>
+                        {" — "}
+                        {c.severity === "adverse" ? "adverse to" : "also on"}{" "}
+                        <span className="text-[var(--ink-2)]">{c.matter_name ?? "another matter"}</span>
+                      </li>
+                    ))}
+                  </ul>
+                  <p className="text-[11px] text-[var(--ink-3)] mt-1.5">
+                    This does not block creating the vault. Route to admin to clear the screen.
+                  </p>
+                </div>
+              </motion.div>
+            )}
           </div>
           <DialogFooter>
-            <button className="btn-ghost" onClick={() => setShowNew(false)}>Cancel</button>
+            <button className="btn-ghost" onClick={() => { setShowNew(false); resetDialog(); }}>Cancel</button>
             <button className="btn-primary" onClick={handleCreate} disabled={!newName.trim() || creating}>
               {creating ? "Creating…" : "Create vault"}
             </button>

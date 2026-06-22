@@ -190,7 +190,7 @@ async def agentcore_query_stream(
     # doc_id ↔ filename map for the scope (the retriever filters by filename; tools speak
     # doc ids). Build it from the collection's docs (same query the resolver used).
     doc_ids = sb.get_collection_document_ids(collection_id) or []
-    docs = sb.client.table("documents").select("id,filename").in_(
+    docs = sb.read_client.table("documents").select("id,filename").in_(
         "id", doc_ids
     ).eq("user_id", sb.user_id).execute()
     filename_by_doc = {d["id"]: d["filename"] for d in (docs.data or [])}

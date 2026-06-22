@@ -65,31 +65,43 @@ export function DialogContent({ children, className, maxWidth = "480px" }: Dialo
             onClick={() => setOpen(false)}
             aria-hidden="true"
           />
-          <motion.div
-            key="dialog"
-            initial={{ opacity: 0, scale: shouldReduceMotion ? 1 : 0.97, y: shouldReduceMotion ? 0 : 8 }}
-            animate={{ opacity: 1, scale: 1, y: 0 }}
-            exit={{ opacity: 0, scale: shouldReduceMotion ? 1 : 0.97, y: shouldReduceMotion ? 0 : 4 }}
-            transition={{ duration: shouldReduceMotion ? 0.1 : 0.2, ease: [0.23, 1, 0.32, 1] }}
-            role="dialog"
-            aria-modal="true"
-            className={clsx(
-              "fixed top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2",
-              "bg-[var(--bg-surface)] border border-[var(--border)] rounded-2xl shadow-xl",
-              "w-full mx-4 flex flex-col",
-              className
-            )}
-            style={{ maxWidth, zIndex: "var(--z-dialog)" as unknown as number }}
+          {/* Full-screen flex wrapper centers the dialog via flexbox — NOT via a transform —
+              so Framer Motion's scale/opacity animation on the panel can't override the
+              centering (the old `-translate-1/2` bug: Framer's inline transform wiped the
+              Tailwind translate, anchoring the panel's top-left at screen-center → it drifted
+              to the bottom-right). p-4 keeps a margin on small screens. */}
+          <div
+            className="fixed inset-0 flex items-center justify-center p-4 pointer-events-none"
+            style={{ zIndex: "var(--z-dialog)" as unknown as number }}
           >
-            <button
-              onClick={() => setOpen(false)}
-              className="absolute top-4 right-4 p-1.5 rounded-lg hover:bg-[var(--bg-hover)] text-[var(--text-muted)] hover:text-[var(--text-primary)] transition-colors"
-              aria-label="Close"
+            <motion.div
+              key="dialog"
+              initial={{ opacity: 0, scale: shouldReduceMotion ? 1 : 0.97, y: shouldReduceMotion ? 0 : 8 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: shouldReduceMotion ? 1 : 0.97, y: shouldReduceMotion ? 0 : 4 }}
+              transition={{ duration: shouldReduceMotion ? 0.1 : 0.2, ease: [0.23, 1, 0.32, 1] }}
+              role="dialog"
+              aria-modal="true"
+              className={clsx(
+                "relative pointer-events-auto",
+                "bg-[var(--bg-surface)] border border-[var(--border)] rounded-2xl shadow-xl",
+                // Cap to the viewport and manage overflow as a flex column — a tall body
+                // (the F1c create form) scrolls INSIDE while header/footer stay pinned.
+                "w-full flex flex-col max-h-[calc(100vh-2rem)] overflow-hidden",
+                className
+              )}
+              style={{ maxWidth }}
             >
-              <X size={15} />
-            </button>
-            {children}
-          </motion.div>
+              <button
+                onClick={() => setOpen(false)}
+                className="absolute top-4 right-4 p-1.5 rounded-lg hover:bg-[var(--bg-hover)] text-[var(--text-muted)] hover:text-[var(--text-primary)] transition-colors z-10"
+                aria-label="Close"
+              >
+                <X size={15} />
+              </button>
+              {children}
+            </motion.div>
+          </div>
         </>
       )}
     </AnimatePresence>
@@ -98,7 +110,7 @@ export function DialogContent({ children, className, maxWidth = "480px" }: Dialo
 
 export function DialogHeader({ children, className }: { children: ReactNode; className?: string }) {
   return (
-    <div className={clsx("px-5 pt-5 pb-4 border-b border-[var(--border)]", className)}>
+    <div className={clsx("px-5 pt-5 pb-4 border-b border-[var(--border)] shrink-0", className)}>
       {children}
     </div>
   );
@@ -114,7 +126,7 @@ export function DialogTitle({ children, className }: { children: ReactNode; clas
 
 export function DialogFooter({ children, className }: { children: ReactNode; className?: string }) {
   return (
-    <div className={clsx("px-5 py-4 border-t border-[var(--border)] flex items-center justify-end gap-2", className)}>
+    <div className={clsx("px-5 py-4 border-t border-[var(--border)] flex items-center justify-end gap-2 shrink-0", className)}>
       {children}
     </div>
   );

@@ -109,6 +109,10 @@ class DocxExportRequest(BaseModel):
     title: Optional[str] = "DocQuery Draft"
     markdown: str = ""
     include_citations: bool = True
+    # F1e: stamp the privilege watermark when this export contains privileged material. The
+    # caller (the surface that owns the doc set) sets it; default False ⇒ no watermark (the
+    # byte-identical pre-F1e export).
+    privileged: bool = False
 
 
 def _strip_inline_md(text: str):
@@ -153,6 +157,13 @@ def _build_docx(req: "DocxExportRequest") -> bytes:
 
     doc = Document()
     doc.add_heading(req.title or "DocQuery Draft", level=0)
+
+    # F1e: privilege watermark — a bold notice line at the top when the export contains
+    # privileged material, so a privileged doc never leaves the system unmarked.
+    if getattr(req, "privileged", False):
+        from src.components.privilege import WATERMARK_NOTICE
+        wm = doc.add_paragraph()
+        wm.add_run(WATERMARK_NOTICE).bold = True
 
     endnotes: List[str] = []           # ordered unique citation markers
     endnote_index: Dict[str, int] = {}  # marker text -> 1-based endnote number
@@ -248,6 +259,8 @@ class RedlineExportRequest(BaseModel):
     title: Optional[str] = "Redline Review"
     doc_name: Optional[str] = None
     findings: List[Dict[str, Any]] = []   # list of RedlineFinding-shaped dicts
+    # F1e: stamp the privilege watermark when the redlined document is privileged.
+    privileged: bool = False
 
 
 def _build_redline_docx(req: "RedlineExportRequest") -> bytes:
@@ -264,6 +277,11 @@ def _build_redline_docx(req: "RedlineExportRequest") -> bytes:
 
     doc = Document()
     doc.add_heading(req.title or "Redline Review", level=0)
+    # F1e: privilege watermark at the top when the redlined doc is privileged.
+    if getattr(req, "privileged", False):
+        from src.components.privilege import WATERMARK_NOTICE
+        wm = doc.add_paragraph()
+        wm.add_run(WATERMARK_NOTICE).bold = True
     if req.doc_name:
         p = doc.add_paragraph()
         p.add_run(f"Document: {req.doc_name}").italic = True
@@ -364,6 +382,8 @@ class PdfExportRequest(BaseModel):
     title: Optional[str] = "DocQuery Draft"
     markdown: str = ""
     include_citations: bool = True
+    # F1e: stamp the privilege watermark when this export contains privileged material.
+    privileged: bool = False
 
 
 def _build_pdf(req: "PdfExportRequest") -> bytes:
@@ -425,6 +445,15 @@ def _build_pdf(req: "PdfExportRequest") -> bytes:
     pdf.set_font("Helvetica", "B", 16)
     pdf.cell(0, 10, _safe(req.title or "DocQuery Draft"), ln=True)
     pdf.ln(2)
+
+    # F1e: privilege watermark — a bold notice under the title when privileged.
+    if getattr(req, "privileged", False):
+        from src.components.privilege import WATERMARK_NOTICE
+        pdf.set_font("Helvetica", "B", 9)
+        pdf.set_text_color(176, 38, 38)  # red — a trust/withheld signal, design-system aligned
+        pdf.multi_cell(0, 5, _safe(WATERMARK_NOTICE))
+        pdf.set_text_color(0, 0, 0)
+        pdf.ln(2)
 
     for raw in (req.markdown or "").split("\n"):
         line = raw.rstrip()

@@ -61,18 +61,30 @@ def _resolve_collection_filters(
     embed-search all 1000. Null-safe; only drops known non-matches.
 
     Returns:
-        None  — no collection scope (search all docs).
-        []    — empty collection.
+        []    — empty collection (no docs in this vault yet).
         list  — filenames to scope retrieval to.
+
+    F1b/H1 (cross-vault leak fix): this function NEVER returns "search everything." Before
+    F1, a null collection_id returned None ⇒ retrieve(filename_filters=None) ⇒ an UNSCOPED
+    query over the whole per-user Pinecone namespace = every document the user owns, across
+    every matter (a cross-vault leak). The product is now vault-scoped (multi-firm matters),
+    so a chat MUST be inside a vault. A missing collection_id is a hard 400, not a silent
+    fan-out. (Cross-vault search, if ever wanted, must be an explicit, audited feature that
+    UNIONS the user's vault filenames — never a None/unfiltered query.)
     """
     if not collection_id:
-        return None
+        raise HTTPException(
+            status_code=400,
+            detail="collection_id is required — a query must be scoped to a vault.",
+        )
 
-    # Resolve full filename list (needed for fallback + size check)
+    # Resolve full filename list (needed for fallback + size check). The vault's docs are
+    # resolved through get_collection_document_ids, which joins via collections.user_id —
+    # so a collection_id from another user resolves to [] (no cross-user read).
     doc_ids = sb.get_collection_document_ids(collection_id)
     if not doc_ids:
         return []
-    docs_in_coll = sb.client.table("documents").select("filename").in_(
+    docs_in_coll = sb.read_client.table("documents").select("filename").in_(
         "id", doc_ids
     ).eq("user_id", sb.user_id).execute()
     all_filenames = [d["filename"] for d in (docs_in_coll.data or [])]

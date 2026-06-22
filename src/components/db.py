@@ -52,6 +52,35 @@ def get_supabase_client(use_service_role: bool = False) -> Client:
     return create_client(url, anon_key)
 
 
+def get_rls_read_client(access_token: str) -> Client:
+    """F1 RLS hardening — a per-request, RLS-ENFORCED client for READS.
+
+    The live request path runs on the service-role client (`get_supabase_client(True)`),
+    which is exempt from Postgres RLS by design — so today the ONLY thing isolating one
+    user's rows from another's is the app-layer `.eq("user_id", …)` filter on every query.
+    That is a single layer: one forgotten filter is a cross-user leak (see the F1 isolation
+    audit). This builds the data-layer backstop the plan calls for ("isolation must be an
+    architecture decision at the data layer, not a query-time filter").
+
+    Mechanism: an ANON-key client (so it is NOT service-role / NOT RLS-exempt) carrying the
+    user's verified access token on the PostgREST `Authorization` header. PostgREST then runs
+    every query as the `authenticated` role with `auth.uid()` = the token's subject, so the
+    EXISTING `auth.uid() = user_id` RLS policies (already enabled on every table) enforce
+    isolation — even if an app-layer filter is ever dropped. Reads only: writes/Storage stay
+    on the service-role client (writes need the RLS-exempt path; Storage RLS is a separate F2
+    concern). NOT cached/shared — each request carries a different JWT, so this is built per
+    request (an anon client is cheap; the heavy RAG objects are cached elsewhere).
+    """
+    url = os.getenv("SUPABASE_URL")
+    anon_key = os.getenv("SUPABASE_ANON_KEY")
+    if not url or not anon_key:
+        raise ValueError("SUPABASE_URL and SUPABASE_ANON_KEY must be set for the RLS read client")
+    client = create_client(url, anon_key)
+    # Set the user JWT as the PostgREST Authorization header → auth.uid() resolves, RLS applies.
+    client.postgrest.auth(access_token)
+    return client
+
+
 class SupabaseManager:
     """
     Central class for all Supabase operations in DocQuery.
@@ -65,6 +94,37 @@ class SupabaseManager:
     def __init__(self, use_service_role: bool = False):
         self.client: Client = get_supabase_client(use_service_role=use_service_role)
         self._user = None  # set after login / after get_user() validation
+        # F1 RLS hardening: when a request attaches the user's verified JWT (via
+        # `attach_access_token`), `read_client` becomes an RLS-ENFORCED client so reads run
+        # under `auth.uid()` and the existing policies are a real backstop. Until then it
+        # falls back to `self.client` (service-role) — so the worker/ingest path and any
+        # offline/test path are byte-identical. Built lazily, once, per manager.
+        self._access_token: Optional[str] = None
+        self._read_client: Optional[Client] = None
+
+    def attach_access_token(self, token: Optional[str]) -> "SupabaseManager":
+        """Attach the request's verified JWT so READS run RLS-enforced (`read_client`).
+
+        Called by the FastAPI auth dependency after the token is validated. No-op for a
+        falsy token (keeps the service-role fallback). Returns self for chaining."""
+        if token:
+            self._access_token = token
+            self._read_client = None  # rebuilt on next access with the new token
+        return self
+
+    @property
+    def read_client(self) -> Client:
+        """The client to use for user-facing READS. RLS-enforced when a JWT is attached
+        (auth.uid() resolves → existing `auth.uid() = user_id` policies apply, so a missing
+        app-layer filter cannot leak); otherwise the service-role client (worker/offline).
+
+        Writes and Storage must continue to use `self.client` (service-role) — they need the
+        RLS-exempt path, and Storage RLS is a separate (F2) concern."""
+        if not self._access_token:
+            return self.client
+        if self._read_client is None:
+            self._read_client = get_rls_read_client(self._access_token)
+        return self._read_client
 
     # ─────────────────────────────────────────
     # AUTH
@@ -341,11 +401,25 @@ class SupabaseManager:
             else:
                 raise
 
+    def set_document_privileged(self, doc_id: str, privileged: bool) -> dict:
+        """F1e: mark/unmark a document as privileged (attorney-client / work-product).
+
+        A WRITE → uses the service-role client scoped by `.eq(user_id)` for ownership (same
+        pattern as update_document_status). Forward-compatible: if migration 011 (the
+        `privileged` column) isn't applied yet, this raises a column-missing error the route
+        translates — it never silently no-ops. Returns the updated row (or {} if not found)."""
+        if not self.user_id:
+            return {}
+        res = self.client.table("documents").update(
+            {"privileged": bool(privileged)}
+        ).eq("id", doc_id).eq("user_id", self.user_id).execute()
+        return res.data[0] if res.data else {}
+
     def get_user_documents(self) -> list:
         """Get all documents for current user."""
         if not self.user_id:
             return []
-        res = self.client.table("documents").select("*").eq(
+        res = self.read_client.table("documents").select("*").eq(
             "user_id", self.user_id
         ).order("created_at", desc=True).execute()
         return res.data or []
@@ -354,7 +428,7 @@ class SupabaseManager:
         """Get a document record by ID for current user."""
         if not self.user_id:
             return {}
-        res = self.client.table("documents").select("*").eq(
+        res = self.read_client.table("documents").select("*").eq(
             "user_id", self.user_id
         ).eq("id", doc_id).execute()
         return res.data[0] if res.data else {}
@@ -380,7 +454,7 @@ class SupabaseManager:
         """Get all threads for current user, newest first."""
         if not self.user_id:
             return []
-        res = self.client.table("conversations").select("*").eq(
+        res = self.read_client.table("conversations").select("*").eq(
             "user_id", self.user_id
         ).order("updated_at", desc=True).execute()
         return res.data or []
@@ -450,7 +524,7 @@ class SupabaseManager:
         """Load all messages for a conversation, oldest first."""
         if not self.user_id:
             return []
-        res = self.client.table("messages").select("*").eq(
+        res = self.read_client.table("messages").select("*").eq(
             "conversation_id", conversation_id
         ).eq("user_id", self.user_id).order("created_at", desc=False).execute()
         return res.data or []
@@ -464,22 +538,58 @@ class SupabaseManager:
     # COLLECTIONS
     # ─────────────────────────────────────────
 
-    def create_collection(self, name: str, description: str = None) -> dict:
-        """Create a new collection for the current user."""
+    def create_collection(
+        self,
+        name: str,
+        description: str = None,
+        matter_kind: str = None,
+        parties: list = None,
+        firm_id: str = None,
+    ) -> dict:
+        """Create a new collection (matter/vault) for the current user.
+
+        F1a: `matter_kind`/`parties`/`firm_id` are optional — omitting them creates a plain
+        vault exactly as before (status defaults to 'active' at the DB), so the legacy create
+        path is byte-identical. The DB CHECK constraints (migration 010) reject a bad kind.
+        """
         if not self.user_id:
             raise ValueError("User must be logged in.")
-        res = self.client.table("collections").insert({
+        row = {
             "user_id": self.user_id,
             "name": name,
             "description": description,
-        }).execute()
+        }
+        # Only send matter columns when provided ⇒ no dependency on migration 010 for the
+        # legacy path, and DB defaults (status='active', parties='[]') apply otherwise.
+        if matter_kind is not None:
+            row["matter_kind"] = matter_kind
+        if parties is not None:
+            row["parties"] = parties
+        if firm_id is not None:
+            row["firm_id"] = firm_id
+        res = self.client.table("collections").insert(row).execute()
         return res.data[0] if res.data else {}
+
+    def get_user_firm(self, user_id: str = None) -> dict:
+        """Return the firm this user belongs to (F1a multi-firm tenancy), or {} if none.
+
+        Server-side lookup (not a JWT claim) so the auth flow is unchanged. Returns the first
+        membership's firm; F2 will formalize multi-firm membership + the active-firm choice.
+        """
+        uid = user_id or self.user_id
+        if not uid:
+            return {}
+        res = self.read_client.table("firm_memberships").select(
+            "firm_id, firms!inner(id, name)"
+        ).eq("user_id", uid).limit(1).execute()
+        rows = res.data or []
+        return rows[0].get("firms", {}) if rows else {}
 
     def get_collections(self) -> list:
         """Get all collections for the current user."""
         if not self.user_id:
             return []
-        res = self.client.table("collections").select("*").eq(
+        res = self.read_client.table("collections").select("*").eq(
             "user_id", self.user_id
         ).order("updated_at", desc=True).execute()
         return res.data or []
@@ -488,13 +598,26 @@ class SupabaseManager:
         """Get a single collection by ID for the current user."""
         if not self.user_id:
             return {}
-        res = self.client.table("collections").select("*").eq(
+        res = self.read_client.table("collections").select("*").eq(
             "user_id", self.user_id
         ).eq("id", collection_id).execute()
         return res.data[0] if res.data else {}
 
-    def update_collection(self, collection_id: str, name: str = None, description: str = None) -> dict:
-        """Rename or update description of a collection."""
+    def update_collection(
+        self,
+        collection_id: str,
+        name: str = None,
+        description: str = None,
+        matter_kind: str = None,
+        status: str = None,
+        parties: list = None,
+    ) -> dict:
+        """Rename or update a collection (matter/vault).
+
+        F1a: also updates the matter lifecycle/typing (`matter_kind`/`status`/`parties`). Each
+        field is independent — a rename-only call (the legacy shape) sends only `name` and is
+        unchanged. Returns {} when nothing changed (the route falls back to the existing row).
+        """
         if not self.user_id:
             return {}
         update_data = {}
@@ -502,6 +625,12 @@ class SupabaseManager:
             update_data["name"] = name
         if description is not None:
             update_data["description"] = description
+        if matter_kind is not None:
+            update_data["matter_kind"] = matter_kind
+        if status is not None:
+            update_data["status"] = status
+        if parties is not None:
+            update_data["parties"] = parties
         if not update_data:
             return {}
         res = self.client.table("collections").update(
@@ -533,8 +662,10 @@ class SupabaseManager:
 
     def get_collection_document_ids(self, collection_id: str) -> list[str]:
         """Get all document IDs in a collection, verifying ownership via collections table."""
-        # Join through collections to ensure this user owns the collection
-        res = self.client.table("collection_documents").select(
+        # Join through collections to ensure this user owns the collection.
+        # RLS backstop: collection_documents' policy already restricts to the user's own
+        # collections, so the join runs RLS-enforced under read_client too.
+        res = self.read_client.table("collection_documents").select(
             "document_id, collections!inner(user_id)"
         ).eq("collection_id", collection_id).eq(
             "collections.user_id", self.user_id
@@ -546,20 +677,74 @@ class SupabaseManager:
         doc_ids = self.get_collection_document_ids(collection_id)
         if not doc_ids:
             return []
-        res = self.client.table("documents").select("*").in_(
+        res = self.read_client.table("documents").select("*").in_(
             "id", doc_ids
         ).eq("user_id", self.user_id).execute()
         return res.data or []
 
     def get_document_collections(self, document_id: str) -> list:
         """Get all collections that contain a specific document."""
-        res = self.client.table("collection_documents").select(
+        res = self.read_client.table("collection_documents").select(
             "collection_id"
         ).eq("document_id", document_id).execute()
         collection_ids = [row["collection_id"] for row in (res.data or [])]
         if not collection_ids:
             return []
-        res = self.client.table("collections").select("*").in_(
+        res = self.read_client.table("collections").select("*").in_(
             "id", collection_ids
         ).eq("user_id", self.user_id).execute()
         return res.data or []
+
+    def scan_conflicts(
+        self,
+        parties: list,
+        firm_id: str = None,
+        exclude_collection_id: str = None,
+    ) -> list:
+        """Metadata-only conflict scan (F1c) — the ethical-wall screen across the FIRM.
+
+        THE WALL: this reads ONLY matter metadata (`collections.parties` JSONB — party names +
+        roles). It NEVER reads `documents` or `document_chunks`; no document content is
+        touched. It compares the new matter's `parties` against the OTHER matters in the same
+        firm and returns adverse-party / same-party findings (see `find_conflicts`).
+
+        Firm scope: a conflict screen must see OTHER users' matters in the firm (that is the
+        whole point), which crosses the per-user RLS boundary. So this uses the service-role
+        client (`self.client`, RLS-exempt) but is HARD-SCOPED to `firm_id` and selects ONLY the
+        metadata columns — the narrow, audited cross-user read. With no `firm_id` (a user with
+        no firm yet) there is nothing firm-wide to screen against → returns []. Never raises;
+        a failure degrades to [] (non-blocking — a conflict scan never blocks create).
+        """
+        try:
+            if not parties:
+                return []
+            # Defense-in-depth: NEVER trust a passed firm_id. Resolve the caller's OWN firm
+            # server-side and use that as the hard scope. A passed firm_id is honored ONLY if it
+            # equals the caller's firm; anything else falls back to the caller's firm (so a
+            # future mis-wiring that forwards a client value cannot read another firm's matters).
+            own = (self.get_user_firm() or {}).get("id")
+            if not own:
+                return []  # no firm → no firm-wide matters to screen against
+            fid = firm_id if (firm_id and firm_id == own) else own
+            # METADATA ONLY: select party + label columns; never a content table.
+            q = self.client.table("collections").select(
+                "id, name, matter_kind, parties"
+            ).eq("firm_id", fid)
+            if exclude_collection_id:
+                q = q.neq("id", exclude_collection_id)
+            res = q.execute()
+            existing = [
+                {
+                    "collection_id": r.get("id"),
+                    "name": r.get("name"),
+                    "matter_kind": r.get("matter_kind"),
+                    "parties": r.get("parties") or [],
+                }
+                for r in (res.data or [])
+            ]
+            from src.components.practice_templates import find_conflicts
+            return find_conflicts(parties, existing)
+        except Exception as exc:  # noqa: BLE001 — non-blocking; scan failure must not break create
+            import logging
+            logging.getLogger(__name__).warning("Conflict scan failed (non-blocking): %s", exc)
+            return []

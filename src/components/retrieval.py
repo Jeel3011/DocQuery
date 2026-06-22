@@ -79,6 +79,12 @@ class RetrievalManager:
         ``metadata_filter`` (G3 Step B) is a conjunctive narrowing merged on top — it
         NEVER replaces the scope (a bug there would be a cross-vault leak).
         """
+        # F1b/H3: an explicitly-empty scope axis (empty vault) ⇒ match nothing, never the
+        # whole namespace (same sentinel as _build_filter, applied to the table path).
+        if (doc_ids is not None and len(doc_ids) == 0) or \
+           (filename_filters is not None and len(filename_filters) == 0):
+            return []
+
         f: dict = {"chunk_type": "table"}
         if doc_id:
             f["doc_id"] = doc_id
@@ -134,6 +140,15 @@ class RetrievalManager:
         on top of the scope — it can only NARROW, never replace a scope key (that would be
         a cross-vault leak). Scope keys present in metadata_filter are dropped.
         """
+        # F1b/H3 (empty-scope sentinel — defense-in-depth at the DATA layer): an EMPTY but
+        # PRESENT scope list (doc_ids=[] / filename_filters=[]) means "a vault was requested
+        # and it has no docs" — NOT "no scope." Returning None there would fan the query out
+        # over the whole user namespace (the empty-vault leak). So an explicitly-empty scope
+        # axis yields a MATCH-NOTHING filter. `None` still means "no scope axis requested."
+        if (doc_ids is not None and len(doc_ids) == 0) or \
+           (filename_filters is not None and len(filename_filters) == 0):
+            return {"doc_id": {"$in": []}}  # matches no vectors — never the whole namespace
+
         f: dict = {}
         if doc_id:
             f["doc_id"] = doc_id
@@ -291,6 +306,7 @@ class RetrievalManager:
         use_reranker: bool = True,
         doc_ids: list[str] = None,
         metadata_filter: dict = None,
+        collection_id: str = None,
     ) -> list[Document]:
         """Retrieve relevant docs with optional hybrid BM25+RRF fusion and/or reranking.
 
@@ -336,6 +352,7 @@ class RetrievalManager:
             filename_filters=filename_filters, fetch_k_override=fetch_override,
             apply_threshold=apply_threshold,
             doc_ids=doc_ids, metadata_filter=metadata_filter,
+            collection_id=collection_id,
         )
 
         # Step 1: Hybrid BM25 + RRF fusion

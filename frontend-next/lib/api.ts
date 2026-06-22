@@ -25,6 +25,9 @@ export interface DocumentResponse {
   fidelity?: "good" | "partial" | null;
   // G3 Step C: structurally-derived fiscal year. null = unknown → FY filter doesn't exclude.
   fiscal_year?: number | null;
+  // F1e privilege firewall: true = attorney-client / work-product. Excluded from shared /
+  // cross-vault surfaces (F6) and watermarked in exports. Legacy/null reads as false.
+  privileged?: boolean | null;
 }
 
 export interface ConversationResponse {
@@ -124,6 +127,25 @@ export async function uploadDocument(
         headers: { "Content-Type": "multipart/form-data" },
         timeout: 120_000, // uploads can be slow
       }
+    );
+    return res.data;
+  } catch (err) {
+    handleAxiosError(err);
+  }
+}
+
+// F1e: mark/unmark a document as privileged (attorney-client / work-product). A privileged
+// doc is excluded from shared / cross-vault surfaces (F6) and watermarked in exports — it is
+// NOT hidden from its own vault. Returns the updated row so the caller can reconcile state.
+export async function updateDocument(
+  token: string,
+  docId: string,
+  patch: { privileged: boolean }
+): Promise<DocumentResponse | undefined> {
+  try {
+    const res = await makeClient(token).patch<DocumentResponse>(
+      `/documents/${docId}`,
+      patch
     );
     return res.data;
   } catch (err) {
@@ -291,6 +313,24 @@ export async function getMessages(
 
 // ─── Collections ──────────────────────────────────────────────────────────────
 
+// F1a/F1c matter typing. A party on a matter (for the conflict scan).
+export interface MatterParty {
+  name: string;
+  role?: string | null;
+}
+
+// F1c: one conflict-scan finding — metadata only (party names + matter labels, never content).
+export interface ConflictFinding {
+  party: string;
+  matched_party: string;
+  collection_id: string | null;
+  matter_name: string | null;
+  matter_kind: string | null;
+  severity: "adverse" | "same_party";
+  new_side?: string | null;
+  existing_side?: string | null;
+}
+
 export interface CollectionResponse {
   id: string;
   name: string;
@@ -298,7 +338,45 @@ export interface CollectionResponse {
   document_count: number;
   created_at: string | null;
   updated_at: string | null;
+  // F1a matter fields (legacy rows: matter_kind/firm_id null, status 'active', parties []).
+  matter_kind?: string | null;
+  status?: string | null;
+  parties?: MatterParty[] | null;
+  firm_id?: string | null;
+  // F1c: the conflict-scan result, present ONLY on create-with-parties.
+  conflicts?: ConflictFinding[] | null;
+  has_adverse?: boolean | null;
 }
+
+// F1c: a practice template — the starting config a matter_kind suggests. All DEFAULTS.
+export interface TemplateColumn {
+  key: string;
+  label: string;
+  prompt: string;
+  kind: string;
+  risk_rubric?: string | null;
+}
+export interface PracticeTemplate {
+  matter_kind: string | null;
+  label: string;
+  grid_columns: TemplateColumn[];
+  kb_scope: string[]; // subset of {"vault","statutes","caselaw"}
+  flagship: string;
+  summary?: string | null;
+}
+
+// The 9 matter kinds (lockstep with src/api/schemas.py MATTER_KINDS). Labels are display-only.
+export const MATTER_KINDS: { value: string; label: string }[] = [
+  { value: "litigation", label: "Litigation" },
+  { value: "m&a", label: "M&A" },
+  { value: "lending", label: "Lending" },
+  { value: "arbitration", label: "Arbitration" },
+  { value: "ip", label: "IP" },
+  { value: "regulatory", label: "Regulatory" },
+  { value: "employment", label: "Employment" },
+  { value: "advisory", label: "Advisory" },
+  { value: "compliance", label: "Compliance" },
+];
 
 export async function listCollections(
   token: string
@@ -317,13 +395,51 @@ export async function listCollections(
 export async function createCollection(
   token: string,
   name: string,
-  description?: string
+  description?: string,
+  // F1a/F1c: optional matter typing. Omitting them is the legacy create (byte-identical).
+  opts?: { matter_kind?: string | null; parties?: MatterParty[] | null }
 ): Promise<CollectionResponse> {
   try {
-    const res = await makeClient(token).post<CollectionResponse>(
-      "/collections",
-      { name, description }
+    const body: Record<string, unknown> = { name, description };
+    if (opts?.matter_kind) body.matter_kind = opts.matter_kind;
+    if (opts?.parties && opts.parties.length) body.parties = opts.parties;
+    const res = await makeClient(token).post<CollectionResponse>("/collections", body);
+    return res.data;
+  } catch (err) {
+    handleAxiosError(err);
+  }
+}
+
+// F1c: the practice template a matter_kind suggests (grid columns + KB scope + flagship pin).
+// Static/$0 on the server. Pass "generic" (or omit-handling) for the neutral fall-back.
+export async function getPracticeTemplate(
+  token: string,
+  matterKind: string
+): Promise<PracticeTemplate> {
+  try {
+    const res = await makeClient(token).get<PracticeTemplate>(
+      `/collections/practice-template/${encodeURIComponent(matterKind || "generic")}`
     );
+    return res.data;
+  } catch (err) {
+    handleAxiosError(err);
+  }
+}
+
+// F1c: pre-create ethical-wall conflict scan — metadata only, never document content.
+export async function scanConflicts(
+  token: string,
+  parties: MatterParty[],
+  excludeCollectionId?: string
+): Promise<{ conflicts: ConflictFinding[]; has_adverse: boolean }> {
+  try {
+    const res = await makeClient(token).post<{
+      conflicts: ConflictFinding[];
+      has_adverse: boolean;
+    }>("/collections/scan-conflicts", {
+      parties,
+      exclude_collection_id: excludeCollectionId ?? null,
+    });
     return res.data;
   } catch (err) {
     handleAxiosError(err);
@@ -341,16 +457,38 @@ export async function deleteCollection(
   }
 }
 
+// F1e: general vault PATCH — rename and/or change matter typing/lifecycle. Each field is
+// optional; only the supplied keys are sent (a name-only call is byte-identical to the old
+// renameCollection, and the backend validates matter_kind/status against its CHECK sets).
+export async function updateCollection(
+  token: string,
+  collectionId: string,
+  patch: {
+    name?: string;
+    description?: string;
+    matter_kind?: string;
+    status?: string;
+    parties?: MatterParty[];
+  }
+): Promise<CollectionResponse | undefined> {
+  try {
+    const res = await makeClient(token).patch<CollectionResponse>(
+      `/collections/${collectionId}`,
+      patch
+    );
+    return res.data;
+  } catch (err) {
+    handleAxiosError(err);
+  }
+}
+
+// Thin compatibility wrapper over updateCollection for a rename-only change.
 export async function renameCollection(
   token: string,
   collectionId: string,
   name: string
 ): Promise<void> {
-  try {
-    await makeClient(token).patch(`/collections/${collectionId}`, { name });
-  } catch (err) {
-    handleAxiosError(err);
-  }
+  await updateCollection(token, collectionId, { name });
 }
 
 export async function addDocToCollection(

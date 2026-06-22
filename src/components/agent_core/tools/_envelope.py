@@ -149,4 +149,8 @@ def span_to_dict(doc: Any) -> Dict[str, Any]:
         "chunk_id": md.get("chunk_id") or md.get("id"),
         "score": md.get("score") or md.get("relevance_score"),
         "snippet": (getattr(doc, "page_content", "") or "")[:500],
+        # F1b: carry the vault id on every span so the cross-vault-leak invariant is
+        # provable downstream (the F3 ledger / trust UI can show which vault each cited
+        # chunk came from — and a leak is a span whose collection_id != the active vault).
+        "collection_id": md.get("collection_id"),
     }

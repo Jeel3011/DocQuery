@@ -65,6 +65,10 @@ class RunScope:
             "collection_id": self.collection_id,
             "doc_ids": self.doc_ids,
             "filenames": self.filenames,
+            # F1b: the run is inside a vault whenever a collection_id is set (the agent-core
+            # route requires one). `search_vault` reads this as the cross-vault-leak FLOOR —
+            # an active vault with no resolvable scope key is refused, never fanned out.
+            "vault_active": bool(self.collection_id),
         }
         if self.filters:
             d["filters"] = self.filters

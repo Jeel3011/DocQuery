@@ -104,7 +104,7 @@ def read_document(
         from src.components.brain.table_intent import load_grids_for_docs
 
         # load_grids_for_docs keys on the DB doc_id (UUID). The model speaks filenames;
-        # resolve exact, then unique-substring, else pass through as an id.
+        # resolve exact, then unique-substring.
         _fb = filename_by_doc or {}
         _uuid_by_fn = {fn: did for did, fn in _fb.items()}
         gid = _uuid_by_fn.get(target)
@@ -112,6 +112,13 @@ def read_document(
             subs = [did for fn, did in _uuid_by_fn.items()
                     if target and (target in fn or fn in target)]
             gid = subs[0] if len(subs) == 1 else target
+        # F1b/H2 (cross-vault membership guard): `gid` must be a doc IN THIS VAULT. The run's
+        # filename_by_doc IS the vault's document set (resolved from collection_id at the
+        # route). A `target` that resolves to a raw, non-vault id (the old passthrough) would
+        # let the agent read another vault's grids — refuse it. (Empty _fb ⇒ offline/test path
+        # with no vault scope: allow, since there's no vault boundary to cross.)
+        if _fb and gid not in _fb:
+            return []  # not in this vault → caller surfaces "not in scope" (no cross-vault read)
         fresh = load_grids_for_docs(
             db_client, [gid], question=question, filename_by_doc=filename_by_doc,
         )
@@ -213,11 +220,22 @@ def read_document(
             # as load_grids_for_docs) and cap the rows. The old query pulled EVERY chunk
             # for the doc then filtered in Python — ~15s/call and a token sink (observed
             # live). Text chunks for a 1-2 page range are few; 64 is a generous ceiling.
+            # F1b/H2 (cross-user leak fix): the service-role client bypasses RLS, so this
+            # user_id filter is the app-layer guard isolating chunks per user — without it an
+            # injected/foreign document_id loads its text. _uid None ⇒ offline/test (no live
+            # data). See the same guard in brain/table_intent.load_grids_for_docs.
+            # F1 RLS hardening (defense-in-depth): READ through `read_client` when present — on
+            # the request path it carries the user's JWT so Postgres RLS ALSO enforces
+            # auth.uid()=user_id (a data-layer backstop). Falls back to `.client` offline.
+            _uid = getattr(db_client, "user_id", None)
+            _reader = getattr(db_client, "read_client", None) or db_client.client
             q = (
-                db_client.client.table("document_chunks")
+                _reader.table("document_chunks")
                 .select("content,metadata")
                 .eq("document_id", resolved_id)
             )
+            if _uid:
+                q = q.eq("user_id", _uid)
             try:
                 rows = q.eq("metadata->>chunk_type", "text").limit(64).execute().data or []
             except Exception:  # noqa: BLE001 — JSONB filter unsupported → fall back, still capped

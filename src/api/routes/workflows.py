@@ -132,7 +132,7 @@ async def _run_report_workflow(template, run, body, sb, user_config, retrieval_m
         return StreamingResponse(_empty(), media_type="text/event-stream")
 
     doc_ids = sb.get_collection_document_ids(body.collection_id) or []
-    docs = sb.client.table("documents").select("id,filename").in_(
+    docs = sb.read_client.table("documents").select("id,filename").in_(
         "id", doc_ids).eq("user_id", sb.user_id).execute()
     filename_by_doc = {d["id"]: d["filename"] for d in (docs.data or [])}
     routed = set(filename_filters)
@@ -239,7 +239,7 @@ async def _run_grid_workflow(template, run, body, sb, user_config, retrieval_mgr
     if not all_doc_ids:
         raise HTTPException(status_code=400, detail="The vault has no documents.")
 
-    docs = sb.client.table("documents").select("id,filename,doc_type,fiscal_year").in_(
+    docs = sb.read_client.table("documents").select("id,filename,doc_type,fiscal_year").in_(
         "id", all_doc_ids).eq("user_id", sb.user_id).execute()
     rows_by_doc = {d["id"]: d for d in (docs.data or [])}
     filename_by_doc = {d["id"]: d["filename"] for d in (docs.data or [])}
