@@ -17,7 +17,7 @@ from src.api.schemas import (
     ConflictScanResponse,
     ConflictFinding,
 )
-from src.api.dependencies import get_current_user
+from src.api.dependencies import get_current_user, require_cap, assert_vault_not_screened
 from src.api.routes.audit import log_audit
 from src.logger import get_logger
 
@@ -60,8 +60,9 @@ def _collection_response(coll: dict, doc_count: int, conflicts: list = None) -> 
 async def create_collection(
     body: CreateCollectionRequest,
     sb=Depends(get_current_user),
+    _cap=Depends(require_cap("create_vault")),
 ):
-    """Create a new collection (matter/vault)."""
+    """Create a new collection (matter/vault). F2b: cap-gated on `create_vault`."""
     try:
         # F1a: a vault is owned by the user's firm (server-side lookup, not a JWT claim → the
         # auth flow is unchanged). None when the user has no firm yet — the vault still works.
@@ -194,8 +195,9 @@ async def update_collection(
 async def delete_collection(
     collection_id: str,
     sb=Depends(get_current_user),
+    _cap=Depends(require_cap("delete")),
 ):
-    """Delete a collection (documents remain, just unlinked)."""
+    """Delete a collection (documents remain, just unlinked). F2b: cap-gated on `delete`."""
     existing = sb.get_collection(collection_id)
     if not existing:
         raise HTTPException(status_code=404, detail="Collection not found.")
@@ -213,12 +215,18 @@ async def add_document_to_collection(
     collection_id: str,
     body: AddDocumentToCollectionRequest,
     sb=Depends(get_current_user),
+    _cap=Depends(require_cap("ingest")),
 ):
-    """Add a document to a collection."""
+    """Add a document to a collection. F2b: cap-gated on `ingest`."""
     # Verify collection exists and belongs to user
     coll = sb.get_collection(collection_id)
     if not coll:
         raise HTTPException(status_code=404, detail="Collection not found.")
+    # F2c P7 (the ethical wall, worker re-ingest path): a screened actor cannot ingest INTO a
+    # walled vault. This is the enqueue-side enforcement (§service-wiring) — the worker is
+    # authz-blind, so the screen must block at the route that targets this vault, before the
+    # doc joins the vault (and would later flow into its retrieval scope).
+    assert_vault_not_screened(sb, collection_id)
     # Verify document exists and belongs to user
     doc = sb.get_document(body.document_id)
     if not doc:
@@ -237,11 +245,14 @@ async def remove_document_from_collection(
     collection_id: str,
     document_id: str,
     sb=Depends(get_current_user),
+    _cap=Depends(require_cap("ingest")),
 ):
-    """Remove a document from a collection."""
+    """Remove a document from a collection. F2b: cap-gated on `ingest` (matter content edit)."""
     coll = sb.get_collection(collection_id)
     if not coll:
         raise HTTPException(status_code=404, detail="Collection not found.")
+    # F2c P7: a screened actor cannot mutate a walled vault's contents (no remove either).
+    assert_vault_not_screened(sb, collection_id)
     try:
         sb.remove_document_from_collection(collection_id, document_id)
         return {"message": "Document removed from collection"}

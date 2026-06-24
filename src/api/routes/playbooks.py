@@ -19,7 +19,7 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
-from src.api.dependencies import get_current_user
+from src.api.dependencies import get_current_user, require_cap
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -196,8 +196,9 @@ async def list_playbooks(
 async def create_playbook_row(
     body: PlaybookRow,
     sb=Depends(get_current_user),
+    _cap=Depends(require_cap("edit_playbooks")),
 ):
-    """Create a new playbook row (clause topic + standard position)."""
+    """Create a new playbook row (clause topic + standard position). F2b: cap `edit_playbooks`."""
     try:
         row = {
             "user_id": sb.user_id,
@@ -224,8 +225,9 @@ async def update_playbook_row(
     row_id: str,
     body: PlaybookRow,
     sb=Depends(get_current_user),
+    _cap=Depends(require_cap("edit_playbooks")),
 ):
-    """Update an existing playbook row (must belong to the authenticated user)."""
+    """Update an existing playbook row (must belong to the authenticated user). F2b: `edit_playbooks`."""
     try:
         patch = {
             "clause_topic": body.clause_topic,
@@ -254,8 +256,9 @@ async def update_playbook_row(
 async def delete_playbook_row(
     row_id: str,
     sb=Depends(get_current_user),
+    _cap=Depends(require_cap("edit_playbooks")),
 ):
-    """Delete a playbook row (must belong to the authenticated user)."""
+    """Delete a playbook row (must belong to the authenticated user). F2b: cap `edit_playbooks`."""
     try:
         sb.client.table("playbooks").delete().eq("id", row_id).eq("user_id", sb.user_id).execute()
     except Exception as exc:
@@ -267,8 +270,9 @@ async def delete_playbook_row(
 async def seed_playbook(
     collection_id: Optional[str] = None,
     sb=Depends(get_current_user),
+    _cap=Depends(require_cap("edit_playbooks")),
 ):
-    """Load the Indian NDA/vendor starter playbook (idempotent — skips existing topics).
+    """Load the Indian NDA/vendor starter playbook (idempotent — skips existing topics). F2b: cap `edit_playbooks`.
 
     Returns {inserted: N, skipped: N} so the caller knows what changed.
     """

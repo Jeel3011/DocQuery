@@ -35,6 +35,8 @@ from src.api.dependencies import (
     get_retrieval_mgr,
     get_kb_retrieval_mgr,
     limiter,
+    require_cap,
+    assert_vault_not_screened,
 )
 from src.api.schemas import QueryRequest
 from src.components.config import Config
@@ -97,8 +99,13 @@ async def agentcore_query_stream(
     user_config: Config = Depends(get_user_config),
     retrieval_mgr=Depends(get_retrieval_mgr),
     kb_retrieval_mgr=Depends(get_kb_retrieval_mgr),  # G8: None unless USE_KNOWLEDGE on
+    _cap=Depends(require_cap("ask")),
 ):
     """The agent core (§3.2). Flag-gated, SSE per §3.6, scope-scoped to a collection.
+
+    F2b: cap-gated on `ask` — everyone on a matter (incl. paralegals/assistants, D0) may ask;
+    external guest (deny-by-default) cannot. The per-vault ethical wall (F2c) plugs into the
+    same resolved membership.
 
     Events: agent_step → agent_thought → tool_call/tool_result* → gate* → sources →
     token → meta → [DONE]. A model degrade or any failure ends with a clean abstain.
@@ -113,6 +120,11 @@ async def agentcore_query_stream(
             status_code=400,
             detail="collection_id is required for the agent-core endpoint.",
         )
+
+    # F2c P1 (the wall, retrieval layer): a screened user gets 0 from search_vault before any
+    # tool runs. The verb guard (require_cap("ask")) already denies via the resolved screen, but
+    # this is the data-path floor — even a prompt-injected/foreign vault id is refused here.
+    assert_vault_not_screened(sb, collection_id)
 
     # Mode dispatch (§3.1): the user may force fast|standard|deep|draft; default standard.
     # (Fast does not loop — the agent core is the smart path; fast stays on /query/stream.)

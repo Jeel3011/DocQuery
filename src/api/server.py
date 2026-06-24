@@ -26,6 +26,7 @@ from src.api.routes import redline as redline_routes          # G6.3: redline st
 from src.api.routes import workflows as workflows_routes      # G7: workflow templates (flag-gated)
 from src.api.routes import doc_catalog as doc_catalog_routes  # Legal catalog §2.3: /doc-types (flag-gated)
 from src.api.routes import connectors as connectors_routes    # G8.6 vault connectors (flag-gated)
+from src.api.routes import matters as matters_routes          # F2e: matter staffing + review chain
 from src.api.middleware import CorrelationIDMiddleware, SecurityHeadersMiddleware
 
 from slowapi.errors import RateLimitExceeded
@@ -139,6 +140,7 @@ app.include_router(redline_routes.router,     prefix=API_PREFIX, tags=["Redline"
 app.include_router(workflows_routes.router,   prefix=API_PREFIX, tags=["Workflows"])  # G7 (flag-gated)
 app.include_router(doc_catalog_routes.router, prefix=API_PREFIX, tags=["DocCatalog"])  # Legal catalog §2.3 (flag-gated)
 app.include_router(connectors_routes.router,  prefix=API_PREFIX, tags=["Connectors"])  # G8.6 (flag-gated)
+app.include_router(matters_routes.router,     prefix=API_PREFIX, tags=["Matters"])    # F2e: matter staffing + review chain
 
 
 # -- Prometheus Metrics --

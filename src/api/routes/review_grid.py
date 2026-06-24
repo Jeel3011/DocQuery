@@ -25,7 +25,7 @@ from typing import Any, Dict, List
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
 
-from src.api.dependencies import get_current_user, get_user_config, get_retrieval_mgr, limiter
+from src.api.dependencies import get_current_user, get_user_config, get_retrieval_mgr, limiter, require_cap, assert_vault_not_screened
 from src.api.schemas import ReviewGridRequest
 from src.components.config import Config
 
@@ -49,8 +49,11 @@ async def review_grid_stream(
     sb=Depends(get_current_user),
     user_config: Config = Depends(get_user_config),
     retrieval_mgr=Depends(get_retrieval_mgr),
+    _cap=Depends(require_cap("run_workflow")),
 ):
     """Run a review grid, streaming `grid_start`, one `cell` per (doc×column), `grid_done`.
+
+    F2b: cap-gated on `run_workflow` — a working-toolkit verb (everyone on a matter, D0).
 
     Degradation: a per-cell failure becomes a cell with status=error (never a 500); a
     fatal setup error ends with a clean `grid_done` carrying an error.
@@ -62,6 +65,10 @@ async def review_grid_stream(
     collection_id = body.collection_id
     if not collection_id:
         raise HTTPException(status_code=400, detail="collection_id is required for a review grid.")
+
+    # F2c P5 (the ethical wall, review-grid path): refuse a screened user before any cell runs
+    # — each cell descends into search_vault / read_document on this vault.
+    assert_vault_not_screened(sb, collection_id)
 
     # ── Resolve the document set (rows) ────────────────────────────────────────────
     # All docs in the collection, mapped id ↔ filename (tools speak ids; retriever filenames).

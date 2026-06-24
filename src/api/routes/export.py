@@ -13,7 +13,7 @@ from fastapi import APIRouter, HTTPException, Depends
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
-from src.api.dependencies import get_current_user
+from src.api.dependencies import get_current_user, require_cap
 from src.api.routes.audit import log_audit
 from src.logger import get_logger
 
@@ -611,8 +611,13 @@ def _format_conversation_pdf(title: str, messages: list) -> bytes:
 async def export_draft_pdf(
     req: PdfExportRequest,
     sb=Depends(get_current_user),
+    _cap=Depends(require_cap("release_external")),
 ):
     """Export a gated cited deliverable as a .pdf (G6.1b).
+
+    F2b: cap-gated on `release_external` (D5) — exporting a deliverable is sending work OUTSIDE
+    the firm, the one tightly-held verb. Juniors/paralegals route up the review chain (F2e);
+    partners + senior associates may release. Solo-MP / legacy users are allowed (byte-identical).
 
     The markdown supplied MUST already have passed the output gate. Same contract as
     /export/docx: `include_citations` toggles numbered footnotes vs a clean client copy.
@@ -640,8 +645,9 @@ async def export_conversation(
     conversation_id: str,
     format: Literal["md", "pdf"] = "md",
     sb=Depends(get_current_user),
+    _cap=Depends(require_cap("release_external")),
 ):
-    """Export a conversation as Markdown or PDF.
+    """Export a conversation as Markdown or PDF. F2b: cap-gated on `release_external` (D5).
 
     Query params:
         format: 'md' or 'pdf' (default: 'md')
@@ -689,8 +695,11 @@ async def export_conversation(
 async def export_table_xlsx(
     req: TableExportRequest,
     sb=Depends(get_current_user),
+    _cap=Depends(require_cap("release_external")),
 ):
     """Export an Analyst table answer as an .xlsx workbook (Phase 4.3, §4b step 4).
+
+    F2b: cap-gated on `release_external` (D5).
 
     Two sheets: the source table grid and the computed results (value + formula +
     source-cell trace). Computed columns are preserved and labelled, so every
@@ -716,8 +725,11 @@ async def export_table_xlsx(
 async def export_draft_docx(
     req: DocxExportRequest,
     sb=Depends(get_current_user),
+    _cap=Depends(require_cap("release_external")),
 ):
     """Export a gated cited deliverable (memo/summary/draft) as a .docx (G6.1).
+
+    F2b: cap-gated on `release_external` (D5).
 
     The markdown supplied MUST already have passed the output gate — export never
     re-gates and never adds a figure. `include_citations` toggles numbered endnotes
@@ -745,8 +757,11 @@ async def export_draft_docx(
 async def export_redline_docx(
     req: RedlineExportRequest,
     sb=Depends(get_current_user),
+    _cap=Depends(require_cap("release_external")),
 ):
     """Export a redline result as a tracked-changes .docx (G6.3).
+
+    F2b: cap-gated on `release_external` (D5).
 
     Each deviation finding renders as a clause pair: the original (struck-through, red)
     and the suggested edit (underlined, green) — the lawyer's redline. Conforming,

@@ -12,6 +12,8 @@ from src.api.schemas import (
     AuthResponse,
     UserResponse,
     UpdatePreferencesRequest,
+    AcceptInviteRequest,
+    FirmResponse,
 )
 from src.api.dependencies import get_current_user, limiter
 from src.components.db import SupabaseManager
@@ -41,7 +43,15 @@ def _sanitize_name(raw):
 @router.post("/signup", response_model=AuthResponse)
 @limiter.limit("5/minute")
 async def signup(request: Request, body: SignUpRequest):
-    """Register a new user account."""
+    """Register a new user account.
+
+    F2a (D1): the first user CREATES a firm and becomes its Managing Partner. A solo signup is
+    therefore a firm-of-one whose sole member is a MP — byte-identical powers to pre-F2 (the MP
+    holds every capability). Additional members join ONLY by invite (never open auto-join — the
+    named Auth0 security hole). Firm creation is best-effort: if it fails, the account still
+    works (firm-less, backfilled by migration 012's idempotent block) — we never block signup on
+    the firm write.
+    """
     sb = SupabaseManager()
     try:
         res = sb.sign_up(body.email, body.password)
@@ -53,6 +63,17 @@ async def signup(request: Request, body: SignUpRequest):
             )
         sb._user = res.user
         log_audit(sb, "auth.signup", "user", str(res.user.id), {"email": res.user.email})
+
+        # D1: provision the creator's own firm (they become its Managing Partner). Best-effort —
+        # a firm-write failure must not fail the account creation (the backfill covers it later).
+        try:
+            local = (res.user.email or "").split("@")[0] or "My"
+            firm = sb.create_firm(f"{local}'s Firm", owner_user_id=str(res.user.id))
+            log_audit(sb, "firm.create", "firm", str(firm.get("id")),
+                      {"name": firm.get("name"), "owner_role": "managing_partner"})
+        except Exception:
+            logger.exception("Firm provisioning failed for new user %s (account still created)", res.user.id)
+
         return AuthResponse(
             access_token=session.access_token,
             user_id=str(res.user.id),
@@ -129,4 +150,51 @@ async def update_preferences(
         user_id=sb.user_id,
         email=sb.user_email,
         preferred_name=safe_name,
+    )
+
+
+@router.get("/firm", response_model=FirmResponse)
+async def my_firm(sb: SupabaseManager = Depends(get_current_user)):
+    """The firm the current user belongs to, with their role in it (F2a). 404 if firm-less
+    (a pre-backfill legacy user) — the frontend treats that as 'solo, unprovisioned'."""
+    firm = sb.get_user_firm()
+    if not firm or not firm.get("id"):
+        raise HTTPException(status_code=404, detail="You are not a member of any firm.")
+    return FirmResponse(id=firm["id"], name=firm.get("name"), role=firm.get("role"))
+
+
+@router.post("/accept-invite", response_model=FirmResponse)
+@limiter.limit("10/minute")
+async def accept_invite(
+    request: Request,
+    body: AcceptInviteRequest,
+    sb: SupabaseManager = Depends(get_current_user),
+):
+    """Accept a firm invite (D1). The membership is created with the INVITED role — the joiner
+    can never self-assign. Security (T4), all enforced server-side in db.accept_invite:
+      - single-use & un-expired (atomic conditional UPDATE — no replay, no race);
+      - EMAIL-BOUND: the accepting user's VERIFIED email must equal the invite email.
+    Returns the firm + the role granted.
+    """
+    try:
+        result = sb.accept_invite(
+            raw_token=body.token,
+            accepting_user_id=sb.user_id,
+            accepting_email=sb.user_email or "",
+        )
+    except ValueError as e:
+        # Expected rejections (used/expired/email-mismatch/invalid) → 400 with the safe reason.
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception:
+        logger.exception("Accept-invite failed for user %s", sb.user_id)
+        raise HTTPException(status_code=500, detail="Could not accept the invite. Please try again.")
+
+    firm_id = result.get("firm_id")
+    log_audit(sb, "firm.accept_invite", "firm", str(firm_id),
+              {"role": result.get("role"), "user_id": sb.user_id})
+    firm = sb.get_user_firm(firm_id=firm_id)
+    return FirmResponse(
+        id=firm_id,
+        name=firm.get("name") if firm else None,
+        role=result.get("role"),
     )

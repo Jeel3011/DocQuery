@@ -35,6 +35,8 @@ from src.api.dependencies import (
     get_user_config,
     get_retrieval_mgr,
     limiter,
+    require_cap,
+    assert_vault_not_screened,
 )
 from src.components.config import Config
 from src.api.routes.agent_core import _sse
@@ -64,7 +66,10 @@ async def redline_stream(
     sb=Depends(get_current_user),
     user_config=Depends(get_user_config),
     retrieval_mgr=Depends(get_retrieval_mgr),
+    _cap=Depends(require_cap("draft")),
 ):
+    # F2b: cap-gated on `draft` — everyone on a matter (incl. paralegals/assistants, D0) may
+    # redline; external client/guest cannot.
     cfg: Config = user_config
 
     if not cfg.USE_AGENT_CORE:
@@ -107,6 +112,10 @@ async def redline_stream(
             status_code=400,
             detail=f"Too many clause topics ({n_topics}); limit is {_MAX_REDLINE_TOPICS}.",
         )
+
+    # F2c P4 (the ethical wall, redline path): a screened user is refused before any clause
+    # search / read runs — the data-path floor on top of the require_cap("draft") verb guard.
+    assert_vault_not_screened(sb, body.collection_id)
 
     # ── Scope assembly + vault-membership check (H6) ────────────────────────────────────
     # Build the vault's full doc map (id ↔ filename) the SAME way the agent-core route does

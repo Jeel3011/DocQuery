@@ -40,6 +40,272 @@ class UpdatePreferencesRequest(BaseModel):
 
 
 # ─────────────────────────────────────────
+# FIRM / ROLES / INVITES  (F2a — plans/F2_FIRM_CONSOLE_PLAN.md §F2a)
+# ─────────────────────────────────────────
+
+# The 9 firm roles, top→bottom in hierarchy. In LOCKSTEP with the CHECK constraints in
+# docs/migrations/012_firm_roles.sql AND the matrix in src/components/authz.py (F2b). A drift
+# here = a role the API accepts but the DB rejects (or that has no capability line). `client`
+# and `guest` are EXTERNAL (deny-by-default in F2b). `ROLE_RANK` orders them for the F2b
+# self-escalation guard (T1: you can never set a role ≥ your own) and the F2e review chain.
+ROLES = (
+    "managing_partner", "senior_partner", "partner", "senior_associate",
+    "associate", "paralegal", "assistant", "client", "guest",
+)
+# Lower index = more senior. Used by F2b (T1 guard) and F2e (default review chain by rank).
+ROLE_RANK = {role: i for i, role in enumerate(ROLES)}
+
+
+class InviteRequest(BaseModel):
+    """A `manage_members` holder invites a new member by email + role (D1). The joiner can
+    NEVER pick their own role; the firm is resolved server-side (T3 — never from the body)."""
+    email: EmailStr
+    role: str
+
+    @field_validator("role")
+    @classmethod
+    def _role_in_set(cls, v):
+        if v not in ROLES:
+            raise ValueError(f"role must be one of {ROLES}")
+        return v
+
+
+class AcceptInviteRequest(BaseModel):
+    """Accept an invite via its single-use opaque token. The accepting user's VERIFIED email
+    must equal the invite's email (email-binding enforced server-side, T4) — not trusted here."""
+    token: str = Field(..., min_length=1)
+
+
+class InviteResponse(BaseModel):
+    """The created invite. `token` is returned ONCE at creation (the raw value is never stored —
+    only its hash is — so it cannot be re-fetched); the caller delivers it to the invitee."""
+    id: str
+    firm_id: str
+    email: str
+    role: str
+    expires_at: Optional[str] = None
+    accepted_at: Optional[str] = None
+    created_at: Optional[str] = None
+    token: Optional[str] = None   # present only on the create response, never on a list
+
+
+class InviteListResponse(BaseModel):
+    invites: List[InviteResponse] = Field(default_factory=list)
+
+
+class MemberResponse(BaseModel):
+    """One firm member (user_id + role). Email is best-effort (resolved server-side from the
+    auth user when available)."""
+    user_id: str
+    firm_id: str
+    role: str
+    email: Optional[str] = None
+    created_at: Optional[str] = None
+
+
+class MemberListResponse(BaseModel):
+    members: List[MemberResponse] = Field(default_factory=list)
+
+
+class FirmResponse(BaseModel):
+    """The firm a user belongs to, with their role in it (F2a: get_user_firm now carries role)."""
+    id: str
+    name: str
+    role: Optional[str] = None
+
+
+# ── F2c — ethical walls (conflict screens) ───────────────────────────────────────────────────
+class ScreenRequest(BaseModel):
+    """Raise an ethical wall: screen `user_id` off `vault_id`. A reason is REQUIRED (a wall must
+    be justifiable to a regulator). The firm is resolved SERVER-SIDE (T3 — never from the body);
+    `created_by` is the authenticated caller. The invited/screened user_id and vault_id are the
+    conflict pair the route validates belong to the caller's firm before writing (T2)."""
+    user_id: str = Field(..., min_length=1)
+    vault_id: str = Field(..., min_length=1)
+    reason: str = Field(..., min_length=1)
+
+
+class ScreenResponse(BaseModel):
+    """One ethical-wall screen. `removed_at` is None for an active wall, a timestamp once lifted
+    (soft-remove keeps the audit history)."""
+    id: str
+    firm_id: str
+    user_id: str
+    vault_id: str
+    reason: str
+    created_by: Optional[str] = None
+    created_at: Optional[str] = None
+    removed_at: Optional[str] = None
+
+
+class ScreenListResponse(BaseModel):
+    screens: List[ScreenResponse] = Field(default_factory=list)
+
+
+# ─────────────────────────────────────────
+# MEMBER LIFECYCLE + DELEGATION + ABSTAIN-OVERRIDE  (F2d — plans/F2_FIRM_CONSOLE_PLAN.md §F2d)
+#   The most breach-prone events. The TARGET's current role + the mp_count are resolved
+#   SERVER-SIDE by the route (never the body, T2/T3) and fed into authz.Scope so the EXISTING
+#   _manage_members_guard (last-MP + self-escalation, T1) does the work. Every event is audited.
+# ─────────────────────────────────────────
+
+class ChangeRoleRequest(BaseModel):
+    """Promote/demote a member to `role` (D-lifecycle). The TARGET user is the path param; the
+    firm + the target's CURRENT role + the firm's MP count are resolved SERVER-SIDE (T2/T3) — the
+    body carries ONLY the new role. The T1 self-escalation + last-MP guards run in the route via
+    authz.authorize over the resolved Scope; the joiner/target can never be promoted ≥ the actor."""
+    role: str
+
+    @field_validator("role")
+    @classmethod
+    def _role_in_set(cls, v):
+        if v not in ROLES:
+            raise ValueError(f"role must be one of {ROLES}")
+        return v
+
+
+class LifecycleResponse(BaseModel):
+    """The outcome of a role change / offboard. `matters_reassigned` is the count of vaults
+    re-pointed to the firm/MP on offboard (never orphaned, §F2d); `delegations_revoked` is the
+    count of grants lifted on offboard (instant total revocation, T7)."""
+    user_id: str
+    firm_id: str
+    role: Optional[str] = None              # the NEW role after a change (None on offboard)
+    removed: Optional[bool] = None          # True on a completed offboard
+    matters_reassigned: Optional[int] = None
+    delegations_revoked: Optional[int] = None
+
+
+# ── F2d / D6 — authority delegation (time-boxed, revocable, bounded) ───────────────────────────
+class DelegationRequest(BaseModel):
+    """A senior delegates a bounded verb-set to a delegate (the PA, D6), until `expires_at`. The
+    delegator is the authenticated caller (server-side — a body can't name another delegator, T3);
+    `verbs` is the requested subset (the resolver re-bounds it to the delegator's own caps at read
+    time, so a delegate can never exceed the delegator — T1). `expires_at` is REQUIRED (time-boxed)."""
+    delegate_id: str = Field(..., min_length=1)
+    verbs: List[str] = Field(..., min_length=1)
+    expires_at: str = Field(..., min_length=1)
+
+    @field_validator("verbs")
+    @classmethod
+    def _verbs_known(cls, v):
+        # Importing CAPABILITIES at validate time keeps schemas lockstep with authz (a typo'd verb
+        # is rejected at the boundary, not silently granted-and-ignored). Local import avoids a
+        # module-load cycle (authz imports schemas for ROLES/ROLE_RANK).
+        from src.components.authz import CAPABILITIES
+        bad = [x for x in v if x not in CAPABILITIES]
+        if bad:
+            raise ValueError(f"unknown capability(ies): {bad}")
+        return v
+
+
+class DelegationResponse(BaseModel):
+    id: str
+    firm_id: str
+    delegator_id: str
+    delegate_id: str
+    verbs: List[str] = Field(default_factory=list)
+    expires_at: Optional[str] = None
+    revoked_at: Optional[str] = None
+    created_at: Optional[str] = None
+
+
+class DelegationListResponse(BaseModel):
+    delegations: List[DelegationResponse] = Field(default_factory=list)
+
+
+# ── F2d / T6 — the abstain-override moment (the high-trust event) ──────────────────────────────
+class OverrideAbstainRequest(BaseModel):
+    """Override an agent ABSTAIN on a specific answer/artifact (T6 — the high-trust moment). A
+    REASON is required (the override must be justifiable to a regulator — it is the F3 hash-chain
+    contract). `collection_id` (the vault the answer belongs to) is resolved into the authz.Scope
+    so a screen on that vault DENIES the override (precedence — screen beats the override grant,
+    even for a partner). The answer reference identifies WHAT is being overridden (audited)."""
+    answer_ref: str = Field(..., min_length=1)        # answer id / artifact ref being overridden
+    collection_id: str = Field(..., min_length=1)     # the vault the answer belongs to (for the wall)
+    reason: str = Field(..., min_length=1)
+    gate_objection: Optional[str] = Field(default=None, max_length=2000)  # what the gate objected to
+
+
+class OverrideAbstainResponse(BaseModel):
+    """The override record (mirrors the audit row that F3 hash-chains). `status` flips to
+    'overridden'; the full who/what/why is in the audit log (the non-repudiation trail)."""
+    answer_ref: str
+    collection_id: str
+    status: str = "overridden"
+    overridden_by: str
+    reason: str
+    created_at: Optional[str] = None
+
+
+# ─────────────────────────────────────────
+# MATTER STAFFING + the REVIEW CHAIN  (F2e — plans/F2_FIRM_CONSOLE_PLAN.md §F2e) — D0/D3/D5
+#   THE PRODUCTIVITY ENGINE. The vault is the PATH param (not the body — T2/T3); the firm is
+#   resolved server-side. Staffing grants the FULL toolkit on the matter (D0, never read-only);
+#   the review chain flows work UP the chain of command (current_owner ALWAYS set = anti-stall).
+# ─────────────────────────────────────────
+
+# ── F2e / D3 — matter staffing ─────────────────────────────────────────────────────────────────
+class MatterTeamAddRequest(BaseModel):
+    """Staff a member onto a matter (D3). The VAULT is the path param; the firm is resolved
+    server-side (T3 — never the body). The body carries ONLY who to add. The added member gets the
+    FULL working toolkit on that matter (D0 — not read-only)."""
+    user_id: str = Field(..., min_length=1)
+
+
+class MatterTeamMember(BaseModel):
+    """One staffed member of a matter (user_id + their firm role + who staffed them)."""
+    user_id: str
+    role: Optional[str] = None
+    added_by: Optional[str] = None
+    created_at: Optional[str] = None
+
+
+class MatterTeamResponse(BaseModel):
+    """The matter's staffed team."""
+    vault_id: str
+    members: List[MatterTeamMember] = Field(default_factory=list)
+
+
+# ── F2e / D5 — the review chain of command ─────────────────────────────────────────────────────
+class ReviewSubmitRequest(BaseModel):
+    """Send a piece of work UP the review chain (D5). The VAULT is resolved server-side from the
+    body's `collection_id` (and asserted in the caller's firm — T3); `artifact_ref` identifies WHAT
+    is under review. The chain + first owner are computed server-side (rank-default or the matter's
+    custom chain) — the body never picks the reviewer (anti-tamper)."""
+    collection_id: str = Field(..., min_length=1)     # the matter (vault) the work belongs to
+    artifact_ref: str = Field(..., min_length=1)      # answer id / draft ref / artifact under review
+
+
+class ReviewDecisionRequest(BaseModel):
+    """Approve a review step (advance UP one owner) or request changes (return to the submitter). A
+    `note` is optional context for the decision (audited). The request id is the path param; the
+    actor must be the current_owner (server-checked)."""
+    note: Optional[str] = Field(default=None, max_length=2000)
+
+
+class ReviewRequestResponse(BaseModel):
+    """A review request's current state. `current_owner` is ALWAYS set in a non-terminal state (the
+    anti-stall invariant, D5); `status` ∈ {pending, approved, changes_requested, released}; `chain`
+    is the ordered reviewer list the work routes through."""
+    id: str
+    firm_id: str
+    vault_id: str
+    artifact_ref: str
+    submitted_by: str
+    status: str
+    current_owner: Optional[str] = None
+    chain: List[str] = Field(default_factory=list)
+    created_at: Optional[str] = None
+    decided_at: Optional[str] = None
+
+
+class ReviewQueueResponse(BaseModel):
+    """My review queue — the open requests I currently OWN (the anti-stall UX, D5)."""
+    requests: List[ReviewRequestResponse] = Field(default_factory=list)
+
+
+# ─────────────────────────────────────────
 # DOCUMENTS
 # ─────────────────────────────────────────
 

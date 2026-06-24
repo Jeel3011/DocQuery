@@ -26,7 +26,8 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
 
 from src.api.dependencies import (
-    get_current_user, get_user_config, get_retrieval_mgr, limiter,
+    get_current_user, get_user_config, get_retrieval_mgr, limiter, require_cap,
+    assert_vault_not_screened,
 )
 from src.api.schemas import WorkflowRunRequest
 from src.components.config import Config
@@ -73,9 +74,12 @@ async def run_workflow_stream(
     sb=Depends(get_current_user),
     user_config: Config = Depends(get_user_config),
     retrieval_mgr=Depends(get_retrieval_mgr),
+    _cap=Depends(require_cap("run_workflow")),
 ):
     """Resolve the template + params → a RunConfig, then drive the EXISTING engine and
     stream its events. Report → agent-core stream; grid → review-grid stream. Same gates.
+
+    F2b: cap-gated on `run_workflow` — a working-toolkit verb (everyone on a matter, D0).
     """
     if not getattr(user_config, "USE_AGENT_CORE", False):
         raise HTTPException(status_code=404, detail="Not Found")
@@ -89,6 +93,10 @@ async def run_workflow_stream(
     collection_id = body.collection_id
     if not collection_id:
         raise HTTPException(status_code=400, detail="collection_id is required to run a workflow.")
+
+    # F2c P5 (the ethical wall, workflow path): refuse a screened user before either shape
+    # (grid / report) runs — both descend into search_vault / read_document on this vault.
+    assert_vault_not_screened(sb, collection_id)
 
     run = resolve_run(template, body.params or {})
     metadata_filter = body.filters or None

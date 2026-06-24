@@ -570,20 +570,709 @@ class SupabaseManager:
         res = self.client.table("collections").insert(row).execute()
         return res.data[0] if res.data else {}
 
-    def get_user_firm(self, user_id: str = None) -> dict:
-        """Return the firm this user belongs to (F1a multi-firm tenancy), or {} if none.
+    def get_user_firm(self, user_id: str = None, firm_id: str = None) -> dict:
+        """Return the firm this user belongs to (F1a tenancy) with their ROLE in it, or {} if none.
 
-        Server-side lookup (not a JWT claim) so the auth flow is unchanged. Returns the first
-        membership's firm; F2 will formalize multi-firm membership + the active-firm choice.
+        Server-side lookup (not a JWT claim) so the auth flow is unchanged. F2a: also returns
+        `role` (the membership's role) so callers/`resolve_membership` (F2b) get firm + role in
+        one read. With `firm_id`, picks that specific membership (the active-firm choice, §0.8);
+        otherwise the user's first/primary membership.
+
+        Shape: {"id", "name", "role"}  (role added in F2a; absent if no membership).
         """
         uid = user_id or self.user_id
         if not uid:
             return {}
-        res = self.read_client.table("firm_memberships").select(
-            "firm_id, firms!inner(id, name)"
-        ).eq("user_id", uid).limit(1).execute()
+        q = self.read_client.table("firm_memberships").select(
+            "firm_id, role, firms!inner(id, name)"
+        ).eq("user_id", uid)
+        if firm_id:
+            q = q.eq("firm_id", firm_id)
+        res = q.limit(1).execute()
         rows = res.data or []
-        return rows[0].get("firms", {}) if rows else {}
+        if not rows:
+            return {}
+        firm = dict(rows[0].get("firms", {}) or {})
+        firm["role"] = rows[0].get("role")
+        return firm
+
+    # ─────────────────────────────────────────
+    # FIRM POPULATION + ROLES + INVITES  (F2a — plans/F2_FIRM_CONSOLE_PLAN.md §F2a)
+    #   No enforcement here (that is F2b's authorize/require_cap). These are the writes that
+    #   POPULATE the firm tenancy 010 created. Service-role writes (the live request client is
+    #   service-role; app-layer scoping is the guard until F2f's firm RLS lands under them).
+    # ─────────────────────────────────────────
+
+    def create_firm(self, name: str, owner_user_id: str = None, owner_role: str = "managing_partner") -> dict:
+        """Create a firm and make `owner_user_id` (default: the current user) its first member
+        with `owner_role` (default Managing Partner, D1). Returns {"id","name","role"}.
+
+        Used by signup (D1: first user creates the firm + becomes MP) and the backfill path.
+        """
+        uid = owner_user_id or self.user_id
+        if not uid:
+            raise ValueError("An owner user is required to create a firm.")
+        res = self.client.table("firms").insert({"name": name}).execute()
+        firm = res.data[0] if res.data else {}
+        firm_id = firm.get("id")
+        if not firm_id:
+            raise RuntimeError("Firm create returned no id.")
+        self.add_membership(uid, firm_id, owner_role)
+        return {"id": firm_id, "name": firm.get("name"), "role": owner_role}
+
+    def add_membership(self, user_id: str, firm_id: str, role: str) -> dict:
+        """Add (or upsert) a membership row. Idempotent on the (user_id, firm_id) PK — a repeat
+        join updates the role rather than erroring. The caller authorizes this (F2b); F2a just
+        writes the row."""
+        row = {"user_id": user_id, "firm_id": firm_id, "role": role}
+        res = self.client.table("firm_memberships").upsert(
+            row, on_conflict="user_id,firm_id"
+        ).execute()
+        return res.data[0] if res.data else row
+
+    def list_members(self, firm_id: str) -> list:
+        """All memberships of a firm (user_id + role). Email resolution is best-effort and left
+        to the route (needs the admin auth API). Scoped to the passed firm_id — the CALLER must
+        have resolved that firm server-side as their own (T2/T3); F2a never trusts a body firm."""
+        res = self.client.table("firm_memberships").select(
+            "user_id, firm_id, role, created_at"
+        ).eq("firm_id", firm_id).execute()
+        return res.data or []
+
+    # ── invites (D1) — single-use, expiring, hash-stored, email-bound (T4) ────────────────────
+
+    @staticmethod
+    def _hash_invite_token(raw_token: str) -> str:
+        """sha256 hex of the raw token. We store only the hash (T4: a DB read never reveals a
+        usable token); accept hashes the presented token and matches by hash."""
+        import hashlib
+        return hashlib.sha256(raw_token.encode("utf-8")).hexdigest()
+
+    def create_invite(self, firm_id: str, email: str, role: str, invited_by: str,
+                      ttl_hours: int = 168) -> dict:
+        """Create a firm invite. Returns the row PLUS the one-time raw `token` (never stored —
+        only its hash is). `firm_id`/`invited_by` are resolved server-side by the caller (T3).
+        Default TTL = 7 days. The unique active-invite index (migration 012) blocks a duplicate
+        pending invite to the same (firm, email)."""
+        import secrets
+        raw_token = secrets.token_urlsafe(32)
+        token_hash = self._hash_invite_token(raw_token)
+        expires_at = (datetime.now(timezone.utc) + timedelta(hours=ttl_hours)).isoformat()
+        row = {
+            "firm_id": firm_id,
+            "email": email.strip().lower(),
+            "role": role,
+            "token_hash": token_hash,
+            "invited_by": invited_by,
+            "expires_at": expires_at,
+        }
+        res = self.client.table("firm_invites").insert(row).execute()
+        created = res.data[0] if res.data else dict(row)
+        created.pop("token_hash", None)   # never leak the hash to the client
+        created["token"] = raw_token      # the ONLY time the raw token exists post-create
+        return created
+
+    def get_invite_by_token(self, raw_token: str) -> dict:
+        """Look up a PENDING, UN-EXPIRED invite by its raw token (matched via hash). Returns {}
+        if not found / already accepted / expired. Read-only; accept_invite does the atomic claim."""
+        token_hash = self._hash_invite_token(raw_token)
+        res = self.client.table("firm_invites").select("*").eq(
+            "token_hash", token_hash
+        ).is_("accepted_at", "null").limit(1).execute()
+        rows = res.data or []
+        if not rows:
+            return {}
+        inv = rows[0]
+        # expiry check in code (the atomic UPDATE in accept_invite re-checks at the DB)
+        exp = inv.get("expires_at")
+        try:
+            if exp and datetime.fromisoformat(str(exp).replace("Z", "+00:00")) <= datetime.now(timezone.utc):
+                return {}
+        except Exception:
+            return {}
+        inv.pop("token_hash", None)
+        return inv
+
+    def accept_invite(self, raw_token: str, accepting_user_id: str, accepting_email: str) -> dict:
+        """Atomically claim an invite and create the membership with the INVITED role (D1 — the
+        joiner can never self-assign). Enforces T4 in full:
+          - single-use & un-expired: the accept is a CONDITIONAL UPDATE
+            (WHERE accepted_at IS NULL AND expires_at > now()) so a replay/expired token claims
+            nothing (no race);
+          - email-bound: the accepting user's VERIFIED email must equal the invite email.
+        Returns {"firm_id","role"} on success; raises ValueError on any rejection.
+        """
+        token_hash = self._hash_invite_token(raw_token)
+        now_iso = datetime.now(timezone.utc).isoformat()
+
+        # Fetch the candidate (still pending) to validate email-binding before the atomic claim.
+        res = self.client.table("firm_invites").select("*").eq(
+            "token_hash", token_hash
+        ).is_("accepted_at", "null").limit(1).execute()
+        rows = res.data or []
+        if not rows:
+            raise ValueError("Invite is invalid or already used.")
+        inv = rows[0]
+
+        # email-binding (T4): the accepting user's verified email must match the invite email.
+        if (accepting_email or "").strip().lower() != (inv.get("email") or "").strip().lower():
+            raise ValueError("This invite was addressed to a different email.")
+
+        # expiry (T4): re-checked atomically below, but fail fast with a clear message.
+        exp = inv.get("expires_at")
+        try:
+            if exp and datetime.fromisoformat(str(exp).replace("Z", "+00:00")) <= datetime.now(timezone.utc):
+                raise ValueError("This invite has expired.")
+        except ValueError:
+            raise
+        except Exception:
+            raise ValueError("This invite has expired.")
+
+        # Atomic single-use claim: set accepted_at only if STILL pending and un-expired. If a
+        # concurrent accept already won, this matches 0 rows → we treat that as "already used".
+        claim = self.client.table("firm_invites").update(
+            {"accepted_at": now_iso}
+        ).eq("id", inv["id"]).is_("accepted_at", "null").gt(
+            "expires_at", now_iso
+        ).execute()
+        if not (claim.data or []):
+            raise ValueError("Invite is invalid or already used.")
+
+        # The claim succeeded → create the membership with the INVITED role.
+        self.add_membership(accepting_user_id, inv["firm_id"], inv["role"])
+        return {"firm_id": inv["firm_id"], "role": inv["role"]}
+
+    def list_invites(self, firm_id: str, include_inactive: bool = False) -> list:
+        """Invites for a firm (pending by default). Never returns `token_hash`. Scoped to the
+        firm the CALLER resolved server-side (T2/T3)."""
+        q = self.client.table("firm_invites").select(
+            "id, firm_id, email, role, invited_by, expires_at, accepted_at, created_at"
+        ).eq("firm_id", firm_id)
+        if not include_inactive:
+            q = q.is_("accepted_at", "null")
+        res = q.order("created_at", desc=True).execute()
+        return res.data or []
+
+    def count_firm_role(self, firm_id: str, role: str) -> int:
+        """How many members of a firm hold a given role. Used by the F2d last-MP guard and the
+        F2b self-escalation context; introduced in F2a so the data path exists early."""
+        res = self.client.table("firm_memberships").select(
+            "user_id", count="exact"
+        ).eq("firm_id", firm_id).eq("role", role).execute()
+        return res.count or 0
+
+    def get_membership(self, user_id: str, firm_id: str) -> dict:
+        """The membership row for (user, firm), or {} if none. Used by the F2d lifecycle routes to
+        resolve the TARGET member's CURRENT role SERVER-SIDE (never from the body) before building
+        the authz.Scope the guard checks (T2/T3). Firm-scoped: a user_id from another firm returns
+        {} (you can only act on a member of your own firm)."""
+        if not (user_id and firm_id):
+            return {}
+        res = self.client.table("firm_memberships").select(
+            "user_id, firm_id, role, created_at"
+        ).eq("user_id", user_id).eq("firm_id", firm_id).limit(1).execute()
+        return (res.data or [{}])[0] if res.data else {}
+
+    # ── member lifecycle (F2d) — role change + offboard, firm-scoped (T3) ──────────────────────
+    #   These are the WRITES; the route authorizes (manage_members + the T1/last-MP guards via the
+    #   central authz.authorize over a SERVER-RESOLVED Scope) BEFORE calling them. db.py never
+    #   authorizes itself and never trusts a body firm_id — every call is scoped to the firm the
+    #   caller resolved as their own. The CHANGE takes effect on the target's NEXT request (T7 —
+    #   caps are resolved per-request in resolve_membership; there is no session cache to bust).
+
+    def change_member_role(self, user_id: str, firm_id: str, new_role: str) -> dict:
+        """Change a member's role within a firm. Firm-scoped (the UPDATE matches only a row whose
+        firm_id == the resolved firm — a guessed cross-firm user_id touches nothing, T2/T3). The
+        guards (last-MP, self-escalation) ran in the route via authz.authorize; this only writes.
+        Returns the updated row, or {} if nothing matched (not in this firm / unknown id)."""
+        if not (user_id and firm_id and new_role):
+            return {}
+        res = self.client.table("firm_memberships").update(
+            {"role": new_role}
+        ).eq("user_id", user_id).eq("firm_id", firm_id).execute()
+        return (res.data or [{}])[0] if res.data else {}
+
+    def reassign_member_matters(self, user_id: str, firm_id: str, new_owner_id: str) -> int:
+        """Reassign every vault (collection) AUTHORED by `user_id` in `firm_id` to `new_owner_id`
+        (the firm / an MP) so an offboard NEVER orphans a matter (the resolved-default policy,
+        §F2d). Firm-scoped so we only touch this firm's collections. Returns the number reassigned.
+        Called BEFORE remove_member so the matters always have an owner across the transition."""
+        if not (user_id and firm_id and new_owner_id):
+            return 0
+        # Only the offboarded user's OWN matters in THIS firm; re-point user_id to the new owner.
+        sel = self.client.table("collections").select("id").eq(
+            "user_id", user_id
+        ).eq("firm_id", firm_id).execute()
+        ids = [r["id"] for r in (sel.data or []) if r.get("id")]
+        if not ids:
+            return 0
+        self.client.table("collections").update(
+            {"user_id": new_owner_id}
+        ).in_("id", ids).execute()
+        return len(ids)
+
+    def remove_member(self, user_id: str, firm_id: str) -> dict:
+        """Offboard a member: remove their firm membership AND revoke every delegation they hold
+        or granted within the firm (instant, total revocation — their next request is powerless,
+        T7). Firm-scoped (T2/T3 — a cross-firm user_id deletes nothing). The caller has already
+        reassigned the member's matters (reassign_member_matters) so nothing is orphaned, and run
+        the last-MP guard (the firm always keeps an owner). Returns {"removed": bool, "delegations_revoked": int}."""
+        if not (user_id and firm_id):
+            return {"removed": False, "delegations_revoked": 0}
+        # Revoke delegations first (both directions) so a stale grant can't outlive the membership.
+        revoked = self.revoke_member_delegations(user_id, firm_id)
+        res = self.client.table("firm_memberships").delete().eq(
+            "user_id", user_id
+        ).eq("firm_id", firm_id).execute()
+        removed = bool(res.data)
+        return {"removed": removed, "delegations_revoked": revoked}
+
+    # ── delegations (F2d / D6) — time-boxed, revocable, bounded grants ─────────────────────────
+    #   migration 014. A delegation is a POSITIVE grant authorize() honors at step 1.5, but it
+    #   STILL cannot beat a screen DENY (precedence holds) and a delegate can NEVER hold a verb the
+    #   delegator lacks (bounded HERE, in active_delegated_verbs). Service-role writes; the route
+    #   authorizes + resolves firm server-side (T3) before calling these.
+
+    def active_delegated_verbs(self, user_id: str = None, firm_id: str = None) -> set:
+        """The set of verbs `user_id` currently holds via an ACTIVE delegation within a firm (the
+        DELEGATE side — what a PA may do for the senior). THE HOT PATH: resolve_membership calls
+        this per request to populate authz.Membership.delegated_verbs, so authorize() honors a
+        delegation on every cap-gated route (Layer 1). Active = revoked_at IS NULL AND expires_at >
+        now() (a revoked/expired grant stops on the NEXT request — T7).
+
+        BOUNDED (T1): a delegate can never be granted a verb the DELEGATOR does not themselves hold.
+        We intersect each delegation's verbs with the delegator's OWN role caps at resolution time,
+        so a later demotion of the delegator (or a grant that over-reached) can never leak a verb
+        the delegator lacks. Empty set when no firm / no delegations / the table is unapplied ⇒
+        byte-identical to pre-F2d (delegated_verbs = ∅).
+        """
+        uid = user_id or self.user_id
+        if not uid:
+            return set()
+        now_iso = datetime.now(timezone.utc).isoformat()
+        q = self.read_client.table("delegations").select(
+            "delegator_id, verbs, expires_at"
+        ).eq("delegate_id", uid).is_("revoked_at", "null").gt("expires_at", now_iso)
+        if firm_id:
+            q = q.eq("firm_id", firm_id)
+        try:
+            res = q.execute()
+        except Exception:
+            # Table not applied (migration 014 not live) ⇒ no delegations (legacy parity), never 500.
+            return set()
+        from src.components import authz
+        granted: set = set()
+        for row in (res.data or []):
+            verbs = set(row.get("verbs") or [])
+            if not verbs:
+                continue
+            # BOUND to the delegator's own caps — resolve the delegator's CURRENT role server-side.
+            delegator_firm = self.get_user_firm(user_id=row.get("delegator_id"), firm_id=firm_id)
+            delegator_role = (delegator_firm or {}).get("role")
+            delegator_caps = authz.caps_for_role(delegator_role) if delegator_role else frozenset()
+            granted |= (verbs & set(delegator_caps))
+        return granted
+
+    def create_delegation(self, firm_id: str, delegator_id: str, delegate_id: str,
+                          verbs: list, expires_at: str) -> dict:
+        """Grant a bounded, time-boxed delegation. The caller has authorized (the delegator is the
+        accountable senior) and resolved firm_id server-side (T3). `verbs` is the requested subset;
+        the resolver re-bounds it to the delegator's own caps at READ time (active_delegated_verbs),
+        so even a verb the delegator later loses can never be exercised. `expires_at` is required
+        (time-boxed). Returns the inserted row."""
+        if not (firm_id and delegator_id and delegate_id):
+            raise ValueError("firm_id, delegator_id and delegate_id are all required.")
+        if not expires_at:
+            raise ValueError("A delegation must be time-boxed (expires_at is required).")
+        row = {
+            "firm_id": firm_id,
+            "delegator_id": delegator_id,
+            "delegate_id": delegate_id,
+            "verbs": list(verbs or []),
+            "expires_at": expires_at,
+        }
+        res = self.client.table("delegations").insert(row).execute()
+        return res.data[0] if res.data else row
+
+    def revoke_delegation(self, delegation_id: str, firm_id: str) -> dict:
+        """Revoke a delegation early (soft — the audit history is preserved). Firm-scoped (T2 — a
+        guessed cross-firm delegation_id revokes nothing). Only an active (revoked_at IS NULL) row
+        is touched so a double-revoke is a clean no-op. Takes effect on the delegate's NEXT request
+        (T7). Returns the updated row, or {} if nothing matched."""
+        now_iso = datetime.now(timezone.utc).isoformat()
+        res = self.client.table("delegations").update(
+            {"revoked_at": now_iso}
+        ).eq("id", delegation_id).eq("firm_id", firm_id).is_(
+            "revoked_at", "null"
+        ).execute()
+        return (res.data or [{}])[0] if res.data else {}
+
+    def revoke_member_delegations(self, user_id: str, firm_id: str) -> int:
+        """Revoke EVERY active delegation a user holds OR granted within a firm (the offboard hook —
+        a removed member's grants must not outlive their membership). Soft-revoke (history kept).
+        Firm-scoped. Returns the number revoked. Degrades to 0 if the table is unapplied."""
+        if not (user_id and firm_id):
+            return 0
+        now_iso = datetime.now(timezone.utc).isoformat()
+        try:
+            sel = self.client.table("delegations").select("id").eq(
+                "firm_id", firm_id
+            ).is_("revoked_at", "null").or_(
+                f"delegator_id.eq.{user_id},delegate_id.eq.{user_id}"
+            ).execute()
+            ids = [r["id"] for r in (sel.data or []) if r.get("id")]
+            if not ids:
+                return 0
+            self.client.table("delegations").update(
+                {"revoked_at": now_iso}
+            ).in_("id", ids).execute()
+            return len(ids)
+        except Exception:
+            return 0
+
+    def list_delegations(self, firm_id: str, include_inactive: bool = False) -> list:
+        """All delegations of a firm (active by default; include_inactive shows revoked/expired for
+        the audit view). Scoped to the firm the caller resolved server-side (T2/T3)."""
+        q = self.client.table("delegations").select(
+            "id, firm_id, delegator_id, delegate_id, verbs, expires_at, revoked_at, created_at"
+        ).eq("firm_id", firm_id)
+        if not include_inactive:
+            q = q.is_("revoked_at", "null")
+        res = q.order("created_at", desc=True).execute()
+        return res.data or []
+
+    # ─────────────────────────────────────────
+    # ETHICAL WALLS — conflict screens  (F2c — plans/F2_FIRM_CONSOLE_PLAN.md §F2c) — THE MOAT
+    #   A screen hard-blocks one member from one matter (vault) at EVERY layer. These are the
+    #   writes + the read that POPULATE the wall; F2b's authorize() already checks the screen
+    #   first in its deny-overrides precedence, and resolve_membership (dependencies.py) +
+    #   the retrieval-layer guard (P1–P9) are what ENFORCE it. Service-role writes (same as F2a);
+    #   the caller resolves firm_id SERVER-SIDE and authorizes (manage_members) BEFORE calling
+    #   these — db.py never trusts a body firm_id (T3), and these never authorize themselves.
+    # ─────────────────────────────────────────
+
+    def screened_vault_ids(self, user_id: str = None, firm_id: str = None) -> set:
+        """The set of vault_ids this user is ACTIVELY screened off (the ethical wall) within a
+        firm. THE HOT PATH: resolve_membership calls this per request to populate
+        authz.Membership.screened_vault_ids, so authorize() denies a screened vault on every
+        cap-gated route automatically (Layer 1), and the retrieval-layer guard tests against it
+        (Layer 2). Active = removed_at IS NULL (a soft-removed screen restores access on the
+        NEXT request — T7). Empty set when no firm / no screens ⇒ byte-identical to pre-F2c.
+
+        firm-scoped so a screen in firm A never bleeds into the user's membership of firm B.
+        """
+        uid = user_id or self.user_id
+        if not uid:
+            return set()
+        q = self.read_client.table("screens").select("vault_id").eq(
+            "user_id", uid
+        ).is_("removed_at", "null")
+        if firm_id:
+            q = q.eq("firm_id", firm_id)
+        try:
+            res = q.execute()
+        except Exception:
+            # The table not existing (migration 013 not yet applied live) must DEGRADE to "no
+            # screens" (byte-identical to pre-F2c), never 500 every guarded route. A real screen
+            # only exists once a firm creates one, so an empty set is the correct legacy default.
+            return set()
+        return {str(r["vault_id"]) for r in (res.data or []) if r.get("vault_id")}
+
+    def is_vault_screened(self, vault_id: str, user_id: str = None, firm_id: str = None) -> bool:
+        """Is THIS user actively screened off THIS vault? The single-vault check the
+        retrieval/read layer (P1–P7) uses on the resolved collection_id. Degrades to False
+        (no wall) if the table is absent (migration unapplied) — same legacy parity rule."""
+        uid = user_id or self.user_id
+        if not uid or not vault_id:
+            return False
+        q = self.read_client.table("screens").select("id").eq(
+            "user_id", uid
+        ).eq("vault_id", vault_id).is_("removed_at", "null")
+        if firm_id:
+            q = q.eq("firm_id", firm_id)
+        try:
+            res = q.limit(1).execute()
+        except Exception:
+            return False
+        return bool(res.data)
+
+    def create_screen(self, firm_id: str, user_id: str, vault_id: str, reason: str,
+                      created_by: str = None) -> dict:
+        """Raise an ethical wall: screen `user_id` off `vault_id` within `firm_id`. The caller
+        has already authorized (manage_members) and resolved `firm_id` server-side (T3). `reason`
+        is REQUIRED (a wall must be justifiable to a regulator). `created_by` defaults to the
+        current user. Idempotent on an ACTIVE (firm,user,vault) via the partial unique index —
+        a duplicate active screen surfaces as a clean conflict to the route, not a dup row.
+        Returns the inserted row."""
+        if not (firm_id and user_id and vault_id):
+            raise ValueError("firm_id, user_id and vault_id are all required to create a screen.")
+        if not (reason or "").strip():
+            raise ValueError("A reason is required to raise an ethical wall.")
+        row = {
+            "firm_id": firm_id,
+            "user_id": user_id,
+            "vault_id": vault_id,
+            "reason": reason.strip(),
+            "created_by": created_by or self.user_id,
+        }
+        res = self.client.table("screens").insert(row).execute()
+        return res.data[0] if res.data else row
+
+    def remove_screen(self, screen_id: str, firm_id: str) -> dict:
+        """SOFT-remove a screen (set removed_at = now) — never a hard delete (the audit history
+        is preserved). Scoped to `firm_id` (resolved server-side by the caller — T3) so a member
+        of firm A can never lift firm B's wall even with a guessed screen_id (T2 IDOR). Only an
+        ACTIVE screen is removed (removed_at IS NULL) so a double-remove is a no-op, not an error.
+        Restores access on the NEXT request (per-request screen resolution — T7). Returns the
+        updated row, or {} if nothing matched (wrong firm / already removed / unknown id)."""
+        now_iso = datetime.now(timezone.utc).isoformat()
+        res = self.client.table("screens").update(
+            {"removed_at": now_iso}
+        ).eq("id", screen_id).eq("firm_id", firm_id).is_(
+            "removed_at", "null"
+        ).execute()
+        return (res.data or [{}])[0] if res.data else {}
+
+    def list_screens(self, firm_id: str, include_removed: bool = False) -> list:
+        """All screens of a firm (active by default; include_removed shows the lifted ones for the
+        audit view). Scoped to the firm the CALLER resolved server-side as their own (T2/T3)."""
+        q = self.client.table("screens").select(
+            "id, firm_id, user_id, vault_id, reason, created_by, created_at, removed_at"
+        ).eq("firm_id", firm_id)
+        if not include_removed:
+            q = q.is_("removed_at", "null")
+        res = q.order("created_at", desc=True).execute()
+        return res.data or []
+
+    def collection_in_firm(self, vault_id: str, firm_id: str) -> bool:
+        """Does `vault_id` belong to `firm_id`? The T2 (IDOR) check a screen-create must pass: a
+        manager can only wall a vault OWNED BY THEIR OWN FIRM (resolved server-side). A
+        firm-scoped lookup (NOT get_collection, which is owner-scoped) — the manager raising the
+        wall need not own the vault. Returns False on any miss (foreign firm / unknown id)."""
+        if not (vault_id and firm_id):
+            return False
+        res = self.client.table("collections").select("id").eq(
+            "id", vault_id
+        ).eq("firm_id", firm_id).limit(1).execute()
+        return bool(res.data)
+
+    def user_in_firm(self, user_id: str, firm_id: str) -> bool:
+        """Is `user_id` a member of `firm_id`? The T2 check the screen-create must pass for the
+        SCREENED user: you can only wall a member of your own firm (no walling a stranger / a
+        member of another firm). Returns False on any miss."""
+        if not (user_id and firm_id):
+            return False
+        res = self.client.table("firm_memberships").select("user_id").eq(
+            "user_id", user_id
+        ).eq("firm_id", firm_id).limit(1).execute()
+        return bool(res.data)
+
+    # ─────────────────────────────────────────
+    # MATTER STAFFING + the REVIEW CHAIN  (F2e — plans/F2_FIRM_CONSOLE_PLAN.md §F2e) — D0/D3/D5
+    #   migration 015. THE PRODUCTIVITY ENGINE. matter_memberships = who is on a matter (being on it
+    #   grants the FULL toolkit on that matter — D0, never read-only). review_requests = a piece of
+    #   work flowing UP the chain of command (current_owner ALWAYS set = anti-stall). Service-role
+    #   writes (same as F2a–d); the route authorizes (manage_matter_team / send_for_review /
+    #   release_external) + resolves firm + vault server-side (T3) BEFORE calling these — db.py never
+    #   authorizes itself and never trusts a body firm_id. Every method degrades to an empty result
+    #   when its table is unapplied (migration not yet live) — byte-identical to pre-F2e, never a 500.
+    # ─────────────────────────────────────────
+
+    # ── matter staffing (D3) — who is on a matter (vault) ──────────────────────────────────────
+
+    def add_matter_member(self, firm_id: str, vault_id: str, user_id: str, added_by: str) -> dict:
+        """Staff `user_id` onto a matter (vault) — they get the FULL working toolkit on it (D0). The
+        caller has authorized (manage_matter_team) + asserted the vault is in their firm (T3). The
+        firm + vault are resolved server-side; `added_by` is the staffing senior. Idempotent on the
+        ACTIVE (vault, user) via the unique index — a re-staff returns the existing row, not a dup.
+        Returns the staffing row."""
+        if not (firm_id and vault_id and user_id):
+            raise ValueError("firm_id, vault_id and user_id are all required to staff a matter.")
+        row = {"firm_id": firm_id, "vault_id": vault_id, "user_id": user_id,
+               "added_by": added_by or self.user_id}
+        try:
+            res = self.client.table("matter_memberships").upsert(
+                row, on_conflict="vault_id,user_id"
+            ).execute()
+        except Exception:
+            # The unique-conflict path or table-absent: fall back to a plain insert / return the row.
+            res = self.client.table("matter_memberships").insert(row).execute()
+        return res.data[0] if res.data else row
+
+    def remove_matter_member(self, firm_id: str, vault_id: str, user_id: str) -> bool:
+        """Un-staff a member from a matter — INSTANT revoke (they lose matter access on their NEXT
+        request, T7). Firm- AND vault-scoped (T2 — a guessed cross-firm vault touches nothing).
+        Returns True if a row was removed, False otherwise (already removed / not staffed)."""
+        if not (firm_id and vault_id and user_id):
+            return False
+        res = self.client.table("matter_memberships").delete().eq(
+            "firm_id", firm_id
+        ).eq("vault_id", vault_id).eq("user_id", user_id).execute()
+        return bool(res.data)
+
+    def list_matter_members(self, firm_id: str, vault_id: str) -> list:
+        """Everyone STAFFED on a matter (user_id + their firm ROLE, joined). The team roster + the
+        default chain-builder's input. Firm- + vault-scoped (the caller resolved both server-side —
+        T2/T3). Returns [{user_id, role, added_by, created_at}]. Empty if the table is unapplied."""
+        if not (firm_id and vault_id):
+            return []
+        try:
+            res = self.read_client.table("matter_memberships").select(
+                "user_id, added_by, created_at, firm_memberships!inner(role)"
+            ).eq("firm_id", firm_id).eq("vault_id", vault_id).execute()
+        except Exception:
+            # Table not applied (015 not live) OR the embed isn't resolvable — fall back to a plain
+            # select + a per-row role lookup, never 500.
+            try:
+                res = self.read_client.table("matter_memberships").select(
+                    "user_id, added_by, created_at"
+                ).eq("firm_id", firm_id).eq("vault_id", vault_id).execute()
+            except Exception:
+                return []
+            out = []
+            for r in (res.data or []):
+                role = (self.get_membership(r.get("user_id"), firm_id) or {}).get("role")
+                out.append({"user_id": r.get("user_id"), "role": role,
+                            "added_by": r.get("added_by"), "created_at": r.get("created_at")})
+            return out
+        out = []
+        for r in (res.data or []):
+            fm = r.get("firm_memberships") or {}
+            role = fm.get("role") if isinstance(fm, dict) else None
+            out.append({"user_id": r.get("user_id"), "role": role,
+                        "added_by": r.get("added_by"), "created_at": r.get("created_at")})
+        return out
+
+    def is_matter_member(self, vault_id: str, user_id: str = None, firm_id: str = None) -> bool:
+        """Is `user_id` STAFFED on `vault_id`? Used by the team route (idempotency / membership check)
+        and available for matter-scoped checks. Degrades to False if the table is unapplied."""
+        uid = user_id or self.user_id
+        if not (uid and vault_id):
+            return False
+        q = self.read_client.table("matter_memberships").select("id").eq(
+            "user_id", uid
+        ).eq("vault_id", vault_id)
+        if firm_id:
+            q = q.eq("firm_id", firm_id)
+        try:
+            res = q.limit(1).execute()
+        except Exception:
+            return False
+        return bool(res.data)
+
+    def matter_member_vault_ids(self, user_id: str = None, firm_id: str = None) -> set:
+        """The set of vault_ids `user_id` is STAFFED on within a firm. THE HOT PATH:
+        resolve_membership calls this per request to populate authz.Membership.matter_vault_ids — the
+        productivity seam (D0). Resolved per-request (T7 — a removed staffing drops on the next
+        request). Empty set when no firm / no staffing / the table is unapplied ⇒ byte-identical to
+        pre-F2e."""
+        uid = user_id or self.user_id
+        if not uid:
+            return set()
+        q = self.read_client.table("matter_memberships").select("vault_id").eq("user_id", uid)
+        if firm_id:
+            q = q.eq("firm_id", firm_id)
+        try:
+            res = q.execute()
+        except Exception:
+            return set()
+        return {str(r["vault_id"]) for r in (res.data or []) if r.get("vault_id")}
+
+    # ── the review chain (D5) — review_requests + matter_review_config ─────────────────────────
+
+    def get_matter_review_chain(self, vault_id: str, firm_id: str) -> "list | None":
+        """The CUSTOM review chain for a matter (matter_review_config.chain — an ordered list of
+        reviewer user_ids), or None when the matter has no custom config ⇒ the rank-based default
+        applies. Firm- + vault-scoped. Degrades to None if the table is unapplied (default applies)."""
+        if not (vault_id and firm_id):
+            return None
+        try:
+            res = self.read_client.table("matter_review_config").select("chain").eq(
+                "vault_id", vault_id
+            ).eq("firm_id", firm_id).limit(1).execute()
+        except Exception:
+            return None
+        rows = res.data or []
+        if not rows:
+            return None
+        chain = rows[0].get("chain")
+        return chain if chain else None
+
+    def set_matter_review_chain(self, firm_id: str, vault_id: str, chain: "list | None",
+                                set_by: str = None) -> dict:
+        """Set (or clear) a matter's CUSTOM review chain. `chain` = an ordered list of reviewer
+        user_ids, or None to clear it (revert to the rank default). The caller authorized
+        (manage_matter_team) + resolved firm + vault server-side (T3). Upsert on the vault PK."""
+        if not (firm_id and vault_id):
+            raise ValueError("firm_id and vault_id are required.")
+        row = {"vault_id": vault_id, "firm_id": firm_id, "chain": chain,
+               "set_by": set_by or self.user_id,
+               "updated_at": datetime.now(timezone.utc).isoformat()}
+        res = self.client.table("matter_review_config").upsert(
+            row, on_conflict="vault_id"
+        ).execute()
+        return res.data[0] if res.data else row
+
+    def create_review_request(self, firm_id: str, vault_id: str, artifact_ref: str,
+                              submitted_by: str, current_owner: str, chain: list) -> dict:
+        """Submit a piece of work UP the review chain. status='pending'; current_owner = the first
+        reviewer (ALWAYS set — the anti-stall invariant, D5); chain = the ordered reviewer list the
+        builder produced. The caller authorized (send_for_review) + resolved firm + vault + the chain
+        server-side. Returns the inserted request."""
+        if not (firm_id and vault_id and artifact_ref and submitted_by and current_owner):
+            raise ValueError("firm_id, vault_id, artifact_ref, submitted_by and current_owner are required.")
+        row = {
+            "firm_id": firm_id,
+            "vault_id": vault_id,
+            "artifact_ref": artifact_ref,
+            "submitted_by": submitted_by,
+            "status": "pending",
+            "current_owner": current_owner,
+            "chain": list(chain or []),
+        }
+        res = self.client.table("review_requests").insert(row).execute()
+        return res.data[0] if res.data else row
+
+    def get_review_request(self, request_id: str, firm_id: str) -> dict:
+        """One review request, scoped to the caller's firm (T2 — a guessed cross-firm request id
+        returns {}). The route resolves the current state server-side before any transition."""
+        if not (request_id and firm_id):
+            return {}
+        try:
+            res = self.read_client.table("review_requests").select("*").eq(
+                "id", request_id
+            ).eq("firm_id", firm_id).limit(1).execute()
+        except Exception:
+            return {}
+        return (res.data or [{}])[0] if res.data else {}
+
+    def update_review_request(self, request_id: str, firm_id: str, **fields) -> dict:
+        """Apply a state transition to a review request (status / current_owner / decided_at). The
+        route computed the next state via authorize() + the chain-builder; this only writes. Firm-
+        scoped (T2). Returns the updated row, or {} if nothing matched."""
+        if not (request_id and firm_id) or not fields:
+            return {}
+        res = self.client.table("review_requests").update(fields).eq(
+            "id", request_id
+        ).eq("firm_id", firm_id).execute()
+        return (res.data or [{}])[0] if res.data else {}
+
+    def list_my_review_queue(self, firm_id: str, owner_id: str = None) -> list:
+        """The OPEN review requests `owner_id` currently OWNS (my review queue — the anti-stall UX,
+        D5). status in the non-terminal set; current_owner = the user. Firm-scoped. Empty if the
+        table is unapplied."""
+        uid = owner_id or self.user_id
+        if not (firm_id and uid):
+            return []
+        try:
+            res = self.read_client.table("review_requests").select("*").eq(
+                "firm_id", firm_id
+            ).eq("current_owner", uid).in_(
+                "status", ["pending", "approved", "changes_requested"]
+            ).order("created_at", desc=True).execute()
+        except Exception:
+            return []
+        return res.data or []
 
     def get_collections(self) -> list:
         """Get all collections for the current user."""

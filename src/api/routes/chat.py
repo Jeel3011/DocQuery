@@ -78,6 +78,23 @@ def _resolve_collection_filters(
             detail="collection_id is required — a query must be scoped to a vault.",
         )
 
+    # F2c P3 (the ethical wall, Brain/legacy chat retrieval path): a screened user gets 0 from
+    # the vault — refused right here, the shared chokepoint for /query, /query/stream and
+    # /query/agent. Like the null-collection guard above, the wall lives in the DATA path (the
+    # F1 lesson). is_vault_screened resolves the screen server-side (T5); it degrades to False
+    # (no wall) when no firm / the table is unapplied ⇒ byte-identical to pre-F2c.
+    try:
+        if sb.is_vault_screened(collection_id):
+            raise HTTPException(
+                status_code=403,
+                detail="Access denied by an ethical wall (conflict screen) on this matter.",
+            )
+    except HTTPException:
+        raise
+    except Exception:
+        # A lookup hiccup must not 500 the query path; Layer 1 (require_cap) + row RLS backstop it.
+        pass
+
     # Resolve full filename list (needed for fallback + size check). The vault's docs are
     # resolved through get_collection_document_ids, which joins via collections.user_id —
     # so a collection_id from another user resolves to [] (no cross-user read).

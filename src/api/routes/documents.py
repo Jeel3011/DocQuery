@@ -19,7 +19,7 @@ from fastapi import APIRouter, HTTPException, Depends, UploadFile, File, Request
 from fastapi.responses import JSONResponse
 
 from src.api.schemas import DocumentResponse, DocumentListResponse, UpdateDocumentRequest
-from src.api.dependencies import get_current_user, get_user_config, limiter
+from src.api.dependencies import get_current_user, get_user_config, limiter, require_cap
 from src.components.config import Config
 from src.components.metrics import uploads_total
 from src.api.routes.audit import log_audit
@@ -57,6 +57,7 @@ async def upload_document(
     file: UploadFile = File(...),
     sb=Depends(get_current_user),
     user_config: Config = Depends(get_user_config),
+    _cap=Depends(require_cap("ingest")),
 ):
     """
     Upload a document and immediately return 202 Accepted.
@@ -274,8 +275,13 @@ async def delete_document(
     doc_id: str,
     sb=Depends(get_current_user),
     user_config: Config = Depends(get_user_config),
+    _cap=Depends(require_cap("delete")),
 ):
-    """Delete a document: removes vectors from Pinecone, file from Storage, and DB record."""
+    """Delete a document: removes vectors from Pinecone, file from Storage, and DB record.
+
+    F2b: `require_cap("delete")` 403s a member without the delete capability before any cleanup
+    runs (T9 — the app-layer guard is load-bearing on the service-role write client until F2f's
+    row RLS lands under it). Solo-MP / legacy users are allowed (byte-identical to pre-F2)."""
     from src.components.retrieval import RetrievalManager
 
     try:
