@@ -122,6 +122,37 @@ def first_owner(
     return str(others[0].user_id)
 
 
+def escalation_owner(
+    submitted_by: str,
+    vault_owner: Optional[str] = None,
+    firm_members: Optional[list[Member]] = None,
+) -> Optional[str]:
+    """The anti-stall fallback owner when the MATTER TEAM has no senior to review the work (D5).
+
+    This is the locked decision for the "lone junior on a matter" case: when `first_owner` finds no
+    reviewer on the matter team (e.g. only the submitting paralegal is staffed), the work must NOT
+    loop back to the submitter (that is a silent stall — the submitter "reviewing" their own work).
+    Route UP, in order:
+      1. the VAULT OWNER (the partner/MP who owns the matter) — they staffed it, the work is theirs;
+      2. else the firm's MOST-SENIOR partner-tier member (the firm's backstop reviewer);
+      3. else None (no one but the submitter exists firm-wide — a true one-person firm).
+    The submitter is NEVER returned here — that is the bug this function exists to prevent.
+    """
+    sub = str(submitted_by)
+    # 1. The vault owner — unless they ARE the submitter (an owner submitting their own work has no
+    #    one above them on this matter; that legitimately falls through to the firm backstop / self).
+    if vault_owner and str(vault_owner) != sub:
+        return str(vault_owner)
+    # 2. The firm's most-senior partner-tier member who is not the submitter.
+    seniors = [m for m in (firm_members or [])
+               if str(m.user_id) != sub and m.role in _RELEASE_TIER]
+    if seniors:
+        seniors.sort(key=lambda m: _rank(m.role))   # most senior first (smallest rank index)
+        return str(seniors[0].user_id)
+    # 3. No senior anywhere in the firm other than the submitter.
+    return None
+
+
 def next_owner(chain: list[str], current_owner: str) -> Optional[str]:
     """The next reviewer after `current_owner` in an already-built chain (used on APPROVE to advance
     one step up). Returns None when `current_owner` is the LAST in the chain — the chain is cleared

@@ -33,6 +33,7 @@ from src.api.dependencies import (
 from src.api.schemas import (
     MatterTeamAddRequest, MatterTeamMember, MatterTeamResponse,
     ReviewSubmitRequest, ReviewDecisionRequest, ReviewRequestResponse, ReviewQueueResponse,
+    SetReviewChainRequest,
 )
 from src.api.routes.audit import log_audit
 from src.components import authz
@@ -53,6 +54,19 @@ def _matter_members(sb, firm_id: str, vault_id: str) -> list:
     rows = sb.list_matter_members(firm_id, vault_id)
     return [rc.Member(user_id=str(r.get("user_id")), role=r.get("role") or "") for r in rows
             if r.get("user_id")]
+
+
+def _team_response(sb, vault_id: str, rows: list) -> MatterTeamResponse:
+    """Build a MatterTeamResponse with a human email per member (resolved server-side, best-effort —
+    so the matter-team panel + chain previews show a real name, not a raw user_id)."""
+    emails = sb.resolve_member_emails([r.get("user_id") for r in rows])
+    return MatterTeamResponse(vault_id=str(vault_id), members=[
+        MatterTeamMember(user_id=str(r.get("user_id")), role=r.get("role"),
+                         email=emails.get(str(r.get("user_id"))),
+                         added_by=str(r.get("added_by")) if r.get("added_by") else None,
+                         created_at=r.get("created_at"))
+        for r in rows
+    ])
 
 
 def _review_response(row: dict, firm_id: str) -> ReviewRequestResponse:
@@ -108,13 +122,7 @@ async def add_matter_team_member(
     # T10: staffing is a security/governance action — audit it.
     log_audit(sb, "matter.staff", "vault", str(vault_id),
               {"firm_id": str(firm_id), "added_user": body.user_id, "added_by": str(sb.user_id)})
-    rows = sb.list_matter_members(firm_id, vault_id)
-    return MatterTeamResponse(vault_id=str(vault_id), members=[
-        MatterTeamMember(user_id=str(r.get("user_id")), role=r.get("role"),
-                         added_by=str(r.get("added_by")) if r.get("added_by") else None,
-                         created_at=r.get("created_at"))
-        for r in rows
-    ])
+    return _team_response(sb, vault_id, sb.list_matter_members(firm_id, vault_id))
 
 
 @router.delete("/matters/{vault_id}/team/{user_id}")
@@ -154,13 +162,46 @@ async def list_matter_team(
         raise HTTPException(status_code=403, detail="You are not a member of any firm.")
     if not sb.collection_in_firm(vault_id, firm_id):
         raise HTTPException(status_code=404, detail="That matter is not in your firm.")
-    rows = sb.list_matter_members(firm_id, vault_id)
-    return MatterTeamResponse(vault_id=str(vault_id), members=[
-        MatterTeamMember(user_id=str(r.get("user_id")), role=r.get("role"),
-                         added_by=str(r.get("added_by")) if r.get("added_by") else None,
-                         created_at=r.get("created_at"))
-        for r in rows
-    ])
+    return _team_response(sb, vault_id, sb.list_matter_members(firm_id, vault_id))
+
+
+@router.put("/matters/{vault_id}/review-chain")
+async def set_matter_review_chain(
+    vault_id: str,
+    body: SetReviewChainRequest,
+    sb=Depends(get_current_user),
+    membership=Depends(require_cap("manage_matter_team")),
+):
+    """Set (or clear) a matter's CUSTOM review chain (D5 — "Customize review chain" for big
+    matters). `require_cap("manage_matter_team")` 403s a non-staffer (same cap that staffs the team
+    — consistent). The firm is the caller's own (T3); the vault MUST belong to it (T2 — a guessed
+    cross-firm vault is a 404). EVERY reviewer in the chain is validated to be a member of THIS firm
+    before the write — the body can never route work to an outsider. A `null`/empty chain clears the
+    custom config (reverts to the rank default). Audited (T10)."""
+    firm_id = membership.firm_id
+    if not firm_id:
+        raise HTTPException(status_code=403, detail="You are not a member of any firm.")
+    if not sb.collection_in_firm(vault_id, firm_id):
+        raise HTTPException(status_code=404, detail="That matter is not in your firm.")
+    # The ethical wall floor: a screened member cannot reach into a walled matter to re-route it.
+    assert_vault_not_screened(sb, vault_id)
+
+    chain = body.chain or None
+    # T2 — every named reviewer must belong to the caller's firm. A custom chain that points at an
+    # outsider is rejected as a 400 (not silently dropped) so the matter lead sees the error.
+    if chain:
+        for reviewer_id in chain:
+            if not sb.user_in_firm(reviewer_id, firm_id):
+                raise HTTPException(status_code=400,
+                                    detail="Every reviewer in the chain must be a member of your firm.")
+
+    try:
+        sb.set_matter_review_chain(firm_id=firm_id, vault_id=vault_id, chain=chain, set_by=sb.user_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    log_audit(sb, "matter.review_chain.set", "vault", str(vault_id),
+              {"firm_id": str(firm_id), "chain": chain, "set_by": str(sb.user_id)})
+    return {"vault_id": str(vault_id), "chain": chain}
 
 
 # ─────────────────────────────────────────
@@ -194,9 +235,23 @@ async def submit_for_review(
     custom = sb.get_matter_review_chain(vault_id, firm_id)
     chain = rc.build_chain(members, submitted_by=sb.user_id, custom_chain=custom)
     owner = rc.first_owner(members, submitted_by=sb.user_id, custom_chain=custom)
-    # ANTI-STALL: a request must NEVER be ownerless. If the matter has no other member to review
-    # (a solo senior working their own matter), the submitter owns it (a one-person matter cannot
-    # stall on someone else) — it can be released directly by a partner.
+    # ANTI-STALL (D5): a request must NEVER be ownerless AND must never loop back to the submitter
+    # when there is a senior who should review it. The matter team may have NO senior staffed (e.g.
+    # only the submitting paralegal is on the matter — the live "indian big" case). In that case the
+    # old code parked the request on the SUBMITTER → it sat with the person who wrote it and the MP's
+    # queue was empty. Route UP instead: to the VAULT OWNER (the partner/MP who owns the matter),
+    # else the firm's most-senior partner — never the submitter (D5 locked decision).
+    if not owner:
+        # The vault owner: the submitter is staffed on this matter, so get_collection resolves the
+        # owner's row (user_id = owner). Best-effort — a missing row leaves vault_owner None.
+        vault_owner = (sb.get_collection(vault_id) or {}).get("user_id")
+        firm_members = [rc.Member(user_id=str(m.get("user_id")), role=m.get("role") or "")
+                        for m in sb.list_members(firm_id) if m.get("user_id")]
+        owner = rc.escalation_owner(
+            submitted_by=sb.user_id, vault_owner=vault_owner, firm_members=firm_members,
+        )
+    # Last-resort floor: a genuine one-person firm (the submitter is the only member anywhere) owns
+    # their own request — there is no one else to route to, and it can be released directly.
     if not owner:
         owner = sb.user_id
 

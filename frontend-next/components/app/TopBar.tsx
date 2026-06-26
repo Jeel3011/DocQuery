@@ -7,9 +7,11 @@
 import { useState, useRef, useEffect } from "react";
 import { useRouter } from "next/navigation";
 import { AnimatePresence, motion } from "framer-motion";
-import { Settings, LogOut, ChevronDown } from "lucide-react";
+import { Settings, LogOut, ChevronDown, Inbox, Building2 } from "lucide-react";
 import { CollectionResponse } from "@/lib/api";
 import { VaultSwitcher } from "./VaultSwitcher";
+import { useFirmStore } from "@/stores/firm.store";
+import { ROLE_LABEL } from "@/app/app/settings/firm/_shared";
 
 interface TopBarProps {
   collections: CollectionResponse[];
@@ -24,6 +26,13 @@ export function TopBar({ collections, activeId, email, name, onNewVault, onLogou
   const router = useRouter();
   const [acctOpen, setAcctOpen] = useState(false);
   const acctRef = useRef<HTMLDivElement>(null);
+  // Firm-console link renders only for a manage_members holder (the store's server-resolved caps —
+  // never a hardcoded role check). The middleware still blocks the route directly (T8); this just
+  // avoids dangling a link a user can't use.
+  const canManageFirm = useFirmStore((s) => s.caps.has("manage_members"));
+  // The user's seat in the firm — surfaced so a paralegal/associate always knows their role
+  // (and therefore why some actions are partner-held). Server-resolved (never a hardcoded map).
+  const role = useFirmStore((s) => s.role);
 
   useEffect(() => {
     if (!acctOpen) return;
@@ -119,9 +128,38 @@ export function TopBar({ collections, activeId, email, name, onNewVault, onLogou
               role="menu"
             >
               <div className="px-3 py-3 border-b border-[var(--border)]">
-                {name && <p className="text-[13px] font-medium text-[var(--text-primary)] truncate">{name}</p>}
+                <div className="flex items-center justify-between gap-2">
+                  {name && <p className="text-[13px] font-medium text-[var(--text-primary)] truncate">{name}</p>}
+                  {role && (
+                    <span
+                      className="flex-shrink-0 px-1.5 py-0.5 rounded-md text-[10px] font-medium tracking-wide uppercase"
+                      style={{ background: "var(--surface-3)", color: "var(--ink-2)", border: "1px solid var(--line)" }}
+                      title="Your role in this firm"
+                    >
+                      {ROLE_LABEL[role]}
+                    </span>
+                  )}
+                </div>
                 <p className="text-[11px] text-[var(--text-muted)] truncate">{email}</p>
               </div>
+              <button
+                onClick={() => { setAcctOpen(false); router.push("/app/review-queue"); }}
+                className="w-full flex items-center gap-2.5 px-3 py-2.5 text-left text-[13px] transition-colors hover:bg-[var(--bg-hover)] text-[var(--text-secondary)]"
+                role="menuitem"
+              >
+                <Inbox size={14} className="text-[var(--text-muted)]" />
+                <span>My review queue</span>
+              </button>
+              {canManageFirm && (
+                <button
+                  onClick={() => { setAcctOpen(false); router.push("/app/settings/firm"); }}
+                  className="w-full flex items-center gap-2.5 px-3 py-2.5 text-left text-[13px] transition-colors hover:bg-[var(--bg-hover)] text-[var(--text-secondary)]"
+                  role="menuitem"
+                >
+                  <Building2 size={14} className="text-[var(--text-muted)]" />
+                  <span>Firm console</span>
+                </button>
+              )}
               <button
                 onClick={() => { setAcctOpen(false); router.push("/app/settings"); }}
                 className="w-full flex items-center gap-2.5 px-3 py-2.5 text-left text-[13px] transition-colors hover:bg-[var(--bg-hover)] text-[var(--text-secondary)]"

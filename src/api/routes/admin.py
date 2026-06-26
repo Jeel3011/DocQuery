@@ -56,8 +56,8 @@ _DEFAULT_OUTPUT_PATH = os.getenv("EVAL_OUTPUT_PATH", "eval_results.json")
 
 @router.post("/eval/run", status_code=202)
 async def run_evaluation(
-    questions_path: str = _DEFAULT_EVAL_PATH,
     sb=Depends(get_current_user),
+    membership=Depends(require_cap("manage_members")),
 ):
     """
     Trigger a RAGAS evaluation run asynchronously via Celery.
@@ -65,19 +65,21 @@ async def run_evaluation(
     The evaluation runs in the background so it does not block the API.
     Use GET /admin/eval/results to poll for the latest results.
 
-    Returns the Celery task_id so the caller can track progress.
+    AUDIT FIX #5: this is an owner/admin operation — gated behind `require_cap("manage_members")`
+    (was auth-only, so any authenticated user incl. an external client could trigger background
+    jobs). The questions path is FIXED to the server default (the caller-supplied `questions_path`
+    query param is removed) to close the path-traversal / arbitrary-file-read vector.
     """
     try:
         from src.worker.tasks import run_evaluation_task  # noqa: F401
         task = run_evaluation_task.delay(
-            questions_path=questions_path,
+            questions_path=_DEFAULT_EVAL_PATH,
             output_path=_DEFAULT_OUTPUT_PATH,
             user_id=sb.user_id,
         )
         return {
             "task_id": task.id,
             "status": "started",
-            "questions_path": questions_path,
             "message": "Evaluation started. Poll GET /api/v1/admin/eval/results for output.",
         }
     except Exception as exc:
@@ -88,7 +90,10 @@ async def run_evaluation(
 
 
 @router.get("/eval/results")
-async def get_eval_results(sb=Depends(get_current_user)):
+async def get_eval_results(
+    sb=Depends(get_current_user),
+    membership=Depends(require_cap("manage_members")),
+):
     """
     Return the latest RAGAS evaluation results from eval_results.json.
 
@@ -198,6 +203,51 @@ async def list_firm_invites(
     ])
 
 
+@router.post("/firm/invites/{invite_id}/resend", response_model=InviteResponse)
+async def resend_firm_invite(
+    invite_id: str,
+    sb=Depends(get_current_user),
+    membership=Depends(require_cap("manage_members")),
+):
+    """ROTATE a pending invite's token and return the FRESH one-time token (the researched 'resend /
+    copy link' recovery — the original is hash-stored and can never be re-shown, so we mint a new one
+    and reset the expiry; the prior link dies on rotation). `require_cap("manage_members")` gates it;
+    firm-scoped (membership.firm_id — T2/T3, the path id can't point at another firm's invite).
+    Audited (T10). 404 if the invite is missing / already accepted / not in the caller's firm."""
+    firm_id = membership.firm_id
+    rotated = sb.resend_invite(invite_id=invite_id, firm_id=firm_id)
+    if not rotated:
+        raise HTTPException(status_code=404, detail="No pending invite to resend.")
+    log_audit(sb, "firm.invite.resend", "firm", str(firm_id),
+              {"invite_id": invite_id, "email": rotated.get("email")})
+    return InviteResponse(
+        id=str(rotated.get("id", invite_id)),
+        firm_id=str(rotated.get("firm_id", firm_id)),
+        email=rotated.get("email"),
+        role=rotated.get("role"),
+        expires_at=rotated.get("expires_at"),
+        accepted_at=rotated.get("accepted_at"),
+        created_at=rotated.get("created_at"),
+        token=rotated.get("token"),   # the rotated one-time token
+    )
+
+
+@router.delete("/firm/invites/{invite_id}")
+async def revoke_firm_invite(
+    invite_id: str,
+    sb=Depends(get_current_user),
+    membership=Depends(require_cap("manage_members")),
+):
+    """Revoke a pending invite. `require_cap("manage_members")` gates it; firm-scoped (T2/T3).
+    Idempotent — revoking a missing/cross-firm/accepted invite is a clean 404, never a 500."""
+    firm_id = membership.firm_id
+    removed = sb.revoke_invite(invite_id=invite_id, firm_id=firm_id)
+    if not removed:
+        raise HTTPException(status_code=404, detail="No pending invite to revoke.")
+    log_audit(sb, "firm.invite.revoke", "firm", str(firm_id), {"invite_id": invite_id})
+    return {"message": "Invite revoked", "invite_id": invite_id}
+
+
 @router.get("/firm/members", response_model=MemberListResponse)
 async def list_firm_members(sb=Depends(get_current_user)):
     """List the firm's members (user_id + role). Server-filtered to the caller's firm (T2).
@@ -207,11 +257,16 @@ async def list_firm_members(sb=Depends(get_current_user)):
     if not firm_id:
         raise HTTPException(status_code=403, detail="You are not a member of any firm.")
     rows = sb.list_members(firm_id)
+    # Resolve a human email for each member (service-role admin auth API) so the console shows a
+    # real name, not a raw user_id. Best-effort: an unresolved id falls back to None (the UI shows
+    # a short id) — never a 500.
+    emails = sb.resolve_member_emails([r.get("user_id") for r in rows])
     return MemberListResponse(members=[
         MemberResponse(
             user_id=str(r.get("user_id")),
             firm_id=str(r.get("firm_id", firm_id)),
             role=r.get("role"),
+            email=emails.get(str(r.get("user_id"))),
             created_at=r.get("created_at"),
         )
         for r in rows
@@ -589,6 +644,15 @@ async def override_abstain(
     """
     from src.components import authz
     firm_id = membership.firm_id
+    if not firm_id:
+        raise HTTPException(status_code=403, detail="You are not a member of any firm.")
+
+    # AUDIT FIX #6 (T2/T3): the vault MUST belong to the caller's OWN firm, resolved server-side —
+    # exactly like the matters.py routes. Without this, a foreign collection_id passes the wall check
+    # (the caller isn't screened off another firm's vault) and forges an override record against it,
+    # polluting the F3 evidence ledger. A cross-firm / unknown vault is a 404.
+    if not sb.collection_in_firm(body.collection_id, firm_id):
+        raise HTTPException(status_code=404, detail="That matter is not in your firm.")
 
     # (2) the wall, in the DATA path: a screened holder cannot override in that vault (precedence).
     # assert_vault_not_screened resolves the screen server-side and 403s + audits a screen.block.

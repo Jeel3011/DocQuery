@@ -6,6 +6,7 @@ import { useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { exportDraftDocx, exportDraftPdf } from "@/lib/api";
+import { useFirmStore } from "@/stores/firm.store";
 
 export type ArtifactKind = "markdown" | "code" | "table" | "text";
 
@@ -38,6 +39,11 @@ export function ArtifactPanel({ artifact, onClose, token }: ArtifactPanelProps) 
   const [copied, setCopied] = useState(false);
   const [exportingDocx, setExportingDocx] = useState(false);
   const [exportingPdf, setExportingPdf] = useState(false);
+  // release_external is a partner-held capability (D5). The docx/PDF export endpoints are
+  // server-gated on it — so for a junior we DON'T dangle a button that 403s; we show it
+  // disabled with the reason. The plain markdown download below is client-only (no server
+  // call, nothing leaves the firm via our API) and stays available to everyone.
+  const canRelease = useFirmStore((s) => s.caps.has("release_external"));
 
   function copyContent() {
     if (!artifact) return;
@@ -151,20 +157,22 @@ export function ArtifactPanel({ artifact, onClose, token }: ArtifactPanelProps) 
                 <>
                   <button
                     onClick={downloadDocx}
-                    disabled={exportingDocx}
+                    disabled={exportingDocx || !canRelease}
                     aria-label="Download as Word (.docx)"
-                    title="Download as Word (.docx)"
-                    className="w-7 h-7 rounded-lg flex items-center justify-center text-[var(--text-muted)] transition-[color,background-color] duration-[120ms] ease-[cubic-bezier(0.23,1,0.32,1)] active:scale-[0.97] disabled:opacity-50"
+                    title={canRelease ? "Download as Word (.docx)"
+                      : "Releasing externally is partner-held — send this for review to release."}
+                    className="w-7 h-7 rounded-lg flex items-center justify-center text-[var(--text-muted)] transition-[color,background-color] duration-[120ms] ease-[cubic-bezier(0.23,1,0.32,1)] active:scale-[0.97] disabled:opacity-40 disabled:cursor-not-allowed"
                     style={{ border: "1px solid var(--glass-border)", background: "var(--glass-bg)", boxShadow: "var(--skeu-raised)" }}
                   >
                     <FileType2 size={12} className={exportingDocx ? "animate-pulse" : ""} />
                   </button>
                   <button
                     onClick={downloadPdf}
-                    disabled={exportingPdf}
+                    disabled={exportingPdf || !canRelease}
                     aria-label="Download as PDF"
-                    title="Download as PDF"
-                    className="w-7 h-7 rounded-lg flex items-center justify-center text-[var(--text-muted)] transition-[color,background-color] duration-[120ms] ease-[cubic-bezier(0.23,1,0.32,1)] active:scale-[0.97] disabled:opacity-50"
+                    title={canRelease ? "Download as PDF"
+                      : "Releasing externally is partner-held — send this for review to release."}
+                    className="w-7 h-7 rounded-lg flex items-center justify-center text-[var(--text-muted)] transition-[color,background-color] duration-[120ms] ease-[cubic-bezier(0.23,1,0.32,1)] active:scale-[0.97] disabled:opacity-40 disabled:cursor-not-allowed"
                     style={{ border: "1px solid var(--glass-border)", background: "var(--glass-bg)", boxShadow: "var(--skeu-raised)" }}
                   >
                     <FileImage size={12} className={exportingPdf ? "animate-pulse" : ""} />

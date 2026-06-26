@@ -237,6 +237,24 @@ def resolve_membership(sb, firm_id: str | None = None):
     """
     from src.components import authz
 
+    # PER-REQUEST MEMO (latency): a single cap-gated vault route resolves membership several times —
+    # require_cap's dep, then assert_vault_not_screened, sometimes the handler again — and EACH resolve
+    # is 4 sequential Supabase round-trips (firm + screens + delegations + matters). `sb` is a fresh
+    # instance per request (dependencies.get_current_user), so memoizing on it is request-scoped: T7
+    # freshness across requests is preserved (a new request = a new sb = a fresh resolve). SECURITY: the
+    # LOAD-BEARING wall check (assert_vault_not_screened) re-queries the screen DIRECTLY and fails closed
+    # on a fault — it does NOT trust this memo — so caching the membership cannot open a walled vault.
+    _memo = getattr(sb, "_membership_memo", None)
+    if _memo is None:
+        _memo = {}
+        try:
+            sb._membership_memo = _memo
+        except Exception:  # noqa: BLE001 — a slotted/odd sb just skips the memo, never breaks
+            _memo = None
+    _key = str(firm_id) if firm_id else "__active__"
+    if _memo is not None and _key in _memo:
+        return _memo[_key]
+
     uid = sb.user_id
     role = "managing_partner"
     resolved_firm = firm_id
@@ -255,14 +273,18 @@ def resolve_membership(sb, firm_id: str | None = None):
     # beats ANY role grant — even an MP's (deny-overrides-role). Resolved PER REQUEST (T7): a new
     # screen blocks, and a soft-removed one restores, on the NEXT request. Degrades to the empty
     # set (byte-identical to pre-F2c) when no firm / no screens / the table is unapplied.
+    # The screen set feeds authorize()'s deny-overrides — but authorize only CONSULTS it when a
+    # Scope carries a vault_id. So here (the general per-request resolve, used by EVERY cap-gated
+    # route incl. firm-governance routes that touch no vault) we stay RESILIENT: a screen-lookup
+    # fault degrades to ∅ so a DB blip doesn't 500 every route. The LOAD-BEARING wall enforcement is
+    # assert_vault_not_screened, which fails CLOSED on a fault (AUDIT FIX #3) — that is the point
+    # where a vault is actually being entered, so that is where a fault must deny.
     screened: frozenset[str] = frozenset()
     try:
         screened = frozenset(sb.screened_vault_ids(firm_id=resolved_firm))
     except Exception as e:
-        # A screen-lookup hiccup must NOT fail open (silently dropping the wall) NOR 500 every
-        # route. We log and proceed with no screens — the retrieval-layer guard (Layer 2) and the
-        # row RLS (F2f) are the defense-in-depth backstops if Layer 1's lookup ever degrades.
-        logger.debug("resolve_membership: screen lookup failed, proceeding with no screens: %s", e)
+        logger.warning("resolve_membership: screen lookup failed, proceeding ∅ here; the vault-entry "
+                       "guard (assert_vault_not_screened) fails closed: %s", e)
 
     # F2d (D6): the verbs this user holds via an ACTIVE, un-expired, un-revoked delegation (a PA
     # acting for a senior). authorize() honors these at step 1.5 — a POSITIVE grant that STILL
@@ -290,7 +312,7 @@ def resolve_membership(sb, firm_id: str | None = None):
     except Exception as e:
         logger.debug("resolve_membership: matter-team lookup failed, proceeding with none: %s", e)
 
-    return authz.Membership(
+    membership = authz.Membership(
         user_id=str(uid) if uid else "",
         firm_id=str(resolved_firm) if resolved_firm else "",
         role=role,
@@ -299,6 +321,9 @@ def resolve_membership(sb, firm_id: str | None = None):
         delegated_verbs=delegated,
         matter_vault_ids=matters,
     )
+    if _memo is not None:
+        _memo[_key] = membership
+    return membership
 
 
 # ─────────────────────────────────────────
@@ -327,7 +352,21 @@ def assert_vault_not_screened(sb, collection_id: str | None) -> None:
     if not collection_id:
         return
     membership = resolve_membership(sb)
-    if str(collection_id) in membership.screened_vault_ids:
+    # AUDIT FIX #3 (fail-closed wall at the vault-entry point): check the screen DIRECTLY here, not
+    # only via the (resilient) membership set. db.is_vault_screened re-raises on a LIVE query fault
+    # (only a missing table degrades to "no wall"); we treat ANY fault as SCREENED — a DB blip must
+    # deny entry to a possibly-walled matter, never silently open it.
+    try:
+        directly_screened = sb.is_vault_screened(
+            str(collection_id), user_id=membership.user_id or None, firm_id=membership.firm_id or None
+        )
+    except Exception as e:
+        logger.warning("assert_vault_not_screened: screen lookup faulted — failing CLOSED (deny): %s", e)
+        raise HTTPException(
+            status_code=503,
+            detail="Could not verify access on this matter right now. Please retry.",
+        )
+    if directly_screened or str(collection_id) in membership.screened_vault_ids:
         # T10: a wall block is a security event — auditable. Best-effort (never block the 403).
         try:
             from src.api.routes.audit import log_audit
@@ -409,6 +448,29 @@ def get_retrieval_mgr(
             from src.components.retrieval import RetrievalManager
             _retrieval_cache[ns] = RetrievalManager(user_config)
         return _retrieval_cache[ns]
+
+
+def retrieval_mgr_for_namespace(user_config: Config, namespace: str):
+    """A RetrievalManager bound to an ARBITRARY user namespace (F2m — shared-matter read).
+
+    When a staffed member queries a matter OWNED by someone else, the matter's vectors live in the
+    OWNER's per-user Pinecone namespace, not the caller's. db.accessible_vault_owner has already
+    authorized the access (matter-membership + same-firm + not-screened) BEFORE this is called — this
+    only points retrieval at the right namespace. For the caller's own vault, namespace == the caller's
+    and this returns the same cached manager get_retrieval_mgr would (byte-identical).
+
+    Cached per namespace exactly like get_retrieval_mgr, so a shared owner's manager is reused.
+    """
+    if not namespace:
+        return get_retrieval_mgr(user_config)
+    with _cache_lock:
+        if namespace not in _retrieval_cache:
+            from copy import copy
+            from src.components.retrieval import RetrievalManager
+            scoped = copy(user_config)
+            scoped.PINECONE_NAMESPACE = namespace
+            _retrieval_cache[namespace] = RetrievalManager(scoped)
+        return _retrieval_cache[namespace]
 
 
 def get_kb_retrieval_mgr(

@@ -15,11 +15,13 @@ from pathlib import Path
 from typing import List
 
 import aiofiles
-from fastapi import APIRouter, HTTPException, Depends, UploadFile, File, Request
+from fastapi import APIRouter, HTTPException, Depends, UploadFile, File, Request, Form
 from fastapi.responses import JSONResponse
 
 from src.api.schemas import DocumentResponse, DocumentListResponse, UpdateDocumentRequest
-from src.api.dependencies import get_current_user, get_user_config, limiter, require_cap
+from src.api.dependencies import (
+    get_current_user, get_user_config, limiter, require_cap, assert_vault_not_screened,
+)
 from src.components.config import Config
 from src.components.metrics import uploads_total
 from src.api.routes.audit import log_audit
@@ -55,6 +57,7 @@ MAX_FILE_SIZE_MB = int(os.getenv("MAX_UPLOAD_MB", "50"))
 async def upload_document(
     request: Request,                            # P1: required by slowapi
     file: UploadFile = File(...),
+    collection_id: str = Form(None),
     sb=Depends(get_current_user),
     user_config: Config = Depends(get_user_config),
     _cap=Depends(require_cap("ingest")),
@@ -63,7 +66,32 @@ async def upload_document(
     Upload a document and immediately return 202 Accepted.
     Processing (ingest -> chunk -> embed) happens in the background.
     Poll GET /documents to check when status changes from 'processing' -> 'ready'.
+
+    F2m (D0 — the PRODUCTIVITY grant): when `collection_id` is a SHARED matter (a vault the
+    caller is staffed on but doesn't own), the doc is stamped with the VAULT OWNER's user_id
+    + processed into the OWNER's Pinecone namespace, and auto-linked to the matter — so a
+    paralegal's upload lands IN the matter for the whole team, never orphaned in their own
+    space. This is the point of sharing: lower-tier members do real work on the matter. The
+    `ingest` cap (held by paralegals/assistants per D0) + accessible_vault_owner (authorizes
+    the share, fails closed on an ethical wall) gate it. Own-vault / no collection_id ⇒
+    byte-identical to the legacy path (owner == caller).
     """
+    # F2m: resolve WHOSE vault this upload belongs to. For an own vault or no collection_id,
+    # owner == caller (legacy). For a shared matter, owner is the matter owner; None means the
+    # caller has no access (non-staffed / screened) → refuse before writing anything.
+    owner_id = sb.user_id
+    if collection_id:
+        # Ethical wall floor (P7-equivalent for the write path): a screened member cannot
+        # ingest into a walled matter. Fails CLOSED on a screen-lookup fault.
+        assert_vault_not_screened(sb, collection_id)
+        owner_id = sb.accessible_vault_owner(collection_id)
+        if not owner_id:
+            raise HTTPException(
+                status_code=403,
+                detail="You don't have access to this matter, so you can't upload into it.",
+            )
+    owner_namespace = owner_id  # PINECONE_NAMESPACE is the owner's user_id (the matter's vectors)
+
     # Validate file type
     safe_filename = Path(file.filename).name  # Strip directory components (S5)
     file_ext = Path(safe_filename).suffix.lower().strip(".")
@@ -144,17 +172,30 @@ async def upload_document(
                 file_size, spool_path)
 
     # The canonical storage_path the worker will upload TO (and later download FROM).
-    storage_path = f"{sb.user_id}/{safe_filename}"
+    # F2m: key it by the OWNER (the matter's namespace) on a shared upload, so storage +
+    # vectors + db row all live under the same id.
+    storage_path = f"{owner_id}/{safe_filename}"
 
-    # 2. Create document record with status=processing
+    # 2. Create document record with status=processing, owned by the matter owner (F2m).
     doc_record = sb.create_document_record(
         filename=safe_filename,
         storage_path=storage_path,
         file_type=file_ext,
         file_size_bytes=file_size,
+        owner_user_id=owner_id,
     )
     doc_id = doc_record.get("id")
-    logger.info("DB record created for %s: doc_id=%s", safe_filename, doc_id)
+    logger.info("DB record created for %s: doc_id=%s (owner=%s%s)", safe_filename, doc_id,
+                owner_id, " [shared matter]" if owner_id != sb.user_id else "")
+
+    # F2m: auto-link the doc to the matter server-side (atomic + owner-correct). The frontend's
+    # separate addDocToCollection still works for own vaults, but on a SHARED matter the caller's
+    # add would mis-scope ownership — so we link it here, where the owner is already resolved.
+    if collection_id:
+        try:
+            sb.add_document_to_collection(collection_id, doc_id)
+        except Exception as exc:  # noqa: BLE001 — link failure must not lose the upload
+            logger.warning("Could not link doc %s to collection %s: %s", doc_id, collection_id, exc)
 
     # 3. Dispatch to Celery worker — route to priority queue based on file size
     from src.worker.tasks import process_document_task
@@ -171,8 +212,10 @@ async def upload_document(
             filename=safe_filename,
             doc_id=doc_id,
             storage_path=storage_path,
-            user_id=sb.user_id,
-            pinecone_namespace=user_config.PINECONE_NAMESPACE,
+            # F2m: process under the OWNER so chunks land in the matter's namespace (not the
+            # uploader's). For an own upload owner_id == sb.user_id ⇒ unchanged.
+            user_id=owner_id,
+            pinecone_namespace=owner_namespace,
             local_path=spool_path,  # worker reads bytes from here; uploads to storage itself
         ),
         queue=celery_queue,
@@ -187,13 +230,16 @@ async def upload_document(
         from src.components.semantic_cache import SemanticCache
         _cache = SemanticCache(
             redis_url=_os.getenv("REDIS_URL", "redis://localhost:6379/0"),
-            namespace=sb.user_id,
+            namespace=owner_namespace,  # F2m: bust the MATTER's cache (owner ns), not the uploader's
         )
         _cache.invalidate_namespace()
     except Exception:
         pass  # cache invalidation failure is non-fatal
 
-    log_audit(sb, "document.upload", "document", doc_id, {"filename": safe_filename, "file_size_bytes": file_size})
+    log_audit(sb, "document.upload", "document", doc_id,
+              {"filename": safe_filename, "file_size_bytes": file_size,
+               "collection_id": collection_id, "owner_id": owner_id,
+               "shared_matter": owner_id != sb.user_id})
 
     # 4. Return 202 Accepted immediately — client should poll GET /documents
     return JSONResponse(

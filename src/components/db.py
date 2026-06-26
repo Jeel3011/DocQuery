@@ -24,6 +24,21 @@ _service_client: Optional[Client] = None
 _service_client_lock = threading.Lock()
 
 
+def _is_missing_relation(exc: Exception) -> bool:
+    """True if `exc` looks like 'the table/relation does not exist' (Postgres 42P01 / PostgREST
+    PGRST205 / 'could not find the table'). Used to distinguish a NOT-YET-APPLIED migration (safe to
+    degrade to a legacy default) from a LIVE query fault (which must fail closed for the ethical
+    wall — AUDIT FIX #3). Conservative: only the unambiguous 'missing table' signatures degrade."""
+    s = str(exc).lower()
+    return (
+        "42p01" in s
+        or "pgrst205" in s
+        or "does not exist" in s
+        or "could not find the table" in s
+        or "relation" in s and "does not exist" in s
+    )
+
+
 def get_supabase_client(use_service_role: bool = False) -> Client:
     """Create a Supabase client.
 
@@ -337,9 +352,18 @@ class SupabaseManager:
     # ─────────────────────────────────────────
 
     def create_document_record(self, filename: str, storage_path: str,
-                                file_type: str, file_size_bytes: int) -> dict:
+                                file_type: str, file_size_bytes: int,
+                                owner_user_id: str = None) -> dict:
+        """Create a 'processing' document row.
+
+        F2m (D0 — paralegal uploads INTO a shared matter): `owner_user_id` lets a staffed
+        member's upload be stamped with the VAULT OWNER's user_id, so the doc + its chunks
+        belong to the matter (the owner's namespace) and appear for the whole team — not
+        orphaned in the uploader's own space. The caller MUST have authorized the owner via
+        accessible_vault_owner first; this method just writes what it's told (service-role).
+        Defaults to self.user_id (own upload) ⇒ byte-identical to the legacy path."""
         res = self.client.table("documents").insert({
-            "user_id": self.user_id,
+            "user_id": owner_user_id or self.user_id,
             "filename": filename,
             "storage_path": storage_path,
             "file_type": file_type,
@@ -584,11 +608,16 @@ class SupabaseManager:
         if not uid:
             return {}
         q = self.read_client.table("firm_memberships").select(
-            "firm_id, role, firms!inner(id, name)"
+            "firm_id, role, created_at, firms!inner(id, name)"
         ).eq("user_id", uid)
         if firm_id:
             q = q.eq("firm_id", firm_id)
-        res = q.limit(1).execute()
+        # AUDIT FIX #2: pick the active firm DETERMINISTICALLY. Without an ORDER BY, PostgREST row
+        # order is undefined, so a user who belongs to >1 firm (e.g. a backfilled solo firm PLUS a
+        # firm they joined by invite) could resolve as a DIFFERENT firm/role on each request — an
+        # intra-firm cap oscillation. Oldest membership = the stable "primary" firm; an explicit
+        # firm_id (the active-firm switcher) still overrides.
+        res = q.order("created_at", desc=False).limit(1).execute()
         rows = res.data or []
         if not rows:
             return {}
@@ -620,6 +649,16 @@ class SupabaseManager:
         self.add_membership(uid, firm_id, owner_role)
         return {"id": firm_id, "name": firm.get("name"), "role": owner_role}
 
+    def rename_firm(self, firm_id: str, name: str) -> dict:
+        """Rename a firm (F2g onboarding — name the backfilled solo firm). The CALLER must have
+        resolved `firm_id` as their own + authorized (manage_members) server-side; this is the
+        write only. Returns the updated {"id","name"}."""
+        if not (firm_id and name and name.strip()):
+            raise ValueError("firm_id and a non-empty name are required.")
+        res = self.client.table("firms").update({"name": name.strip()}).eq("id", firm_id).execute()
+        row = res.data[0] if res.data else {"id": firm_id, "name": name.strip()}
+        return {"id": str(row.get("id", firm_id)), "name": row.get("name", name.strip())}
+
     def add_membership(self, user_id: str, firm_id: str, role: str) -> dict:
         """Add (or upsert) a membership row. Idempotent on the (user_id, firm_id) PK — a repeat
         join updates the role rather than erroring. The caller authorizes this (F2b); F2a just
@@ -638,6 +677,28 @@ class SupabaseManager:
             "user_id, firm_id, role, created_at"
         ).eq("firm_id", firm_id).execute()
         return res.data or []
+
+    def resolve_member_emails(self, user_ids) -> dict:
+        """Map {user_id: email} for a set of user_ids via the service-role admin auth API. Used to
+        give the firm console a HUMAN handle for each member instead of a raw user_id (F2g). The
+        live request client is service-role (db.py:94), so auth.admin is available. Best-effort:
+        any id we cannot resolve is simply omitted (the caller falls back to a short id). Never
+        raises — a missing email must never 500 the members list."""
+        ids = {str(u) for u in (user_ids or []) if u}
+        if not ids:
+            return {}
+        out: dict[str, str] = {}
+        for uid in ids:
+            try:
+                resp = self.client.auth.admin.get_user_by_id(uid)
+                user = getattr(resp, "user", None) or (resp.get("user") if isinstance(resp, dict) else None)
+                email = getattr(user, "email", None) if user else None
+                if email:
+                    out[uid] = email
+            except Exception:
+                # admin API unavailable / id not found → leave it out (UI shows a short id).
+                continue
+        return out
 
     # ── invites (D1) — single-use, expiring, hash-stored, email-bound (T4) ────────────────────
 
@@ -752,6 +813,38 @@ class SupabaseManager:
             q = q.is_("accepted_at", "null")
         res = q.order("created_at", desc=True).execute()
         return res.data or []
+
+    def resend_invite(self, invite_id: str, firm_id: str, ttl_hours: int = 168) -> dict:
+        """ROTATE a pending invite's token (the security-correct 'resend / copy link' recovery —
+        researched best practice). Because we store only the hash (T4), the original raw token can
+        never be re-shown; instead we mint a FRESH token, replace the stored hash, and reset the
+        expiry. Returns the row PLUS the new one-time raw `token`. Firm-scoped (T2/T3 — the caller
+        resolved firm_id server-side) and only acts on a still-PENDING invite (a replay of an old
+        link is dead the instant a new one is issued — rotation invalidates the prior token).
+        Returns {} if the invite is missing / already accepted / not in this firm."""
+        import secrets
+        raw_token = secrets.token_urlsafe(32)
+        token_hash = self._hash_invite_token(raw_token)
+        expires_at = (datetime.now(timezone.utc) + timedelta(hours=ttl_hours)).isoformat()
+        # Conditional update: only a pending invite of THIS firm rotates (accepted/cross-firm → no-op).
+        res = self.client.table("firm_invites").update(
+            {"token_hash": token_hash, "expires_at": expires_at}
+        ).eq("id", invite_id).eq("firm_id", firm_id).is_("accepted_at", "null").execute()
+        rows = res.data or []
+        if not rows:
+            return {}
+        row = rows[0]
+        row.pop("token_hash", None)
+        row["token"] = raw_token          # the ONLY time the rotated raw token exists
+        return row
+
+    def revoke_invite(self, invite_id: str, firm_id: str) -> bool:
+        """Revoke (delete) a pending invite. Firm-scoped (T2/T3). Idempotent: revoking a missing /
+        cross-firm invite returns False, never raises. An accepted invite is left intact (history)."""
+        res = self.client.table("firm_invites").delete().eq(
+            "id", invite_id
+        ).eq("firm_id", firm_id).is_("accepted_at", "null").execute()
+        return bool(res.data)
 
     def count_firm_role(self, firm_id: str, role: str) -> int:
         """How many members of a firm hold a given role. Used by the F2d last-MP guard and the
@@ -971,11 +1064,15 @@ class SupabaseManager:
             q = q.eq("firm_id", firm_id)
         try:
             res = q.execute()
-        except Exception:
-            # The table not existing (migration 013 not yet applied live) must DEGRADE to "no
-            # screens" (byte-identical to pre-F2c), never 500 every guarded route. A real screen
-            # only exists once a firm creates one, so an empty set is the correct legacy default.
-            return set()
+        except Exception as e:
+            # AUDIT FIX #3 (fail-closed wall): ONLY a missing `screens` table (migration 013 not yet
+            # applied) may degrade to "no screens" — that is legacy parity. ANY OTHER error (a live
+            # query fault) must NOT silently drop the ethical wall; we re-raise so the caller fails
+            # CLOSED (assert_vault_not_screened treats a lookup failure as screened). The wall is the
+            # regulatory moat — a DB blip must never quietly open it.
+            if _is_missing_relation(e):
+                return set()
+            raise
         return {str(r["vault_id"]) for r in (res.data or []) if r.get("vault_id")}
 
     def is_vault_screened(self, vault_id: str, user_id: str = None, firm_id: str = None) -> bool:
@@ -992,8 +1089,12 @@ class SupabaseManager:
             q = q.eq("firm_id", firm_id)
         try:
             res = q.limit(1).execute()
-        except Exception:
-            return False
+        except Exception as e:
+            # AUDIT FIX #3: missing table → degrade to "no wall" (legacy parity); any live fault
+            # re-raises so the read-layer guard fails CLOSED rather than silently opening the wall.
+            if _is_missing_relation(e):
+                return False
+            raise
         return bool(res.data)
 
     def create_screen(self, firm_id: str, user_id: str, vault_id: str, reason: str,
@@ -1274,21 +1375,96 @@ class SupabaseManager:
             return []
         return res.data or []
 
+    # Partner-tier sees the WHOLE firm (they run it); everyone else sees need-to-know:
+    # the vaults they OWN plus the matters they are STAFFED on. In LOCKSTEP with
+    # review_chain._RELEASE_TIER (the same "runs the firm" set).
+    _FIRM_WIDE_ROLES = frozenset({"managing_partner", "senior_partner", "partner"})
+
     def get_collections(self) -> list:
-        """Get all collections for the current user."""
+        """The vaults the current user should SEE (F2 — role-scoped visibility).
+
+        Visibility model (app-layer, mirrors the F2f firm+wall row floor but adds the
+        matter-scope for juniors that row-RLS deliberately does NOT — matter-membership
+        stays app-layer per the F2f decision):
+          • Partner-tier (MP/senior_partner/partner) → EVERY vault in their firm. They run
+            the firm; need-to-know does not bound them.
+          • Any other firm member (associate/paralegal/assistant/…) → the vaults they OWN
+            ∪ the matters they are STAFFED on (matter_memberships). A staffed paralegal
+            finally SEES the matter they were added to — the gap that made the everyday UI
+            look identical for every role.
+          • Firm-less / legacy user → owned vaults only (byte-identical to pre-F2).
+        The ethical wall is subtracted in ALL firm cases (a screened vault never shows,
+        deny-overrides-role — even for a partner).
+        """
         if not self.user_id:
             return []
-        res = self.read_client.table("collections").select("*").eq(
-            "user_id", self.user_id
-        ).order("updated_at", desc=True).execute()
-        return res.data or []
+
+        firm = {}
+        try:
+            firm = self.get_user_firm() or {}
+        except Exception:
+            firm = {}
+        firm_id = firm.get("id")
+        role = firm.get("role") or "managing_partner"
+
+        # Legacy / firm-less: unchanged — owned vaults only.
+        if not firm_id:
+            res = self.read_client.table("collections").select("*").eq(
+                "user_id", self.user_id
+            ).order("updated_at", desc=True).execute()
+            return res.data or []
+
+        if role in self._FIRM_WIDE_ROLES:
+            # Partner-tier: the whole firm.
+            res = self.read_client.table("collections").select("*").eq(
+                "firm_id", firm_id
+            ).order("updated_at", desc=True).execute()
+            rows = res.data or []
+        else:
+            # Need-to-know: owned ∪ staffed. Two reads, merged + de-duped (PostgREST has no
+            # clean OR across an IN-list of staffed ids without risking an over-broad filter,
+            # and the staffed set is small).
+            owned = self.read_client.table("collections").select("*").eq(
+                "user_id", self.user_id
+            ).order("updated_at", desc=True).execute().data or []
+            staffed_ids = self.matter_member_vault_ids(firm_id=firm_id)
+            staffed_rows = []
+            if staffed_ids:
+                staffed_rows = self.read_client.table("collections").select("*").in_(
+                    "id", list(staffed_ids)
+                ).eq("firm_id", firm_id).execute().data or []
+            seen, rows = set(), []
+            for r in [*owned, *staffed_rows]:
+                if r["id"] not in seen:
+                    seen.add(r["id"])
+                    rows.append(r)
+            rows.sort(key=lambda r: r.get("updated_at") or "", reverse=True)
+
+        # The ethical wall floor: never surface a screened vault (deny-overrides-role).
+        try:
+            screened = self.screened_vault_ids(firm_id=firm_id)
+        except Exception:
+            # screened_vault_ids fails CLOSED on a live fault (re-raises); a missing table
+            # returns ∅. If it raised, the wall is uncertain — drop nothing here (the
+            # per-vault assert_vault_not_screened guard at entry is the load-bearing block),
+            # but log it.
+            screened = set()
+            import logging
+            logging.getLogger(__name__).warning(
+                "get_collections: screen lookup failed; entry guard remains the wall")
+        if screened:
+            rows = [r for r in rows if str(r["id"]) not in screened]
+        return rows
 
     def get_collection(self, collection_id: str) -> dict:
-        """Get a single collection by ID for the current user."""
-        if not self.user_id:
+        """Get a single collection by ID — for the caller's own vault OR a matter they're staffed
+        on (F2m, owner-resolved via accessible_vault_owner so a staffed member can open the shared
+        matter's header/metadata). Returns {} when the caller has no access (non-member or screened)."""
+        owner = self.accessible_vault_owner(collection_id)
+        if not owner:
             return {}
-        res = self.read_client.table("collections").select("*").eq(
-            "user_id", self.user_id
+        res = self.client.table("collections").select("*").eq(
+            "user_id", owner
         ).eq("id", collection_id).execute()
         return res.data[0] if res.data else {}
 
@@ -1349,26 +1525,155 @@ class SupabaseManager:
             "collection_id", collection_id
         ).eq("document_id", document_id).execute()
 
+    def accessible_vault_owner(self, collection_id: str) -> "str | None":
+        """THE matter-access authority (F2m / D3): the user_id whose namespace + documents back a
+        vault the CURRENT user is allowed to read — or None if they have no access.
+
+        Returns:
+          • self.user_id          — the caller OWNS the vault (the legacy, byte-identical path).
+          • the OWNER's user_id    — the caller is STAFFED on the matter (matter_memberships) within
+                                     the SAME firm AND is NOT screened off it. A staffed member reads
+                                     the owner's docs/namespace = "full access on this matter" (D0/D3).
+          • None                   — no ownership, no staffing, or a screen blocks it (deny-overrides).
+
+        This is the ONE place cross-user vault read is granted. It is HARD-gated by matter membership
+        + same-firm + the ethical-wall screen — never a raw ownership bypass. Read paths
+        (get_collection_document_ids / get_collection_documents / the retrieval namespace) route
+        through it so a staffed paralegal can actually open and query the shared matter, while a
+        non-staffed user still resolves to nothing.
+
+        Uses the service-role client for the cross-user lookups (resolving ANOTHER user's vault owner
+        is inherently cross-user) but only AFTER the membership+screen gate passes — the gate is the
+        boundary, not the client.
+
+        Per-request memo: a single vault load calls this 3× (get_collection / *_document_ids /
+        *_documents), each ~3-4 sequential Supabase round-trips. The SupabaseManager is built per
+        request, so a tiny per-instance cache keyed on collection_id collapses those to one resolve
+        (the screen check stays per-request across DIFFERENT requests — T7 — since the instance is new
+        each time). Safe: same boundary, far less latency.
+        """
+        if not (self.user_id and collection_id):
+            return None
+        _memo = getattr(self, "_vault_owner_memo", None)
+        if _memo is None:
+            _memo = {}
+            self._vault_owner_memo = _memo
+        if collection_id in _memo:
+            return _memo[collection_id]
+
+        def _remember(val):
+            _memo[collection_id] = val
+            return val
+
+        # Owner fast-path (RLS-enforced read of the caller's own row). If they own it, done.
+        try:
+            own = self.read_client.table("collections").select("id").eq(
+                "user_id", self.user_id).eq("id", collection_id).limit(1).execute()
+            if own.data:
+                return _remember(self.user_id)
+        except Exception:
+            pass
+
+        # Not the owner — is the caller STAFFED on this matter? Resolve the caller's firm + the
+        # vault's owner/firm via service-role (cross-user by nature), then require:
+        #   (1) the vault is in the caller's firm, (2) the caller is staffed on it, (3) no screen.
+        firm = {}
+        try:
+            firm = self.get_user_firm() or {}
+        except Exception:
+            firm = {}
+        firm_id = firm.get("id")
+        if not firm_id:
+            return _remember(None)  # firm-less ⇒ no matter sharing ⇒ owner-only (handled above)
+
+        try:
+            coll = self.client.table("collections").select("user_id, firm_id").eq(
+                "id", collection_id).limit(1).execute()
+        except Exception:
+            return _remember(None)
+        if not coll.data:
+            return _remember(None)
+        owner_id = coll.data[0].get("user_id")
+        vault_firm = coll.data[0].get("firm_id")
+        # T2/T3: the vault MUST belong to the caller's firm. A cross-firm vault is invisible.
+        if not owner_id or str(vault_firm) != str(firm_id):
+            return _remember(None)
+
+        # (2) staffed on the matter? (the productivity grant — D3)
+        try:
+            staffed = self.client.table("matter_memberships").select("id").eq(
+                "firm_id", firm_id).eq("vault_id", collection_id).eq(
+                "user_id", self.user_id).limit(1).execute()
+        except Exception:
+            return _remember(None)
+        if not staffed.data:
+            return _remember(None)
+
+        # (3) the ethical wall (deny-overrides): a screened member reads nothing. screened_vault_ids
+        # fails CLOSED on a live fault (re-raises) — so a wall lookup blip denies, never opens.
+        # NOT memoized through a raise: a screen fault must re-deny on each call, never cache "open".
+        try:
+            if str(collection_id) in self.screened_vault_ids(firm_id=firm_id):
+                return _remember(None)
+        except Exception:
+            return None  # fail closed — uncertain wall ⇒ deny (don't memo a transient fault)
+
+        return _remember(str(owner_id))
+
     def get_collection_document_ids(self, collection_id: str) -> list[str]:
-        """Get all document IDs in a collection, verifying ownership via collections table."""
-        # Join through collections to ensure this user owns the collection.
-        # RLS backstop: collection_documents' policy already restricts to the user's own
-        # collections, so the join runs RLS-enforced under read_client too.
-        res = self.read_client.table("collection_documents").select(
+        """Get all document IDs in a collection, scoped to the OWNER resolved by the matter-access
+        authority (accessible_vault_owner). For the caller's own vault that owner IS the caller
+        (byte-identical legacy path); for a matter they're STAFFED on it's the vault owner (D3); for
+        no access it's None ⇒ []. So a staffed member sees the shared matter's real documents, and a
+        non-member still sees nothing."""
+        owner = self.accessible_vault_owner(collection_id)
+        if not owner:
+            return []
+        # Service-role join scoped to the resolved owner (the gate already passed in
+        # accessible_vault_owner — this read is bounded to exactly that owner's docs in this vault).
+        res = self.client.table("collection_documents").select(
             "document_id, collections!inner(user_id)"
         ).eq("collection_id", collection_id).eq(
-            "collections.user_id", self.user_id
+            "collections.user_id", owner
         ).execute()
         return [row["document_id"] for row in (res.data or [])]
 
+    def batch_collection_doc_counts(self, collections: list) -> dict:
+        """Doc-count per collection in ONE query (kills the per-vault N+1 in list_collections).
+
+        `collections` are rows already resolved + access-checked by get_collections (each carries
+        its OWNER as `user_id` + its `id`). We fetch all collection_documents for those ids in a
+        single round-trip and tally per collection_id — instead of one get_collection_document_ids
+        (which itself resolves accessible_vault_owner) per vault. The access gate already ran in
+        get_collections, so this is a pure count over the visible set. Returns {collection_id: int};
+        a vault with no docs is simply absent (caller defaults to 0). Never raises — degrades to {}
+        so the list still renders (just without counts) on a query fault."""
+        ids = [str(c.get("id")) for c in (collections or []) if c.get("id")]
+        if not ids:
+            return {}
+        try:
+            res = self.client.table("collection_documents").select(
+                "collection_id"
+            ).in_("collection_id", ids).execute()
+        except Exception:  # noqa: BLE001 — counts are cosmetic; never break the list
+            return {}
+        counts: dict[str, int] = {}
+        for row in (res.data or []):
+            cid = str(row.get("collection_id"))
+            counts[cid] = counts.get(cid, 0) + 1
+        return counts
+
     def get_collection_documents(self, collection_id: str) -> list:
-        """Get full document records for all documents in a collection."""
+        """Get full document records for all documents in a collection (owner-resolved, F2m)."""
+        owner = self.accessible_vault_owner(collection_id)
+        if not owner:
+            return []
         doc_ids = self.get_collection_document_ids(collection_id)
         if not doc_ids:
             return []
-        res = self.read_client.table("documents").select("*").in_(
+        res = self.client.table("documents").select("*").in_(
             "id", doc_ids
-        ).eq("user_id", self.user_id).execute()
+        ).eq("user_id", owner).execute()
         return res.data or []
 
     def get_document_collections(self, document_id: str) -> list:

@@ -8,3 +8,5 @@ export { Dialog, DialogTrigger, DialogContent, DialogHeader, DialogTitle, Dialog
 export { Skeleton } from "./Skeleton";
 export { Surface, Panel } from "./Surface";
 export { CommandPalette } from "./CommandPalette";
+export { Select } from "./Select";
+export type { SelectOption } from "./Select";

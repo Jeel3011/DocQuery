@@ -104,6 +104,15 @@ class FakeSB:
                    and (firm_id is None or s["firm_id"] == firm_id)
                    for s in self._screens)
 
+    def accessible_vault_owner(self, collection_id):
+        # F2m: the caller's own vault resolves to the caller (these wall cases use the caller's
+        # own vault; a screen on it is caught by is_vault_screened upstream in the route). Returns
+        # None when screened, so the data path yields 0 (deny-overrides at the read layer too).
+        return None if self.is_vault_screened(collection_id) else self.user_id
+
+    def get_collection_document_ids(self, collection_id):
+        return []   # the wall path only needs the screen check; no docs required offline
+
     # —— the F2c writes (admin routes call these, after authorizing + resolving firm) ——
     def create_screen(self, firm_id, user_id, vault_id, reason, created_by=None):
         if not (reason or "").strip():
@@ -304,6 +313,9 @@ scr = sb.list_screens(FIRM_A)[0]
 removed = sb.remove_screen(scr["id"], FIRM_A)
 check("C: remove_screen soft-removes (sets removed_at, row preserved)",
       removed.get("removed_at") is not None and len(sb.list_screens(FIRM_A, include_removed=True)) == 1)
+# A NEW request = a fresh `sb` in production (get_current_user builds one per request), so the
+# per-request membership memo is empty. Simulate that here by clearing the memo before re-resolving.
+sb._membership_memo = {}
 m_after = resolve_membership(sb)
 check("C: the NEXT request after removal restores access (screen gone from membership)",
       WALLED_VAULT not in m_after.screened_vault_ids)

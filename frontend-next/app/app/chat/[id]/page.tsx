@@ -721,10 +721,21 @@ function ChatPageInner({ scopedCollectionId, conversationId, analysisMode = "sta
           autoSubmittedRef.current = true;
           const mode = searchParams.get("mode");
           if (mode === "brain" && process.env.NEXT_PUBLIC_SHOW_DEV_MODES === "true") {
+            // Dev-only comparator: Brain on, Agent off.
             setBrainMode(true); brainModeRef.current = true;
             setAgentCoreMode(false); agentCoreModeRef.current = false;
+          } else if (mode === "fast") {
+            // "Direct" / fast answer: BOTH smart modes OFF — run the plain retrieval path.
+            // The page defaults agentCoreMode=true, so we must explicitly turn it off here,
+            // otherwise a user who picked "Direct" silently gets the full Agent.
+            setAgentCoreMode(false); agentCoreModeRef.current = false;
+            setBrainMode(false); brainModeRef.current = false;
+          } else {
+            // "agent" | "deep" | anything else → the default Agent. Re-affirm it explicitly
+            // (don't rely on the default) so a stale Brain/fast state can't leak through.
+            setAgentCoreMode(true); agentCoreModeRef.current = true;
+            setBrainMode(false); brainModeRef.current = false;
           }
-          // "agent" | "deep" | anything else → the default Agent (already on).
           // Small delay to let state settle
           setTimeout(() => handleSubmit(q), 200);
         }
@@ -1071,6 +1082,8 @@ function ChatPageInner({ scopedCollectionId, conversationId, analysisMode = "sta
                     userInitials={userInitials}
                     showTrust={!msg.isStreaming && msg.role === "assistant" && !!msg.sources?.length}
                     answerMeta={msg.answerMeta ?? MOCK_ANSWER_META}
+                    vaultId={activeCollectionId}
+                    messageId={msg.id}
                   />
                 </div>
               ))}

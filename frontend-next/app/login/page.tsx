@@ -8,14 +8,20 @@ import { useRouter } from "next/navigation";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
-import { Eye, EyeOff, Loader2 } from "lucide-react";
+import { Eye, EyeOff, Loader2, Building2, Ticket } from "lucide-react";
 import { supabase } from "@/lib/supabase";
+import { setupFirm, stashFirmSetup, peekStashedFirmSetup } from "@/lib/firmSetup";
+import { extractInviteToken } from "@/lib/api";
 import { toast } from "sonner";
-import { motion } from "framer-motion";
+import { motion, AnimatePresence } from "framer-motion";
 
 const schema = z.object({
   email: z.string().email("Invalid email"),
   password: z.string().min(6, "At least 6 characters"),
+  // F2g onboarding (signup only) — optional. Either name your new firm, or paste an invite to join
+  // an existing one. Both blank ⇒ a solo firm named after you (the legacy default).
+  firmName: z.string().max(120).optional(),
+  inviteToken: z.string().optional(),
 });
 type Form = z.infer<typeof schema>;
 
@@ -26,10 +32,23 @@ export default function LoginPage() {
   const [loading, setLoading] = useState(false);
   const [signedUp, setSignedUp] = useState(false);
   const [countdown, setCountdown] = useState(3);
+  // Signup-only: create a new firm (name it) or join an existing one (invite token).
+  const [joinMode, setJoinMode] = useState<"create" | "join">("create");
 
-  const { register, handleSubmit, formState: { errors }, reset } = useForm<Form>({
+  const { register, handleSubmit, formState: { errors }, reset, setValue } = useForm<Form>({
     resolver: zodResolver(schema),
   });
+
+  // If the user arrived from an invite link (/invite stashed the token), jump to the signup
+  // "Join with invite" tab and pre-fill the token — they don't have to paste anything.
+  useEffect(() => {
+    const stashed = peekStashedFirmSetup();
+    if (stashed?.inviteToken) {
+      setTab("signup");
+      setJoinMode("join");
+      setValue("inviteToken", stashed.inviteToken);
+    }
+  }, [setValue]);
 
   // Reset form errors when switching tabs (#19)
   function switchTab(t: "signin" | "signup") {
@@ -49,13 +68,42 @@ export default function LoginPage() {
     setLoading(true);
     try {
       if (tab === "signin") {
-        const { error } = await supabase.auth.signInWithPassword(data);
+        const { data: result, error } = await supabase.auth.signInWithPassword(data);
         if (error) throw error;
+        // If they arrived from an invite link, accept it now (email-binding enforced server-side).
+        const tok = result.session?.access_token;
+        const stashedToken = data.inviteToken ? extractInviteToken(data.inviteToken) : peekStashedFirmSetup()?.inviteToken;
+        if (tok && stashedToken) await setupFirm(tok, { inviteToken: stashedToken });
         toast.success("Welcome back!");
         router.push("/app");
       } else {
-        const { error } = await supabase.auth.signUp(data);
+        const { data: result, error } = await supabase.auth.signUp({
+          email: data.email, password: data.password,
+        });
         if (error) throw error;
+        // F2g onboarding: name the new firm, or join one by invite. People paste the whole invite
+        // LINK here, not the bare token — extractInviteToken handles either. If a session came back
+        // (email confirmation off) apply it now; otherwise stash it for the first authed load.
+        const intent = {
+          firmName: data.firmName,
+          inviteToken: data.inviteToken ? extractInviteToken(data.inviteToken) : undefined,
+        };
+        const token = result.session?.access_token;
+        if (token) {
+          // setupFirm THROWS on a rejected invite (fail-closed). If the join fails we must NOT
+          // pretend it worked — the account exists, but they did not join the firm.
+          try {
+            await setupFirm(token, intent);
+          } catch (joinErr) {
+            const detail = (joinErr as { detail?: string })?.detail
+              ?? "That invite could not be accepted (expired, already used, or a different email).";
+            toast.error(`Account created, but ${detail}`);
+            setSignedUp(true);
+            return;
+          }
+        } else {
+          stashFirmSetup(intent);
+        }
         toast.success("Account created! Check your email to confirm.");
         setSignedUp(true);
       }
@@ -130,6 +178,54 @@ export default function LoginPage() {
             </div>
             {errors.password && <p className="text-[10px] text-[var(--status-failed)] mt-1">{errors.password.message}</p>}
           </div>
+
+          {/* F2g onboarding — only on signup. Choose to start a firm or join one by invite. */}
+          <AnimatePresence initial={false}>
+            {tab === "signup" && (
+              <motion.div
+                initial={{ opacity: 0, height: 0 }}
+                animate={{ opacity: 1, height: "auto" }}
+                exit={{ opacity: 0, height: 0 }}
+                transition={{ duration: 0.2, ease: [0.2, 0, 0, 1] }}
+                className="overflow-hidden"
+              >
+                <div className="pt-1">
+                  <label className="block text-xs text-[var(--text-secondary)] mb-1.5 font-medium">Your firm</label>
+                  <div className="flex gap-1 p-1 bg-[var(--bg-base)] rounded-xl mb-3 border border-[var(--border)]">
+                    {(["create", "join"] as const).map((m) => (
+                      <button key={m} type="button" onClick={() => setJoinMode(m)}
+                        className={`flex-1 py-1.5 rounded-lg text-xs font-medium transition-[background-color,color] duration-[120ms] active:scale-[0.96]
+                          ${joinMode === m ? "bg-[var(--accent)] text-white shadow-sm" : "text-[var(--text-muted)] hover:text-[var(--text-primary)]"}`}>
+                        {m === "create" ? "Start a firm" : "Join with invite"}
+                      </button>
+                    ))}
+                  </div>
+                  {joinMode === "create" ? (
+                    <div className="relative">
+                      <Building2 size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-[var(--text-muted)]" />
+                      <input {...register("firmName")} type="text" placeholder="Firm name (optional)" maxLength={120}
+                        className="w-full card rounded-xl pl-9 pr-4 py-3 text-sm text-[var(--text-primary)]
+                          placeholder:text-[var(--text-muted)] outline-none transition-[border-color,box-shadow]
+                          focus:border-[var(--accent)] focus:shadow-[0_0_0_3px_rgba(10,10,10,0.06)]" />
+                    </div>
+                  ) : (
+                    <div className="relative">
+                      <Ticket size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-[var(--text-muted)]" />
+                      <input {...register("inviteToken")} type="text" placeholder="Paste your invite link or token"
+                        className="w-full card rounded-xl pl-9 pr-4 py-3 text-sm text-[var(--text-primary)]
+                          placeholder:text-[var(--text-muted)] outline-none transition-[border-color,box-shadow]
+                          focus:border-[var(--accent)] focus:shadow-[0_0_0_3px_rgba(10,10,10,0.06)]" />
+                    </div>
+                  )}
+                  <p className="text-[10px] text-[var(--text-muted)] mt-1.5 leading-relaxed">
+                    {joinMode === "create"
+                      ? "You become the Managing Partner. You can rename the firm and invite your team later."
+                      : "Join your firm at the role your inviter chose. The invite is tied to this email."}
+                  </p>
+                </div>
+              </motion.div>
+            )}
+          </AnimatePresence>
 
           <button type="submit" disabled={loading}
             className="w-full btn-primary py-3 flex items-center justify-center gap-2 text-sm">

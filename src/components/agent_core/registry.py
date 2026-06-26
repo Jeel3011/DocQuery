@@ -43,6 +43,11 @@ class RunScope:
     # ⇒ the tool is never offered ⇒ byte-identical to pre-G8.
     kb_retrieval_manager: Any = None                       # live KB RetrievalManager (search_knowledge)
     db_client: Any = None                                  # live SupabaseClient (read_document)
+    # F2m (shared-matter read): the user_id whose namespace + chunks back this vault. For the
+    # caller's OWN vault it equals db_client.user_id (byte-identical); for a matter the caller is
+    # STAFFED on it's the vault OWNER, so the read tools scope chunks to the owner (the access was
+    # authorized upstream by db.accessible_vault_owner). None ⇒ fall back to db_client.user_id.
+    vault_owner: Optional[str] = None
     filename_by_doc: Dict[str, str] = field(default_factory=dict)
     question: Optional[str] = None                         # the run's question (grid relevance ranking)
     # G3 Step D/E: the active vault metadata filter (doc_type / fiscal_year). Threaded to
@@ -180,6 +185,8 @@ class ToolRegistry:
                     filename_by_doc=scope.filename_by_doc,
                     page_range=args.get("page_range"),
                     table_grids=args.get("table_grids", True),
+                    owner_id=scope.vault_owner,  # F2m: shared matter ⇒ read the owner's chunks
+
                     # The run's LIVE grid scope (mutable): grids read_document loads
                     # fresh from the DB join it, so a later `compute` can use them.
                     # Live (2026-06-11) the model read the right doc but compute

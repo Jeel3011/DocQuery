@@ -85,6 +85,7 @@ def read_document(
     page_range: Optional[str] = None,
     table_grids: bool = True,
     scope_grids: Optional[List[Any]] = None,
+    owner_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Read grids (+ optional page text) for `doc_id`; return the §3.3 envelope.
 
@@ -121,6 +122,7 @@ def read_document(
             return []  # not in this vault → caller surfaces "not in scope" (no cross-vault read)
         fresh = load_grids_for_docs(
             db_client, [gid], question=question, filename_by_doc=filename_by_doc,
+            owner_id=owner_id,  # F2m: shared matter ⇒ read the owner's chunks
         )
         if fresh and scope_grids is not None:
             seen = {(getattr(g, "doc", None), getattr(g, "page", None),
@@ -227,8 +229,14 @@ def read_document(
             # F1 RLS hardening (defense-in-depth): READ through `read_client` when present — on
             # the request path it carries the user's JWT so Postgres RLS ALSO enforces
             # auth.uid()=user_id (a data-layer backstop). Falls back to `.client` offline.
-            _uid = getattr(db_client, "user_id", None)
-            _reader = getattr(db_client, "read_client", None) or db_client.client
+            # F2m (shared-matter read): when owner_id is another firm member, the chunks are
+            # stamped with the OWNER's user_id and must be read via the SERVICE-ROLE client
+            # (read_client's JWT is the caller's → RLS would block the owner's rows). Access was
+            # authorized upstream (db.accessible_vault_owner). Own vault ⇒ byte-identical F1 path.
+            _caller_uid = getattr(db_client, "user_id", None)
+            _shared = bool(owner_id) and owner_id != _caller_uid
+            _uid = owner_id if _shared else _caller_uid
+            _reader = db_client.client if _shared else (getattr(db_client, "read_client", None) or db_client.client)
             q = (
                 _reader.table("document_chunks")
                 .select("content,metadata")

@@ -145,12 +145,30 @@ def _is_factual(sentence: str) -> bool:
     return bool(re.search(r"\d", stripped)) or bool(_CONTENT_WORD.search(stripped))
 
 
-def verify_citations(draft: str, ledger: EvidenceLedger, llm=None) -> Dict[str, Any]:
+def verify_citations(draft: str, ledger: EvidenceLedger, llm=None,
+                     allow_qualitative: bool = False) -> Dict[str, Any]:
     """Fail if a factual sentence carries no citation marker.
 
     Deterministic core (always): each factual sentence must contain a `[... p.N]`-style
     marker. Optional entailment sample (only when `llm` given): the cited sentences are
     checked against ledger spans with `verify_claims` — off in the offline gate.
+
+    QUALITATIVE EXEMPTION (`allow_qualitative`, the BUG-2 fix, 2026-06-26): on the SIMPLE
+    whole-draft answer path (run_output_gates — a direct agent answer, NOT a deep report
+    or a drafted document), a factual sentence that states NO substantive figure — e.g.
+    "This vault contains agreements involving Reliance, Tata, and Infosys." in answer to
+    "What companies are in this vault?" — is a non-numeric, list/qualitative claim grounded
+    in the document SET the agent retrieved, not in a specific cell on a specific page.
+    Forcing a `[doc p.N]` marker onto it made a correct, evidence-backed answer redact to
+    "I could not verify…" (observed live on a shared-matter read: 38 spans across 7 docs,
+    every sentence redacted). With `allow_qualitative=True`, a sentence with NO substantive
+    figure is exempt from the inline-marker rule WHEN the ledger holds supporting evidence.
+    The NUMERIC moat is untouched: a stated figure ALWAYS needs a marker (+ verify_numbers
+    traces it to a cell). An EMPTY ledger still fails (ungrounded → fail closed).
+
+    DEFAULT OFF: the deep-report / drafting paths (gate_sectioned) keep the strict rule —
+    a report section MUST cite its claims; that is the moat for the riskiest surface. The
+    exemption is enabled ONLY for the simple direct-answer gate.
     """
     sentences = [s for s in _SENT_SPLIT.split(draft or "") if s.strip()]
     # An `[INPUT NEEDED: …]` placeholder is a GAP marker, not a citation — it must not let an
@@ -158,7 +176,22 @@ def verify_citations(draft: str, ledger: EvidenceLedger, llm=None) -> Dict[str, 
     # placeholders before asking "does this sentence carry a real citation marker?".
     def _has_citation(s: str) -> bool:
         return bool(_CITE_RE.search(re.sub(r"\[INPUT NEEDED:[^\]]*\]", "", s, flags=re.IGNORECASE)))
-    uncited = [s.strip() for s in sentences if _is_factual(s) and not _has_citation(s)]
+
+    # The qualitative exemption only applies on the simple-answer path AND only when the
+    # agent actually gathered evidence (a non-empty ledger).
+    qualitative_ok = allow_qualitative and not ledger.is_empty()
+
+    def _needs_marker(s: str) -> bool:
+        """Does this factual sentence require an inline citation marker?
+        Numeric sentences always do (the moat). Non-numeric sentences are exempt only on the
+        simple-answer path when the ledger holds evidence — grounded in the retrieved set."""
+        traceable = _strip_citations(re.sub(r"\[INPUT NEEDED:[^\]]*\]", "", s, flags=re.IGNORECASE))
+        if _has_substantive_figure(traceable):
+            return True                       # a stated figure must always be cited + traced
+        return not qualitative_ok             # qualitative: exempt iff allowed AND evidence exists
+
+    uncited = [s.strip() for s in sentences
+               if _is_factual(s) and _needs_marker(s) and not _has_citation(s)]
     if uncited:
         return {"name": "verify_citations", "pass": False,
                 "detail": f"uncited factual sentence(s): {uncited[:2]}",
@@ -343,7 +376,11 @@ def run_output_gates(draft: str, ledger: EvidenceLedger, *, llm=None) -> GateOut
     deterministic (modulo the optional llm sample) and never raises.
     """
     failures: List[Dict[str, Any]] = []
-    for result in (verify_numbers(draft, ledger), verify_citations(draft, ledger, llm=llm)):
+    # Simple direct-answer path: allow a non-numeric, evidence-grounded qualitative answer
+    # (e.g. "what companies are in this vault?") through without a per-cell marker (BUG-2).
+    # The numeric moat (verify_numbers + the figure-marker rule) is unaffected.
+    for result in (verify_numbers(draft, ledger),
+                   verify_citations(draft, ledger, llm=llm, allow_qualitative=True)):
         if not result.get("pass", False):
             failures.append({"name": result["name"], "detail": result["detail"],
                              **({"uncited": result["uncited"]} if "uncited" in result else {})})

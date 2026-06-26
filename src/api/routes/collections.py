@@ -105,10 +105,10 @@ async def create_collection(
 async def list_collections(sb=Depends(get_current_user)):
     """List all collections for the current user."""
     colls = sb.get_collections()
-    items = []
-    for c in colls:
-        doc_count = len(sb.get_collection_document_ids(c["id"]))
-        items.append(_collection_response(c, doc_count))
+    # Doc-counts in ONE query (was a per-vault N+1: one get_collection_document_ids — itself an
+    # accessible_vault_owner resolve — per collection; a 20-vault list = 20+ round-trips).
+    counts = sb.batch_collection_doc_counts(colls)
+    items = [_collection_response(c, counts.get(str(c["id"]), 0)) for c in colls]
     return CollectionListResponse(collections=items, total=len(items))
 
 

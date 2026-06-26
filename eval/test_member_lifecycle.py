@@ -222,6 +222,13 @@ class FakeSB:
                 if s["user_id"] == uid and s["removed_at"] is None
                 and (firm_id is None or s["firm_id"] == firm_id)}
 
+    def is_vault_screened(self, vault_id, user_id=None, firm_id=None):
+        return vault_id in self.screened_vault_ids(user_id, firm_id)
+
+    def collection_in_firm(self, vault_id, firm_id):
+        c = self._collections.get(vault_id)
+        return bool(c and c.get("firm_id") == firm_id)
+
     def create_screen(self, firm_id, user_id, vault_id, reason, created_by=None):
         self._seq += 1
         row = {"id": f"screen-{self._seq}", "firm_id": firm_id, "user_id": user_id,
@@ -397,6 +404,8 @@ check("E: authorize() ALLOWS the delegated verb on an open vault (delegation gra
 # …but a SCREEN on the vault DENIES it — the screen beats the delegation grant (precedence holds).
 sb_para._screens.append({"id": "s1", "firm_id": FIRM_A, "user_id": PARA, "vault_id": WALLED_VAULT,
                          "reason": "conflict", "created_by": MP1, "created_at": "t0", "removed_at": None})
+# A new request = a fresh sb in production → empty per-request membership memo; simulate that.
+sb_para._membership_memo = {}
 m_para2 = resolve_membership(sb_para)
 check("E: a SCREEN on the vault DENIES the delegated verb (T6 — screen beats the delegation grant)",
       not authorize(m_para2, "override_abstain", Scope(vault_id=WALLED_VAULT, firm_id=FIRM_A)).allow)

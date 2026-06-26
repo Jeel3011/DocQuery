@@ -64,13 +64,17 @@ export default function VaultAskLandingPage() {
     return () => { cancelled = true; };
   }, [token, vaultId]);
 
+  // Composer mode, carried into the conversation via &mode= (the conversation honors it).
+  // Agent is the default smart path; "brain" is dev-only, "fast" is the direct answer.
+  const [composerMode, setComposerMode] = useState<"agent" | "brain" | "fast">("agent");
+
   async function ask(q: string) {
     if (!token || creating || !q.trim()) return;
     setCreating(true);
     try {
       const c = await createConversation(token, q.slice(0, 50));
-      // Route into the conversation scoped to THIS vault; ?q= auto-submits on mount.
-      router.push(`/app/vault/${vaultId}/ask/${c.id}?q=${encodeURIComponent(q)}`);
+      // Route into the conversation scoped to THIS vault; ?q= auto-submits, &mode= sets the mode.
+      router.push(`/app/vault/${vaultId}/ask/${c.id}?q=${encodeURIComponent(q)}&mode=${composerMode}`);
     } catch {
       toast.error("Failed to start conversation");
       setCreating(false);
@@ -140,6 +144,14 @@ export default function VaultAskLandingPage() {
           isStreaming={creating}
           placeholder="Ask about a clause, term, or risk across this vault…"
           vaultName={vaultName}
+          agentCoreMode={composerMode === "agent"}
+          brainMode={composerMode === "brain"}
+          onToggleAgentCore={() => setComposerMode((m) => (m === "agent" ? "fast" : "agent"))}
+          onToggleBrain={
+            process.env.NEXT_PUBLIC_SHOW_DEV_MODES === "true"
+              ? () => setComposerMode((m) => (m === "brain" ? "fast" : "brain"))
+              : undefined
+          }
         />
       </div>
     </div>

@@ -126,6 +126,15 @@ async def agentcore_query_stream(
     # this is the data-path floor — even a prompt-injected/foreign vault id is refused here.
     assert_vault_not_screened(sb, collection_id)
 
+    # F2m (shared-matter read, D3): resolve WHOSE namespace + documents back this vault. For the
+    # caller's own vault this is the caller (byte-identical); for a matter they're STAFFED on it's
+    # the vault owner — so a staffed paralegal queries the OWNER's namespace/docs ("full access on
+    # this matter"). None ⇒ no access (non-member or screened) ⇒ the empty-scope path below refuses.
+    # The authority already enforced membership + same-firm + the ethical wall.
+    vault_owner = sb.accessible_vault_owner(collection_id)
+    if not vault_owner:
+        raise HTTPException(status_code=404, detail="That matter is not available to you.")
+
     # Mode dispatch (§3.1): the user may force fast|standard|deep|draft; default standard.
     # (Fast does not loop — the agent core is the smart path; fast stays on /query/stream.)
     mode = (getattr(body, "mode", None) or "standard").lower()
@@ -202,9 +211,11 @@ async def agentcore_query_stream(
     # doc_id ↔ filename map for the scope (the retriever filters by filename; tools speak
     # doc ids). Build it from the collection's docs (same query the resolver used).
     doc_ids = sb.get_collection_document_ids(collection_id) or []
-    docs = sb.read_client.table("documents").select("id,filename").in_(
+    # F2m: the docs live under the resolved vault OWNER, not necessarily the caller. Service-role
+    # read scoped to that owner (access already authorized by accessible_vault_owner above).
+    docs = sb.client.table("documents").select("id,filename").in_(
         "id", doc_ids
-    ).eq("user_id", sb.user_id).execute()
+    ).eq("user_id", vault_owner).execute()
     filename_by_doc = {d["id"]: d["filename"] for d in (docs.data or [])}
     # Keep only docs that survived routing (filename_filters is the routed subset).
     routed = set(filename_filters)
@@ -223,6 +234,7 @@ async def agentcore_query_stream(
             return load_grids_for_docs(
                 sb, scoped_doc_ids,
                 question=body.question, filename_by_doc=filename_by_doc,
+                owner_id=vault_owner,  # F2m: shared matter ⇒ read the owner's chunks
                 # 8 was far too few — a 10-K has ~100 table grids, and the primary
                 # financial statements (where R&D/revenue/net-income live) lost the
                 # lexical ranking to MD&A prose pages, so the kernel never saw them and
@@ -287,6 +299,11 @@ async def agentcore_query_stream(
         caselaw_on = "caselaw" in sel
 
     # Vault gate: drop the manager AND strip the vault-dependent tools so they aren't offered.
+    # F2m: when the matter is owned by another firm member, point retrieval at the OWNER's
+    # namespace (where the matter's vectors live) — the access is already authorized above.
+    if vault_owner != sb.user_id:
+        from src.api.dependencies import retrieval_mgr_for_namespace
+        retrieval_mgr = retrieval_mgr_for_namespace(user_config, vault_owner)
     effective_retrieval_mgr = retrieval_mgr if vault_on else None
     run_tools = None  # None ⇒ the mode's default toolset
     if not vault_on:
@@ -316,6 +333,7 @@ async def agentcore_query_stream(
         doc_ids=scoped_doc_ids,
         filenames=list(filename_filters),
         grids=grids,
+        vault_owner=vault_owner,  # F2m: the read tools scope chunks to this owner (shared matter)
         retrieval_manager=effective_retrieval_mgr,
         # G8: present only when USE_KNOWLEDGE is on AND a legal source chip is enabled
         # (else None ⇒ search_knowledge never offered). Shared + read-only — not the vault.

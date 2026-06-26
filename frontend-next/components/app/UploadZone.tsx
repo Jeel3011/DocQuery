@@ -54,7 +54,9 @@ export function UploadZone({ token, collectionId, onUploaded, label = "Add docum
 
       async function uploadOne(file: File) {
         try {
-          const doc = await uploadDocument(token, file);
+          // Pass the vault so the backend stamps the matter owner (F2m/D0) + auto-links. The
+          // addDocToCollection below stays as a harmless idempotent fallback for own vaults.
+          const doc = await uploadDocument(token, file, collectionId);
           if (collectionId) {
             try { await addDocToCollection(token, collectionId, doc.id); } catch { /* non-fatal */ }
           }

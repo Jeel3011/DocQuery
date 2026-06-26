@@ -48,6 +48,13 @@ class _FakeSB:
     def get_collection_document_ids(self, cid):
         return ["d1", "d2"] if cid == "vault-A" else []
 
+    def is_vault_screened(self, cid, user_id=None, firm_id=None):
+        return False   # no walls in the isolation-hole scope checks
+
+    def accessible_vault_owner(self, cid):
+        # F2m: own-vault → the caller. (These H1 scope checks use the caller's own vault.)
+        return self.user_id
+
     class _Client:
         def table(self, *_a, **_k):
             class _Q:

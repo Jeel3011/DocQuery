@@ -119,6 +119,41 @@ def main() -> int:
     r = verify_citations("The consideration is [INPUT NEEDED: amount] but the deposit was 50,000.", led)
     c.ok(not r["pass"], "a stated figure beside a placeholder is STILL flagged (moat intact)")
 
+    # BUG-2 (2026-06-26): a QUALITATIVE, non-numeric factual answer grounded in the
+    # retrieved document set must NOT be redacted for lacking a per-cell `[p.N]` marker.
+    # The live repro: "What companies are in this vault?" gathered 38 spans across 7 docs,
+    # then every sentence was redacted to "I could not verify…". The fix: a sentence with
+    # NO substantive figure is exempt from the inline-marker rule WHEN the ledger holds
+    # supporting evidence. The numeric moat stays intact.
+    print("\n── verify_citations (qualitative answer exemption — BUG-2) ───────")
+    # The exemption is opt-in (allow_qualitative) — ONLY the simple direct-answer path enables it.
+    r = verify_citations(
+        "The agreement names Reliance, Tata, and Infosys as the contracting parties.", led,
+        allow_qualitative=True)
+    c.ok(r["pass"], "a non-numeric list-the-companies sentence passes when evidence was gathered")
+    r = verify_citations(
+        "This section of the agreement covers the obligation of each party to the deal.", led,
+        allow_qualitative=True)
+    c.ok(r["pass"], "a qualitative 'what's in the vault' sentence passes with evidence")
+    # WITHOUT the flag (the deep/draft report path) the SAME sentence still REQUIRES a marker —
+    # a report section must cite its claims (the moat for the riskiest surface stays strict).
+    r = verify_citations(
+        "The agreement names Reliance, Tata, and Infosys as the contracting parties.", led)
+    c.ok(not r["pass"], "the strict path (deep/draft) STILL flags an uncited qualitative claim")
+    # …and the SAME qualitative sentence with NO evidence gathered still fails (ungrounded).
+    r = verify_citations(
+        "The agreement binds Reliance and Tata as the contracting party.",
+        EvidenceLedger(), allow_qualitative=True)
+    c.ok(not r["pass"], "a qualitative claim with an EMPTY ledger still fails (fail closed)")
+    # …and a NUMERIC claim is NEVER exempted, evidence or not (the moat).
+    r = verify_citations("Reliance reported total revenue of 875,000 last year.", led,
+                         allow_qualitative=True)
+    c.ok(not r["pass"], "a numeric sentence still REQUIRES a marker even with evidence (moat intact)")
+    # End-to-end on the SIMPLE answer path: run_output_gates ships the qualitative answer whole.
+    out = run_output_gates(
+        "The agreement names Reliance, Tata, and Infosys as the contracting parties.", led)
+    c.ok(out.passed, "run_output_gates ships an evidence-backed qualitative answer (BUG-2 live path)")
+
     print("\n── run_output_gates (combined + redaction) ──────────────────────")
     out = run_output_gates("Net sales were 513,983 [amzn-2022 p.41].", led)
     c.ok(out.passed, "clean draft → passed")

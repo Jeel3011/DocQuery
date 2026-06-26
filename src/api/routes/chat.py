@@ -95,15 +95,22 @@ def _resolve_collection_filters(
         # A lookup hiccup must not 500 the query path; Layer 1 (require_cap) + row RLS backstop it.
         pass
 
-    # Resolve full filename list (needed for fallback + size check). The vault's docs are
-    # resolved through get_collection_document_ids, which joins via collections.user_id —
-    # so a collection_id from another user resolves to [] (no cross-user read).
+    # Resolve full filename list (needed for fallback + size check). get_collection_document_ids
+    # routes through accessible_vault_owner (F2m), so it returns the docs of a matter the caller
+    # OWNS or is STAFFED on (else [] — no cross-user read). The filename lookup must therefore
+    # filter by that same OWNER, not the caller: a staffed paralegal reads the owner's docs.
+    owner = sb.accessible_vault_owner(collection_id)
+    if not owner:
+        return []
     doc_ids = sb.get_collection_document_ids(collection_id)
     if not doc_ids:
         return []
-    docs_in_coll = sb.read_client.table("documents").select("filename").in_(
+    # Read via the service-role client scoped to the resolved owner (read_client carries the
+    # CALLER's JWT → RLS would block the owner's rows on a shared matter). Access already
+    # authorized by accessible_vault_owner. For the caller's own vault owner == caller (unchanged).
+    docs_in_coll = sb.client.table("documents").select("filename").in_(
         "id", doc_ids
-    ).eq("user_id", sb.user_id).execute()
+    ).eq("user_id", owner).execute()
     all_filenames = [d["filename"] for d in (docs_in_coll.data or [])]
 
     if not all_filenames:
@@ -126,7 +133,11 @@ def _resolve_collection_filters(
             routed = router.route(
                 query=query,
                 collection_id=collection_id,
-                user_id=sb.user_id,
+                # F2m: on a SHARED matter the routing/RLS scope is the vault OWNER, not the
+                # caller — a staffed paralegal's own namespace has none of the owner's docs, so
+                # `user_id=sb.user_id` here routed over an empty set (a >8-doc shared vault
+                # returned nothing). `owner` was resolved above via accessible_vault_owner.
+                user_id=owner,
                 query_embedding=query_embedding,
                 metadata_filter=metadata_filter,
             )
@@ -142,6 +153,26 @@ def _resolve_collection_filters(
 
     # Fallback: return full list (ROUTING_MAX_FANOUT cap applied inside retrieve_across_files)
     return all_filenames
+
+
+def _owner_scoped_retrieval_mgr(sb, collection_id, user_config, retrieval_mgr):
+    """Swap the retrieval manager to the VAULT OWNER's Pinecone namespace on a shared matter (F2m).
+
+    The per-user namespace is `sb.user_id` (dependencies.get_user_config). On a matter a staffed
+    member is shared into, the matter's vectors live in the OWNER's namespace — so the caller's
+    namespace has nothing and the query comes back empty (the exact gap agent_core.py fixed for the
+    live Ask path; this brings /query, /query/stream and /query/agent to parity). Access is already
+    authorized by accessible_vault_owner (the same call _resolve_collection_filters trusts). For the
+    caller's OWN vault (owner == caller) the manager is returned unchanged — byte-identical legacy.
+    Returns the (possibly swapped) retrieval_mgr; falls back to the original on any resolve fault."""
+    try:
+        owner = sb.accessible_vault_owner(collection_id) if collection_id else None
+    except Exception:  # noqa: BLE001 — never 500 the query path on a resolve hiccup
+        owner = None
+    if owner and owner != sb.user_id:
+        from src.api.dependencies import retrieval_mgr_for_namespace
+        return retrieval_mgr_for_namespace(user_config, owner)
+    return retrieval_mgr
 
 
 def _saving_stream_wrapper(
@@ -317,6 +348,8 @@ async def query(
     # complex  → full pipeline (handled by /query/agent endpoint)
     # Phase 1: Collection-scoped retrieval
     filename_filters = _resolve_collection_filters(sb, getattr(body, "collection_id", None), query=getattr(body, "question", None), query_embedding=query_embedding, user_config=user_config)
+    # F2m: on a shared matter, query the VAULT OWNER's namespace (the matter's vectors live there).
+    retrieval_mgr = _owner_scoped_retrieval_mgr(sb, getattr(body, "collection_id", None), user_config, retrieval_mgr)
 
     complexity = generator.classify_query_complexity(body.question)
     logger.info("Query complexity: %s for: %.60s", complexity, body.question)
@@ -490,6 +523,8 @@ async def query_stream(
 
     # Phase 1: Collection-scoped retrieval
     filename_filters = _resolve_collection_filters(sb, getattr(body, "collection_id", None), query=getattr(body, "question", None), query_embedding=query_embedding, user_config=user_config)
+    # F2m: on a shared matter, query the VAULT OWNER's namespace (the matter's vectors live there).
+    retrieval_mgr = _owner_scoped_retrieval_mgr(sb, getattr(body, "collection_id", None), user_config, retrieval_mgr)
 
     t_retrieve = time.perf_counter()
     if complexity == "simple" and query_embedding:
@@ -664,6 +699,8 @@ async def query_agent(
 
     # Phase 1: Collection-scoped retrieval
     filename_filters = _resolve_collection_filters(sb, getattr(body, "collection_id", None), query=getattr(body, "question", None), query_embedding=query_embedding, user_config=user_config)
+    # F2m: on a shared matter, query the VAULT OWNER's namespace (the matter's vectors live there).
+    retrieval_mgr = _owner_scoped_retrieval_mgr(sb, getattr(body, "collection_id", None), user_config, retrieval_mgr)
 
     # ── Step 1+2+3: Agentic retrieval (parallel sub-queries, or multi-hop loop) ──
     agentic = _make_agentic_retriever(user_config, retrieval_mgr, getattr(body, "multi_hop", None))
@@ -756,6 +793,8 @@ async def agent_query_stream(
     query_embedding: list = []
     # Phase 1: Collection-scoped retrieval
     filename_filters = _resolve_collection_filters(sb, getattr(body, "collection_id", None), query=getattr(body, "question", None), query_embedding=query_embedding, user_config=user_config)
+    # F2m: on a shared matter, query the VAULT OWNER's namespace (the matter's vectors live there).
+    retrieval_mgr = _owner_scoped_retrieval_mgr(sb, getattr(body, "collection_id", None), user_config, retrieval_mgr)
 
     # Agentic retrieval: decompose → parallel retrieve → dedup, or sequential multi-hop
     agentic = _make_agentic_retriever(user_config, retrieval_mgr, getattr(body, "multi_hop", None))
@@ -990,6 +1029,8 @@ async def send_message(
 
     # Phase 1: Collection-scoped retrieval
     filename_filters = _resolve_collection_filters(sb, getattr(body, "collection_id", None), query=getattr(body, "question", None), query_embedding=query_embedding, user_config=user_config)
+    # F2m: on a shared matter, query the VAULT OWNER's namespace (the matter's vectors live there).
+    retrieval_mgr = _owner_scoped_retrieval_mgr(sb, getattr(body, "collection_id", None), user_config, retrieval_mgr)
 
     if variants_task is not None:
         variants = [search_query] + await variants_task
@@ -1111,6 +1152,8 @@ async def brain_query_stream(
         query_embedding=query_embedding,
         user_config=user_config,
     )
+    # F2m: on a shared matter, the Brain path must also read the OWNER's namespace.
+    retrieval_mgr = _owner_scoped_retrieval_mgr(sb, collection_id, user_config, retrieval_mgr)
     if not filename_filters:
         def _empty():
             import json as _j

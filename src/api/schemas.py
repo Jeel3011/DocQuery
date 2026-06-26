@@ -14,6 +14,12 @@ from datetime import datetime
 class SignUpRequest(BaseModel):
     email: EmailStr
     password: str = Field(..., min_length=6)
+    # F2g onboarding (D1): a NEW firm's creator may NAME their firm (else a default is used). If an
+    # `invite_token` is present instead, the user JOINS an existing firm at the invited role — no new
+    # firm is created (the joiner never self-assigns a role; the token is email-bound, T4). Both are
+    # optional so legacy signups are byte-identical (firm_name=None → default name; no token → create).
+    firm_name: Optional[str] = Field(default=None, max_length=120)
+    invite_token: Optional[str] = Field(default=None, min_length=1)
 
 
 class SignInRequest(BaseModel):
@@ -112,6 +118,12 @@ class FirmResponse(BaseModel):
     id: str
     name: str
     role: Optional[str] = None
+
+
+class RenameFirmRequest(BaseModel):
+    """Rename the caller's firm (F2g onboarding — name the backfilled solo firm). The firm is
+    resolved SERVER-SIDE (T3 — never the body); cap-gated manage_members."""
+    name: str = Field(..., min_length=1, max_length=120)
 
 
 # ── F2c — ethical walls (conflict screens) ───────────────────────────────────────────────────
@@ -257,6 +269,7 @@ class MatterTeamMember(BaseModel):
     """One staffed member of a matter (user_id + their firm role + who staffed them)."""
     user_id: str
     role: Optional[str] = None
+    email: Optional[str] = None       # best-effort human handle (resolved server-side)
     added_by: Optional[str] = None
     created_at: Optional[str] = None
 
@@ -303,6 +316,34 @@ class ReviewRequestResponse(BaseModel):
 class ReviewQueueResponse(BaseModel):
     """My review queue — the open requests I currently OWN (the anti-stall UX, D5)."""
     requests: List[ReviewRequestResponse] = Field(default_factory=list)
+
+
+# ── F2g / surface 6 — set a matter's CUSTOM review chain ───────────────────────────────────────
+class SetReviewChainRequest(BaseModel):
+    """Set (or clear) a matter's custom review chain (D5 — "Customize review chain" for big
+    matters). `chain` is an ordered list of reviewer user_ids the work routes through; `null` (or
+    omitted) reverts to the rank default. The VAULT is the path param; the firm is resolved
+    server-side (T3). The route validates every reviewer belongs to the caller's firm before the
+    write (T2) — the body cannot route work to an outsider."""
+    chain: Optional[List[str]] = None
+
+
+# ── F2g / surface 10 — caps source of truth (the server-resolved effective cap set) ─────────────
+class CapabilitiesResponse(BaseModel):
+    """The caller's server-resolved effective capability set (F2g surface 10). Returned from the
+    SAME path require_cap trusts (resolve_membership + authz.caps_for_role), so the UI's render
+    decisions can NEVER drift from authz.py ROLE_CAPS. This payload only decides what RENDERS;
+    every action still re-checks server-side (the route guard is the security, not this list).
+      - caps: the effective verbs the caller may exercise (role caps ∪ delegated verbs).
+      - role: the caller's resolved firm role (`managing_partner` for a legacy solo user).
+      - firm_id: the active firm (None for a firm-less/legacy user).
+      - is_external: a client/guest — blocked from the whole console (T8).
+      - delegated_verbs: the subset of caps granted by an active delegation (time-boxed, D6)."""
+    caps: List[str] = Field(default_factory=list)
+    role: Optional[str] = None
+    firm_id: Optional[str] = None
+    is_external: bool = False
+    delegated_verbs: List[str] = Field(default_factory=list)
 
 
 # ─────────────────────────────────────────
@@ -633,3 +674,27 @@ class WorkflowRunRequest(BaseModel):
     filters: Optional[dict] = None
     # Optional conversation id so a report-shape run persists like an Ask answer.
     conversation_id: Optional[str] = None
+
+
+# ─────────────────────────────────────────
+# APP BOOTSTRAP (latency) — one round-trip for everything the app shell needs on mount.
+# ─────────────────────────────────────────
+
+class BootstrapResponse(BaseModel):
+    """Everything the authenticated app shell needs on mount, in ONE request.
+
+    Replaces the 4 independent calls the layout fired (getMe + getCapabilities + getFirm +
+    listCollections + listConversations), each of which re-verified the JWT and re-resolved the
+    per-request membership (4 sequential Supabase hops apiece). Bundling them shares ONE
+    get_current_user + ONE memoized resolve_membership, cutting the mount waterfall.
+
+    Purely a read aggregation — no new authority. Every field is built from the SAME server-side
+    helpers the individual endpoints use, so the payload can't drift from them. `firm` is None for
+    a firm-less/legacy user (the UI treats that as 'solo, unprovisioned'), exactly as GET /auth/firm
+    returning 404 did — but without an error round-trip.
+    """
+    user: UserResponse
+    capabilities: CapabilitiesResponse
+    firm: Optional[FirmResponse] = None
+    collections: List[CollectionResponse] = Field(default_factory=list)
+    conversations: List[ConversationResponse] = Field(default_factory=list)

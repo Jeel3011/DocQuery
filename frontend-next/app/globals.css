@@ -75,6 +75,10 @@
   --fidelity-good:    #2E7D32;   /* green — high-fidelity / traced / found */
   --fidelity-partial: #B7791F;   /* amber — partial coverage / needs review */
   --fidelity-failed:  var(--status-failed);  /* red — withheld / abstain / risk */
+  /* Overridden — the reserved trust token (F2d/F2g). A partner consciously released an agent
+     abstain on their accountability; it is a DISTINCT trust state, not "good" and not "risk".
+     Reads as deliberate-human-authority (deep indigo), never green (it was NOT auto-verified). */
+  --fidelity-overridden: #4338CA;
 
   /* Thinking-stream step states */
   --step-pending: var(--line-2);

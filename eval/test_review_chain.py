@@ -154,12 +154,23 @@ class FakeSB:
         c = self._collections.get(vault_id)
         return bool(c and c["firm_id"] == firm_id)
 
+    def get_collection(self, vault_id):
+        # F2m: a staffed member's get_collection resolves the OWNER's row (user_id = owner). The
+        # review-chain escalation uses this to route a lone-junior submission UP to the vault owner.
+        return dict(self._collections.get(vault_id) or {})
+
+    def list_members(self, firm_id):
+        return [dict(m) for m in self._members if m["firm_id"] == firm_id]
+
     # —— screens (for the ethical-wall floor on the matter paths) ——
     def screened_vault_ids(self, user_id=None, firm_id=None):
         uid = user_id or self.user_id
         return {s["vault_id"] for s in self._screens
                 if s["user_id"] == uid and s["removed_at"] is None
                 and (firm_id is None or s["firm_id"] == firm_id)}
+
+    def is_vault_screened(self, vault_id, user_id=None, firm_id=None):
+        return vault_id in self.screened_vault_ids(user_id, firm_id)
 
     # —— F2e: matter staffing ——
     def add_matter_member(self, firm_id, vault_id, user_id, added_by):
@@ -187,6 +198,11 @@ class FakeSB:
                 out.append({"user_id": r["user_id"], "role": role,
                             "added_by": r["added_by"], "created_at": r["created_at"]})
         return out
+
+    def resolve_member_emails(self, user_ids):
+        # F2g: the team response resolves a human email per member (best-effort, service-role admin
+        # auth in prod). Offline we have no auth API, so return {} — the UI falls back to a short id.
+        return {}
 
     def is_matter_member(self, vault_id, user_id=None, firm_id=None):
         uid = user_id or self.user_id
@@ -422,6 +438,25 @@ re_solo = run(route_submit(ReviewSubmitRequest(collection_id=OTHER_MATTER, artif
                            sb=sbe2, membership=_membership(sbe2)))
 check("E: a solo-senior matter still names an owner (the submitter) — never ownerless/None",
       re_solo.current_owner == PARTNER)
+
+# ── E2. LONE-JUNIOR ESCALATION (the live "indian big" bug, D5 locked decision) ──
+# A paralegal is the ONLY member staffed on a matter the PARTNER owns. The paralegal submits for
+# review. The matter team has no senior → the OLD code parked the request on the SUBMITTER (the
+# paralegal), so it sat with the person who wrote it and the partner's queue was empty. The fix
+# routes UP to the VAULT OWNER (the partner), never the submitter.
+sbe3 = FakeSB(user_id=PARA)
+sbe3.add_matter_member(FIRM_A, MATTER, PARA, PARTNER)   # paralegal alone on the partner-owned matter
+_patch_audit(sbe3)
+re_lone = run(route_submit(ReviewSubmitRequest(collection_id=MATTER, artifact_ref="lone"),
+                           sb=sbe3, membership=_membership(sbe3)))
+check("E2: a lone junior's submission routes UP to the VAULT OWNER (the partner), NOT the submitter",
+      re_lone.current_owner == PARTNER and re_lone.current_owner != PARA)
+# And it lands in the OWNER's review queue (the partner sees it), not the submitter's (anti-stall fix).
+sbe3_mp = FakeSB(user_id=PARTNER); sbe3_mp._reviews = sbe3._reviews
+queue_mp = sbe3_mp.list_my_review_queue(FIRM_A, owner_id=PARTNER)
+queue_para = sbe3._members and sbe3.list_my_review_queue(FIRM_A, owner_id=PARA)
+check("E2: the lone-junior request is in the VAULT OWNER's review queue (not the submitter's)",
+      any(r["id"] == re_lone.id for r in queue_mp) and not any(r["id"] == re_lone.id for r in queue_para))
 
 
 # ─────────────────────────────────────────

@@ -115,11 +115,16 @@ export async function listDocuments(
 
 export async function uploadDocument(
   token: string,
-  file: File
+  file: File,
+  collectionId?: string | null
 ): Promise<DocumentResponse> {
   try {
     const form = new FormData();
     form.append("file", file);
+    // F2m (D0): when uploading INTO a vault, pass the collection so the backend can stamp the
+    // matter OWNER (a staffed paralegal's upload lands in the shared matter, not orphaned) and
+    // auto-link it. The separate addDocToCollection below is then a no-op-safe redundancy.
+    if (collectionId) form.append("collection_id", collectionId);
     const res = await makeClient(token).post<DocumentResponse>(
       "/documents/upload",
       form,
@@ -896,6 +901,466 @@ export async function listDocTypes(token: string): Promise<DocTypeCard[]> {
     // Flag off ⇒ 404 (the catalog doesn't exist). Treat as "no catalog", not an error —
     // the draft page falls back to its generic doc-type list.
     if ((err as AxiosError)?.response?.status === 404) return [];
+    handleAxiosError(err);
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// F2 — Firm Console (RBAC · ethical walls · delegation · review chain · override)
+// Each wrapper mirrors a cap-gated route in routes/{auth,admin,matters}.py EXACTLY.
+// The server is ALWAYS the boundary: these wrappers never decide authorization — they
+// surface the server's decision (a 403 carries the reason in APIError.detail). The caps
+// payload (getCapabilities) decides what RENDERS; the route guard decides what's ALLOWED.
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// ── Capabilities (surface 10 — caps source of truth) ──────────────────────────
+// Mirrors CapabilitiesResponse. The verbs match authz.py CAPABILITIES exactly.
+export type Capability =
+  | "create_vault" | "ingest" | "ask" | "draft" | "run_workflow" | "grids"
+  | "send_for_review" | "release_external" | "manage_matter_team" | "manage_members"
+  | "view_billing" | "delete" | "sign_certificate" | "edit_playbooks"
+  | "publish_to_firm_brain" | "run_sentinel" | "override_abstain";
+
+export type FirmRole =
+  | "managing_partner" | "senior_partner" | "partner" | "senior_associate"
+  | "associate" | "paralegal" | "assistant" | "client" | "guest";
+
+export interface CapabilitiesResponse {
+  caps: Capability[];
+  role: FirmRole | null;
+  firm_id: string | null;
+  is_external: boolean;
+  delegated_verbs: Capability[];
+}
+
+export async function getCapabilities(token: string): Promise<CapabilitiesResponse> {
+  try {
+    const res = await makeClient(token).get<CapabilitiesResponse>("/auth/capabilities");
+    return res.data;
+  } catch (err) {
+    handleAxiosError(err);
+  }
+}
+
+// ── App bootstrap (latency) — one round-trip for everything the shell needs on mount ──────────
+export interface BootstrapResponse {
+  user: MeResponse;
+  capabilities: CapabilitiesResponse;
+  firm: Firm | null;
+  collections: CollectionResponse[];
+  conversations: ConversationResponse[];
+}
+
+export async function getBootstrap(token: string): Promise<BootstrapResponse> {
+  try {
+    const res = await makeClient(token).get<BootstrapResponse>("/auth/bootstrap");
+    return res.data;
+  } catch (err) {
+    handleAxiosError(err);
+  }
+}
+
+// ── Firm + onboarding (F2a) ───────────────────────────────────────────────────
+export interface Firm {
+  id: string;
+  name: string;
+  role: FirmRole | null;
+}
+
+export async function getFirm(token: string): Promise<Firm | null> {
+  try {
+    const res = await makeClient(token).get<Firm>("/auth/firm");
+    return res.data;
+  } catch (err) {
+    // 404 = firm-less / legacy solo user — not an error, just "no firm yet".
+    if ((err as AxiosError)?.response?.status === 404) return null;
+    handleAxiosError(err);
+  }
+}
+
+export async function renameFirm(token: string, _firmId: string, name: string): Promise<Firm> {
+  // The firm is resolved server-side (T3) — _firmId is accepted for caller clarity but not sent.
+  try {
+    const res = await makeClient(token).patch<Firm>("/auth/firm", { name });
+    return res.data;
+  } catch (err) {
+    handleAxiosError(err);
+  }
+}
+
+export interface MemberResponse {
+  user_id: string;
+  firm_id: string;
+  role: FirmRole;
+  email: string | null;
+  created_at: string | null;
+}
+
+export async function listMembers(token: string): Promise<MemberResponse[]> {
+  try {
+    const res = await makeClient(token).get<{ members: MemberResponse[] }>("/admin/firm/members");
+    return res.data.members ?? [];
+  } catch (err) {
+    handleAxiosError(err);
+  }
+}
+
+export interface InviteResponse {
+  id: string;
+  firm_id: string;
+  email: string;
+  role: FirmRole;
+  expires_at: string | null;
+  accepted_at: string | null;
+  created_at: string | null;
+  token?: string | null;   // returned ONCE on create — deliver it to the invitee
+}
+
+export async function inviteMember(
+  token: string, email: string, role: FirmRole
+): Promise<InviteResponse> {
+  try {
+    const res = await makeClient(token).post<InviteResponse>(
+      "/admin/firm/invites", { email, role }
+    );
+    return res.data;
+  } catch (err) {
+    handleAxiosError(err);
+  }
+}
+
+export async function listInvites(token: string): Promise<InviteResponse[]> {
+  try {
+    const res = await makeClient(token).get<{ invites: InviteResponse[] }>("/admin/firm/invites");
+    return res.data.invites ?? [];
+  } catch (err) {
+    handleAxiosError(err);
+  }
+}
+
+// Rotate a pending invite's token and return the FRESH one-time token (the "resend / copy link"
+// recovery — the original is hash-stored and can't be re-shown). The prior link dies on rotation.
+export async function resendInvite(token: string, inviteId: string): Promise<InviteResponse> {
+  try {
+    const res = await makeClient(token).post<InviteResponse>(`/admin/firm/invites/${inviteId}/resend`);
+    return res.data;
+  } catch (err) {
+    handleAxiosError(err);
+  }
+}
+
+export async function revokeInvite(token: string, inviteId: string): Promise<void> {
+  try {
+    await makeClient(token).delete(`/admin/firm/invites/${inviteId}`);
+  } catch (err) {
+    handleAxiosError(err);
+  }
+}
+
+// The full, ready-to-deliver invite link for a one-time token. No email server is wired yet
+// (F2j deferred), so the admin copies this and sends it out-of-band. The invitee logs in and
+// lands here; their verified email must match the invite (T4, server-enforced).
+export function acceptInviteUrl(rawToken: string): string {
+  const origin = typeof window !== "undefined" ? window.location.origin : "";
+  // Public landing (/invite, NOT /app/*) so a logged-OUT invitee isn't bounced to login and lose
+  // the token. /invite stashes the token, then routes to login/signup; the token is applied after
+  // they authenticate as the invited email.
+  return `${origin}/invite?token=${encodeURIComponent(rawToken)}`;
+}
+
+// Accept EITHER a bare invite token OR a full pasted invite LINK, and return the bare token.
+// People naturally paste the whole link they were sent; pulling ?token= out of it (and trimming)
+// means "Join with invite" works whether they paste the link or the token. Falls back to the
+// trimmed input if it isn't a URL.
+export function extractInviteToken(input: string): string {
+  const raw = (input || "").trim();
+  if (!raw) return "";
+  // Try to parse a token= query param out of a URL (handles full links + bare ?token=… fragments).
+  const m = raw.match(/[?&]token=([^&\s]+)/);
+  if (m) return decodeURIComponent(m[1]);
+  return raw;
+}
+
+export async function acceptInvite(token: string, inviteToken: string): Promise<Firm> {
+  try {
+    const res = await makeClient(token).post<Firm>("/auth/accept-invite", { token: inviteToken });
+    return res.data;
+  } catch (err) {
+    handleAxiosError(err);
+  }
+}
+
+// ── Member lifecycle (F2d) — promote/demote + offboard ────────────────────────
+export interface LifecycleResponse {
+  user_id: string;
+  firm_id: string;
+  role: FirmRole | null;
+  removed: boolean | null;
+  matters_reassigned: number | null;
+  delegations_revoked: number | null;
+}
+
+export async function setRole(
+  token: string, userId: string, role: FirmRole
+): Promise<LifecycleResponse> {
+  try {
+    const res = await makeClient(token).patch<LifecycleResponse>(
+      `/admin/firm/members/${userId}`, { role }
+    );
+    return res.data;
+  } catch (err) {
+    handleAxiosError(err);
+  }
+}
+
+export async function removeMember(token: string, userId: string): Promise<LifecycleResponse> {
+  try {
+    const res = await makeClient(token).delete<LifecycleResponse>(`/admin/firm/members/${userId}`);
+    return res.data;
+  } catch (err) {
+    handleAxiosError(err);
+  }
+}
+
+// ── Ethical walls (F2c) ───────────────────────────────────────────────────────
+export interface ScreenResponse {
+  id: string;
+  firm_id: string;
+  user_id: string;
+  vault_id: string;
+  reason: string;
+  created_by: string | null;
+  created_at: string | null;
+  removed_at: string | null;
+}
+
+export async function listScreens(token: string): Promise<ScreenResponse[]> {
+  try {
+    const res = await makeClient(token).get<{ screens: ScreenResponse[] }>("/admin/firm/screens");
+    return res.data.screens ?? [];
+  } catch (err) {
+    handleAxiosError(err);
+  }
+}
+
+export async function createScreen(
+  token: string, userId: string, vaultId: string, reason: string
+): Promise<ScreenResponse> {
+  try {
+    const res = await makeClient(token).post<ScreenResponse>(
+      "/admin/firm/screens", { user_id: userId, vault_id: vaultId, reason }
+    );
+    return res.data;
+  } catch (err) {
+    handleAxiosError(err);
+  }
+}
+
+export async function removeScreen(token: string, screenId: string): Promise<void> {
+  try {
+    await makeClient(token).delete(`/admin/firm/screens/${screenId}`);
+  } catch (err) {
+    handleAxiosError(err);
+  }
+}
+
+// ── Delegation / PA (F2d/D6) ──────────────────────────────────────────────────
+export interface DelegationResponse {
+  id: string;
+  firm_id: string;
+  delegator_id: string;
+  delegate_id: string;
+  verbs: Capability[];
+  expires_at: string | null;
+  revoked_at: string | null;
+  created_at: string | null;
+}
+
+export async function grantAuthority(
+  token: string, delegateId: string, verbs: Capability[], expiresAt: string
+): Promise<DelegationResponse> {
+  try {
+    const res = await makeClient(token).post<DelegationResponse>(
+      "/admin/firm/delegations",
+      { delegate_id: delegateId, verbs, expires_at: expiresAt }
+    );
+    return res.data;
+  } catch (err) {
+    handleAxiosError(err);
+  }
+}
+
+export async function revokeAuthority(token: string, delegationId: string): Promise<void> {
+  try {
+    await makeClient(token).delete(`/admin/firm/delegations/${delegationId}`);
+  } catch (err) {
+    handleAxiosError(err);
+  }
+}
+
+export async function listDelegations(token: string): Promise<DelegationResponse[]> {
+  try {
+    const res = await makeClient(token).get<{ delegations: DelegationResponse[] }>(
+      "/admin/firm/delegations"
+    );
+    return res.data.delegations ?? [];
+  } catch (err) {
+    handleAxiosError(err);
+  }
+}
+
+// ── Matter team (F2e/D3) — staffing a matter ──────────────────────────────────
+export interface MatterTeamMember {
+  user_id: string;
+  role: FirmRole | null;
+  email: string | null;
+  added_by: string | null;
+  created_at: string | null;
+}
+
+export async function getMatterTeam(token: string, vaultId: string): Promise<MatterTeamMember[]> {
+  try {
+    const res = await makeClient(token).get<{ vault_id: string; members: MatterTeamMember[] }>(
+      `/matters/${vaultId}/team`
+    );
+    return res.data.members ?? [];
+  } catch (err) {
+    handleAxiosError(err);
+  }
+}
+
+export async function addMatterTeam(
+  token: string, vaultId: string, userId: string
+): Promise<MatterTeamMember[]> {
+  try {
+    const res = await makeClient(token).post<{ vault_id: string; members: MatterTeamMember[] }>(
+      `/matters/${vaultId}/team`, { user_id: userId }
+    );
+    return res.data.members ?? [];
+  } catch (err) {
+    handleAxiosError(err);
+  }
+}
+
+export async function removeMatterTeam(
+  token: string, vaultId: string, userId: string
+): Promise<void> {
+  try {
+    await makeClient(token).delete(`/matters/${vaultId}/team/${userId}`);
+  } catch (err) {
+    handleAxiosError(err);
+  }
+}
+
+// ── Review chain (F2e/D5) — submit · approve · request changes · release · queue ──
+export interface ReviewRequest {
+  id: string;
+  firm_id: string;
+  vault_id: string;
+  artifact_ref: string;
+  submitted_by: string;
+  status: "pending" | "approved" | "changes_requested" | "released";
+  current_owner: string | null;
+  chain: string[];
+  created_at: string | null;
+  decided_at: string | null;
+}
+
+export async function submitForReview(
+  token: string, collectionId: string, artifactRef: string
+): Promise<ReviewRequest> {
+  try {
+    const res = await makeClient(token).post<ReviewRequest>(
+      "/review", { collection_id: collectionId, artifact_ref: artifactRef }
+    );
+    return res.data;
+  } catch (err) {
+    handleAxiosError(err);
+  }
+}
+
+export async function approveReview(
+  token: string, requestId: string, note?: string
+): Promise<ReviewRequest> {
+  try {
+    const res = await makeClient(token).post<ReviewRequest>(
+      `/review/${requestId}/approve`, { note: note ?? null }
+    );
+    return res.data;
+  } catch (err) {
+    handleAxiosError(err);
+  }
+}
+
+export async function requestChanges(
+  token: string, requestId: string, note?: string
+): Promise<ReviewRequest> {
+  try {
+    const res = await makeClient(token).post<ReviewRequest>(
+      `/review/${requestId}/changes`, { note: note ?? null }
+    );
+    return res.data;
+  } catch (err) {
+    handleAxiosError(err);
+  }
+}
+
+export async function releaseExternal(
+  token: string, requestId: string, note?: string
+): Promise<ReviewRequest> {
+  try {
+    const res = await makeClient(token).post<ReviewRequest>(
+      `/review/${requestId}/release`, { note: note ?? null }
+    );
+    return res.data;
+  } catch (err) {
+    handleAxiosError(err);
+  }
+}
+
+export async function getReviewQueue(token: string): Promise<ReviewRequest[]> {
+  try {
+    const res = await makeClient(token).get<{ requests: ReviewRequest[] }>("/review/queue");
+    return res.data.requests ?? [];
+  } catch (err) {
+    handleAxiosError(err);
+  }
+}
+
+// Custom review chain (surface 6 — "Customize review chain"). null/[] clears → rank default.
+export async function setReviewChain(
+  token: string, vaultId: string, chain: string[] | null
+): Promise<{ vault_id: string; chain: string[] | null }> {
+  try {
+    const res = await makeClient(token).put<{ vault_id: string; chain: string[] | null }>(
+      `/matters/${vaultId}/review-chain`, { chain }
+    );
+    return res.data;
+  } catch (err) {
+    handleAxiosError(err);
+  }
+}
+
+// ── Abstain override (F2d/T6 — the high-trust moment) ─────────────────────────
+export interface OverrideAbstainResponse {
+  answer_ref: string;
+  collection_id: string;
+  status: string;            // "overridden"
+  overridden_by: string;
+  reason: string;
+  created_at: string | null;
+}
+
+export async function overrideAbstain(
+  token: string, answerRef: string, collectionId: string, reason: string, gateObjection?: string
+): Promise<OverrideAbstainResponse> {
+  try {
+    const res = await makeClient(token).post<OverrideAbstainResponse>(
+      "/admin/firm/answers/override",
+      { answer_ref: answerRef, collection_id: collectionId, reason, gate_objection: gateObjection ?? null }
+    );
+    return res.data;
+  } catch (err) {
     handleAxiosError(err);
   }
 }

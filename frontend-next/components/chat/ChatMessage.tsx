@@ -7,6 +7,8 @@ import remarkGfm from "remark-gfm";
 import { AlertTriangle, ChevronDown, ChevronUp, FileText } from "lucide-react";
 import { SourceInfo } from "@/lib/api";
 import { TrustBar, AnswerMeta } from "./TrustBar";
+import { SendForReview } from "@/components/app/ReviewChain";
+import { OverrideAffordance } from "./OverrideAffordance";
 import { AnswerTable } from "./AnswerTable";
 import type { Components } from "react-markdown";
 
@@ -19,6 +21,11 @@ interface ChatMessageProps {
   userInitials?: string;
   answerMeta?: AnswerMeta;
   showTrust?: boolean;
+  // F2g review/override affordances on an assistant answer. Present once the answer stream surfaces
+  // the vault + a stable message ref; an abstain (gateObjection) unlocks the partner override moment.
+  vaultId?: string | null;
+  messageId?: string | null;
+  gateObjection?: string | null;
 }
 
 // Convert citation markers → [n](#cite-n) links the markdown `a` renderer turns into
@@ -189,6 +196,9 @@ export const ChatMessage = memo(function ChatMessage({
   userInitials = "U",
   answerMeta,
   showTrust = false,
+  vaultId,
+  messageId,
+  gateObjection,
 }: ChatMessageProps) {
   const isUser = role === "user";
   const [sourcesOpen, setSourcesOpen] = useState(false);
@@ -266,6 +276,23 @@ export const ChatMessage = memo(function ChatMessage({
             {/* TrustBar */}
             {!isStreaming && showTrust && answerMeta && (
               <TrustBar meta={answerMeta} />
+            )}
+
+            {/* F2g — review + partner-override affordances on a settled assistant answer. Render only
+                when the surface gives us a vault + message ref. SendForReview shows for anyone who
+                can send up the chain; the override moment unlocks for a partner when the answer
+                abstained (gateObjection present). */}
+            {!isUser && !isStreaming && vaultId && messageId && (
+              <div className="flex flex-wrap items-center gap-2 mt-2">
+                <SendForReview vaultId={vaultId} artifactRef={messageId} />
+                {gateObjection && (
+                  <OverrideAffordance
+                    answerRef={messageId}
+                    collectionId={vaultId}
+                    gateObjection={gateObjection}
+                  />
+                )}
+              </div>
             )}
 
             {/* Sources */}

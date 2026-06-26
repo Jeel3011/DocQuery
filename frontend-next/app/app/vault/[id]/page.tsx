@@ -32,6 +32,7 @@ import {
 } from "@/lib/api";
 import { ChatInput } from "@/components/chat/ChatInput";
 import { UploadZone } from "@/components/app/UploadZone";
+import { MatterTeamPanel } from "@/components/app/MatterTeamPanel";
 import { ConnectorImport } from "@/components/app/ConnectorImport";
 import { PipelineTrack } from "@/components/app/PipelineTrack";
 import {
@@ -158,17 +159,24 @@ export default function VaultWorkspacePage() {
     ? `&filters=${encodeURIComponent(JSON.stringify(activeFilters))}`
     : "";
 
+  // The composer's analysis mode, chosen BEFORE the conversation starts and carried into it
+  // via &mode= (the conversation page already honors it). Agent is the default smart path
+  // (matches the conversation's own default); "brain" only resolves in dev builds, "fast" is
+  // the direct answer. State here just drives which mode the dropdown shows as active.
+  const [composerMode, setComposerMode] = useState<"agent" | "brain" | "fast">("agent");
+
   // Submitting the composer opens an Ask conversation scoped to this vault. Step D
   // re-homed Ask under /app/vault/[id]/ask/[cid] — the route [id] is the authoritative
   // scope (§9 risk #1), so the conversation reads collection_id from the URL, not the
-  // store. ?q= auto-submits on mount; &filters= carries the active vault filter (G3 E).
+  // store. ?q= auto-submits on mount; &filters= carries the active vault filter (G3 E);
+  // &mode= carries the picked mode so the conversation runs in it from the first turn.
   async function ask(q: string) {
     if (!token || creating || !q.trim()) return;
     setCreating(true);
     try {
       const c = await createConversation(token, q.slice(0, 50));
       router.push(
-        `/app/vault/${vaultId}/ask/${c.id}?q=${encodeURIComponent(q)}${filtersParam}`
+        `/app/vault/${vaultId}/ask/${c.id}?q=${encodeURIComponent(q)}&mode=${composerMode}${filtersParam}`
       );
     } catch {
       toast.error("Failed to start conversation");
@@ -346,6 +354,18 @@ export default function VaultWorkspacePage() {
           placeholder="Ask about a clause, term, or risk across this vault…"
           vaultName={vault?.name ?? null}
           centered
+          // Mode picker: Agent (default) | Brain (dev) | Fast. Chosen here, carried into the
+          // conversation via &mode=. Agent and Brain are mutually exclusive; "fast" = neither on.
+          agentCoreMode={composerMode === "agent"}
+          brainMode={composerMode === "brain"}
+          onToggleAgentCore={() => setComposerMode((m) => (m === "agent" ? "fast" : "agent"))}
+          // Brain is a dev-only comparator (the conversation only honors mode=brain when
+          // NEXT_PUBLIC_SHOW_DEV_MODES=true) — only offer it where it actually resolves.
+          onToggleBrain={
+            process.env.NEXT_PUBLIC_SHOW_DEV_MODES === "true"
+              ? () => setComposerMode((m) => (m === "brain" ? "fast" : "brain"))
+              : undefined
+          }
         />
 
         {/* Suggested-prompt chips (doc-type-aware; legal default until Step F). */}
@@ -364,6 +384,11 @@ export default function VaultWorkspacePage() {
               {p}
             </motion.button>
           ))}
+        </div>
+
+        {/* ── Matter team (F2g surface 5 / D3) — staffed team + "full access on this matter" ── */}
+        <div className="mb-6">
+          <MatterTeamPanel vaultId={vaultId} />
         </div>
 
         {/* ── Files section ── */}

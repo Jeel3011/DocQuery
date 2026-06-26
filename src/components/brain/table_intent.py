@@ -143,6 +143,7 @@ def load_grids_for_docs(
     top_grids: int = 8,
     max_tables_per_doc: int = 60,
     per_doc_top: Optional[int] = None,
+    owner_id: Optional[str] = None,
 ):
     """Load structured table grids (analyst.Grid) for doc_ids, ranked by relevance.
 
@@ -172,8 +173,16 @@ def load_grids_for_docs(
         # request path it carries the user's JWT so Postgres RLS ALSO enforces auth.uid()=user_id
         # (a second, data-layer guard). Falls back to `.client` on the worker/offline/test path
         # (no JWT) — byte-identical there.
-        _uid = getattr(db_client, "user_id", None)
-        _reader = getattr(db_client, "read_client", None) or db_client.client
+        # F2m (shared-matter read): when owner_id is supplied and is NOT the caller, the matter is
+        # owned by another firm member and its chunks are stamped with the OWNER's user_id. The
+        # access was already authorized upstream (db.accessible_vault_owner: membership + same-firm +
+        # not-screened). Scope to the OWNER and read via the SERVICE-ROLE client — read_client carries
+        # the CALLER's JWT, so RLS (auth.uid()=user_id) would block the owner's rows. For the caller's
+        # own vault (owner_id None or == caller) this is byte-identical to the F1 hardened path.
+        _caller_uid = getattr(db_client, "user_id", None)
+        _shared = bool(owner_id) and owner_id != _caller_uid
+        _uid = owner_id if _shared else _caller_uid
+        _reader = db_client.client if _shared else (getattr(db_client, "read_client", None) or db_client.client)
         rows = None
         try:
             q = (

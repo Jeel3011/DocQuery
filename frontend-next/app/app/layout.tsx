@@ -17,6 +17,7 @@ import { useRouter } from "next/navigation";
 import { useAuthStore } from "@/stores/auth.store";
 import { useProfileStore } from "@/stores/profile.store";
 import { useCollectionStore } from "@/stores/collection.store";
+import { useFirmStore } from "@/stores/firm.store";
 import {
   listConversations,
   listCollections,
@@ -24,7 +25,7 @@ import {
   createCollection,
   uploadDocument,
   addDocToCollection,
-  getMe,
+  getBootstrap,
   ConversationResponse,
   CollectionResponse,
 } from "@/lib/api";
@@ -85,16 +86,38 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
     }
   }, [token]);
 
-  useEffect(() => {
-    loadConvs();
-    loadCollections();
-  }, [loadConvs, loadCollections]);
-
-  // Reconcile the preferred name with the server (source of truth) once per session.
+  // LATENCY: one /auth/bootstrap call replaces the four separate mount fetches (getMe +
+  // getCapabilities + getFirm + listCollections + listConversations), each of which re-verified
+  // the JWT and re-resolved membership server-side. The stashed signup onboarding intent (name the
+  // firm / accept an invite for the email-confirm case) still runs FIRST so bootstrap reflects it.
+  const initFirm = useFirmStore((s) => s.init);
+  const hydrateFirm = useFirmStore((s) => s.hydrate);
   useEffect(() => {
     if (!token) return;
-    getMe(token).then((m) => hydrateFromServer(m.preferred_name)).catch(() => {});
-  }, [token, hydrateFromServer]);
+    (async () => {
+      try {
+        const { consumeStashedFirmSetup } = await import("@/lib/firmSetup");
+        const { error } = await consumeStashedFirmSetup(token);
+        if (error) toast.error(error);  // a rejected invite-join is surfaced (fail-closed onboarding)
+      } catch { /* never block app load */ }
+      try {
+        const boot = await getBootstrap(token);
+        setConvs(
+          boot.conversations.sort(
+            (a, b) => new Date(b.updated_at ?? 0).getTime() - new Date(a.updated_at ?? 0).getTime()
+          )
+        );
+        setCollections(boot.collections);
+        hydrateFromServer(boot.user.preferred_name);
+        hydrateFirm(boot.capabilities, boot.firm);
+      } catch {
+        // Bootstrap failed — fall back to the individual loaders so the app still works.
+        loadConvs();
+        loadCollections();
+        await initFirm(token);
+      }
+    })();
+  }, [token, initFirm, hydrateFirm, hydrateFromServer, loadConvs, loadCollections]);
 
   async function newChat() {
     if (!token) return;
@@ -151,7 +174,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
 
     async function uploadOne(file: File) {
       try {
-        const doc = await uploadDocument(token!, file);
+        const doc = await uploadDocument(token!, file, vaultId);
         if (vaultId) {
           try { await addDocToCollection(token!, vaultId, doc.id); } catch { /* non-fatal */ }
         }
