@@ -24,9 +24,11 @@ import {
   Sparkles,
   Check,
   Pencil,
+  Bell,
 } from "lucide-react";
 import { useAuthStore } from "@/stores/auth.store";
 import { useProfileStore } from "@/stores/profile.store";
+import { NotificationPreferences } from "@/components/app/NotificationPreferences";
 import {
   getAnalyticsSummary,
   getUsageSummary,
@@ -410,6 +412,12 @@ export default function SettingsPage() {
               delay={0.14}
             />
           </div>
+        </section>
+
+        {/* Notification preferences (F2j) */}
+        <section className="mb-8">
+          <SectionTitle icon={Bell}>Notifications</SectionTitle>
+          <NotificationPreferences />
         </section>
 
         {/* Activity Chart */}

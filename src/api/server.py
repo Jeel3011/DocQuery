@@ -27,6 +27,7 @@ from src.api.routes import workflows as workflows_routes      # G7: workflow tem
 from src.api.routes import doc_catalog as doc_catalog_routes  # Legal catalog §2.3: /doc-types (flag-gated)
 from src.api.routes import connectors as connectors_routes    # G8.6 vault connectors (flag-gated)
 from src.api.routes import matters as matters_routes          # F2e: matter staffing + review chain
+from src.api.routes import notifications as notifications_routes  # F2j: in-app inbox + preferences
 from src.api.middleware import CorrelationIDMiddleware, SecurityHeadersMiddleware
 
 from slowapi.errors import RateLimitExceeded
@@ -141,6 +142,7 @@ app.include_router(workflows_routes.router,   prefix=API_PREFIX, tags=["Workflow
 app.include_router(doc_catalog_routes.router, prefix=API_PREFIX, tags=["DocCatalog"])  # Legal catalog §2.3 (flag-gated)
 app.include_router(connectors_routes.router,  prefix=API_PREFIX, tags=["Connectors"])  # G8.6 (flag-gated)
 app.include_router(matters_routes.router,     prefix=API_PREFIX, tags=["Matters"])    # F2e: matter staffing + review chain
+app.include_router(notifications_routes.router, prefix=API_PREFIX, tags=["Notifications"])  # F2j: in-app inbox
 
 
 # -- Prometheus Metrics --

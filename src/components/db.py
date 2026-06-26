@@ -1375,6 +1375,349 @@ class SupabaseManager:
             return []
         return res.data or []
 
+    # ── F2j NOTIFICATIONS (in-app inbox + outbox + queue seam) ────────────────────────────────────
+    #   All DORMANT-ON-EMPTY: a missing `notifications` / `notification_preferences` table (migration
+    #   017 not yet applied) degrades to empty/None/defaults via _is_missing_relation — byte-identical
+    #   to pre-F2j. The wall + firm filtering happens in notifications.emit() BEFORE these are called;
+    #   these are thin storage methods. Writes use the service-role `client` (the emit path is
+    #   server-side); reads of one's own inbox use read_client (RLS scopes to the recipient anyway).
+
+    # The default preferences — a MISSING prefs row means "notify normally" (nothing muted, no quiet
+    # hours, no digest). Returned by get_notification_preferences when no row / the table is absent, so
+    # the empty/unapplied table is byte-identical to the every-category-on baseline.
+    _DEFAULT_NOTIFICATION_PREFS = {
+        "muted_categories": [],
+        "quiet_start": None,
+        "quiet_end": None,
+        "digest_mode": False,
+    }
+
+    def create_notification(self, row: dict) -> "dict | None":
+        """Insert one notification (the emit path). DEDUP: the unique partial index on dedup_key makes
+        a duplicate a clean NO-OP — a unique-violation is swallowed (returns None), never raised, so a
+        re-fired event / a restarted escalation sweep never double-nags. Missing table ⇒ None (dormant).
+        Best-effort: any other write fault is swallowed too (the caller — emit() — is non-fatal like
+        log_audit; a notification must NEVER break the originating action)."""
+        if not row:
+            return None
+        try:
+            res = self.client.table("notifications").insert(row).execute()
+            return res.data[0] if res.data else None
+        except Exception as e:
+            if _is_missing_relation(e):
+                return None
+            s = str(e).lower()
+            # The dedup guarantee: a duplicate (same dedup_key) is the EXPECTED no-op, not an error.
+            if "duplicate key" in s or "23505" in s or "uq_notifications_dedup" in s:
+                return None
+            # Any other fault: best-effort (non-fatal). Log and move on — emit() must not raise.
+            import logging
+            logging.getLogger(__name__).warning("create_notification failed (non-fatal): %s", e)
+            return None
+
+    def list_notifications(self, recipient_id: str = None, unread_only: bool = False,
+                           limit: int = 50) -> list:
+        """The inbox: a user's own notifications, newest first. recipient_id defaults to the current
+        user (the route passes sb.user_id — a user can only ever read their own inbox, T2/T8). Missing
+        table ⇒ [] (dormant)."""
+        uid = recipient_id or self.user_id
+        if not uid:
+            return []
+        try:
+            q = self.read_client.table("notifications").select("*").eq("recipient_id", uid)
+            if unread_only:
+                q = q.is_("read_at", "null")
+            res = q.order("created_at", desc=True).limit(limit).execute()
+        except Exception as e:
+            if _is_missing_relation(e):
+                return []
+            raise
+        return res.data or []
+
+    def unread_notification_count(self, recipient_id: str = None) -> int:
+        """The bell badge: how many UNREAD notifications the user has. Own rows only. Missing table ⇒
+        0 (dormant)."""
+        uid = recipient_id or self.user_id
+        if not uid:
+            return 0
+        try:
+            res = self.read_client.table("notifications").select(
+                "id", count="exact"
+            ).eq("recipient_id", uid).is_("read_at", "null").execute()
+        except Exception as e:
+            if _is_missing_relation(e):
+                return 0
+            raise
+        return res.count or 0
+
+    def mark_notifications_read(self, recipient_id: str = None, ids: "list | None" = None) -> int:
+        """Mark notifications read. Scoped to the recipient's OWN rows (a user can never mark another
+        user's notifications — T2/T8). ids=None ⇒ mark ALL of the user's unread; else only those ids
+        (still AND'd with recipient_id so a guessed id touches nothing). Returns the count updated.
+        Missing table ⇒ 0 (dormant)."""
+        uid = recipient_id or self.user_id
+        if not uid:
+            return 0
+        now_iso = datetime.now(timezone.utc).isoformat()
+        try:
+            q = self.client.table("notifications").update(
+                {"read_at": now_iso}
+            ).eq("recipient_id", uid).is_("read_at", "null")
+            if ids:
+                q = q.in_("id", [str(i) for i in ids])
+            res = q.execute()
+        except Exception as e:
+            if _is_missing_relation(e):
+                return 0
+            raise
+        return len(res.data or [])
+
+    def get_notification_preferences(self, user_id: str = None) -> dict:
+        """The user's anti-nag preferences, or the DEFAULT dict if no row / the table is absent. NEVER
+        None — defaults mean "notify normally", so the empty/unapplied table is byte-identical to the
+        every-category-on baseline. Own row only."""
+        uid = user_id or self.user_id
+        if not uid:
+            return dict(self._DEFAULT_NOTIFICATION_PREFS)
+        try:
+            res = self.read_client.table("notification_preferences").select("*").eq(
+                "user_id", uid
+            ).limit(1).execute()
+        except Exception as e:
+            if _is_missing_relation(e):
+                return dict(self._DEFAULT_NOTIFICATION_PREFS)
+            raise
+        if res.data:
+            row = res.data[0]
+            return {
+                "muted_categories": row.get("muted_categories") or [],
+                "quiet_start": row.get("quiet_start"),
+                "quiet_end": row.get("quiet_end"),
+                "digest_mode": bool(row.get("digest_mode")),
+            }
+        return dict(self._DEFAULT_NOTIFICATION_PREFS)
+
+    def set_notification_preferences(self, user_id: str = None, **fields) -> dict:
+        """Upsert a user's preferences (own row — the route passes sb.user_id). A PARTIAL patch (only
+        the fields the client sent) is merged onto the user's CURRENT row, not the defaults — so
+        toggling one control (e.g. digest) never clobbers another the user already set (e.g. their
+        quiet-hours window). Returns the resulting prefs (best-effort — a missing table returns the
+        merge so the UI reflects the intent even before 017 is applied)."""
+        uid = user_id or self.user_id
+        # Start from the user's CURRENT prefs (defaults if no row / unapplied), then apply the patch.
+        # This is the fix for the partial-update clobber: a one-field PUT must not reset the rest.
+        merged = self.get_notification_preferences(uid) if uid else dict(self._DEFAULT_NOTIFICATION_PREFS)
+        for k in ("muted_categories", "quiet_start", "quiet_end", "digest_mode"):
+            if k in fields:
+                merged[k] = fields[k]
+        if not uid:
+            return merged
+        row = {"user_id": uid, "updated_at": datetime.now(timezone.utc).isoformat(), **merged}
+        try:
+            res = self.client.table("notification_preferences").upsert(
+                row, on_conflict="user_id"
+            ).execute()
+        except Exception as e:
+            if _is_missing_relation(e):
+                return merged
+            import logging
+            logging.getLogger(__name__).warning("set_notification_preferences failed (non-fatal): %s", e)
+            return merged
+        if res.data:
+            r = res.data[0]
+            return {
+                "muted_categories": r.get("muted_categories") or [],
+                "quiet_start": r.get("quiet_start"),
+                "quiet_end": r.get("quiet_end"),
+                "digest_mode": bool(r.get("digest_mode")),
+            }
+        return merged
+
+    def open_review_requests_for_escalation(self, threshold_iso: str) -> list:
+        """The escalation sweep's selection: OPEN review requests (a current_owner is sitting on the
+        work) created at/before the threshold — candidates for an anti-stall reminder. Service-role
+        (the sweep runs system-side, across all firms). Missing table ⇒ [] (dormant). The sweep itself
+        (notifications.escalation_sweep) applies the per-owner dedup so a re-run never double-nags."""
+        try:
+            res = self.client.table("review_requests").select("*").in_(
+                "status", ["pending", "approved", "changes_requested"]
+            ).lte("created_at", threshold_iso).order("created_at", desc=False).execute()
+        except Exception as e:
+            if _is_missing_relation(e):
+                return []
+            raise
+        return res.data or []
+
+    # ── F2j.1 REVIEWABLE ARTIFACTS — let a reviewer SEE the submitted work (review-gated read) ──────
+    #   A reviewer must be able to verify what they approve. The submitted work (a chat answer) lives
+    #   in the SUBMITTER's per-user conversation, so the reviewer needs a cross-user read — granted
+    #   ONLY through the review relationship (least privilege), scoped to that one artifact, audited.
+    #   review_artifact_authority is the ONE gate; the resolvers read ONLY after it passes. Mirrors
+    #   accessible_vault_owner (F2m): the gate is the boundary, the service-role client is the tool.
+
+    def review_artifact_authority(self, request_id: str) -> "dict | None":
+        """THE review-read authority (F2j.1): may the CURRENT user read this review request's
+        submitted artifact? Returns {request, submitter_id, vault_id, conversation hint} iff:
+          (1) the request exists AND is in the CALLER's firm (T2/T3 — no cross-firm read),
+          (2) the caller is its `current_owner` OR appears in its `chain` (a reviewer may see what
+              they are/were accountable for — least privilege: the relationship, not a role-blanket),
+          (3) the caller is NOT screened off its vault (the ethical wall beats the review grant — T5;
+              fails CLOSED on a live screen-lookup fault, like assert_vault_not_screened).
+        Else None. This is the ONLY thing that unlocks get_review_artifact / get_review_thread.
+        Missing review_requests table ⇒ None (dormant)."""
+        if not (self.user_id and request_id):
+            return None
+        firm = {}
+        try:
+            firm = self.get_user_firm() or {}
+        except Exception:
+            firm = {}
+        firm_id = firm.get("id")
+        if not firm_id:
+            return None  # firm-less ⇒ no review sharing
+        # The request row, scoped to the caller's firm (read_client — RLS-safe; review_requests RLS
+        # is firm-membership based).
+        try:
+            res = self.read_client.table("review_requests").select(
+                "id, firm_id, vault_id, artifact_ref, submitted_by, current_owner, chain, status"
+            ).eq("id", request_id).eq("firm_id", firm_id).limit(1).execute()
+        except Exception as e:
+            if _is_missing_relation(e):
+                return None
+            raise
+        if not res.data:
+            return None
+        req = res.data[0]
+        # (2) the review RELATIONSHIP: current_owner OR a member of the chain.
+        caller = str(self.user_id)
+        chain = [str(c) for c in (req.get("chain") or [])]
+        if caller != str(req.get("current_owner")) and caller not in chain:
+            return None
+        vault_id = req.get("vault_id")
+        # (3) the ethical wall — a screened reviewer cannot read the artifact (precedence, T5).
+        #     is_vault_screened fails CLOSED on a live fault (re-raises missing-table → we treat a
+        #     raise as "deny" here to be safe).
+        if vault_id:
+            try:
+                if self.is_vault_screened(str(vault_id), caller, firm_id):
+                    return None
+            except Exception:
+                return None  # fail closed — a wall fault must never open the read
+        return {
+            "request": req,
+            "submitter_id": str(req.get("submitted_by")) if req.get("submitted_by") else None,
+            "vault_id": str(vault_id) if vault_id else None,
+            "artifact_ref": req.get("artifact_ref"),
+            "firm_id": str(firm_id),
+        }
+
+    def _resolve_artifact_message(self, submitter_id: str, message_id: str) -> "dict | None":
+        """Resolve a submitted artifact (a message id) → the answer message row, scoped to the
+        SUBMITTER (service-role, since it's another user's per-user message). Returns the row or None
+        if it was deleted / not found. Caller has ALREADY passed review_artifact_authority."""
+        if not (submitter_id and message_id):
+            return None
+        try:
+            res = self.client.table("messages").select(
+                "id, conversation_id, user_id, role, content, sources, created_at"
+            ).eq("id", message_id).eq("user_id", submitter_id).limit(1).execute()
+        except Exception as e:
+            if _is_missing_relation(e):
+                return None
+            raise
+        return res.data[0] if res.data else None
+
+    def get_review_artifact(self, request_id: str) -> "dict | None":
+        """The card preview: a legible summary of the submitted work, for a reviewer who passes the
+        authority. Resolves the artifact message (the answer) + the PRECEDING user message (the
+        question) + the conversation title — all scoped to the submitter (service-role, post-gate).
+        Returns:
+          • {available: True, title, question, answer_preview, answer_full, conversation_id,
+             submitter_id, created_at}  — the work is readable.
+          • {available: False, artifact_ref}                                   — gated OK but the
+             underlying message/conversation was deleted (graceful, not an error).
+          • None                                                               — the authority denies
+             (the route turns this into a clean 404, no existence leak).
+        """
+        auth = self.review_artifact_authority(request_id)
+        if auth is None:
+            return None
+        submitter = auth.get("submitter_id")
+        artifact_ref = auth.get("artifact_ref")
+        msg = self._resolve_artifact_message(submitter, artifact_ref) if (submitter and artifact_ref) else None
+        if not msg:
+            return {"available": False, "artifact_ref": artifact_ref}
+        conv_id = msg.get("conversation_id")
+        # The question = the most recent USER message before the answer, in the same conversation.
+        question = None
+        title = None
+        try:
+            if conv_id:
+                prior = self.client.table("messages").select("role, content, created_at").eq(
+                    "conversation_id", conv_id
+                ).eq("user_id", submitter).eq("role", "user").lte(
+                    "created_at", msg.get("created_at")
+                ).order("created_at", desc=True).limit(1).execute()
+                if prior.data:
+                    question = prior.data[0].get("content")
+                conv = self.client.table("conversations").select("title").eq(
+                    "id", conv_id).eq("user_id", submitter).limit(1).execute()
+                if conv.data:
+                    title = conv.data[0].get("title")
+        except Exception:
+            pass  # cosmetic context — a miss just leaves question/title None
+        answer_full = msg.get("content") or ""
+        return {
+            "available": True,
+            "title": title,
+            "question": question,
+            "answer_preview": answer_full[:280],
+            "answer_full": answer_full,
+            "conversation_id": str(conv_id) if conv_id else None,
+            "submitter_id": submitter,
+            "created_at": msg.get("created_at"),
+        }
+
+    def get_review_thread(self, request_id: str) -> "dict | None":
+        """The 'View full work': the WHOLE conversation the submitted artifact belongs to, read-only,
+        for a reviewer who passes the authority. Service-role read scoped to the submitter + the ONE
+        conversation (post-gate). Returns {available, title, messages:[{role,content,sources,
+        created_at}], conversation_id} or None on a denied authority. A deleted conversation ⇒
+        {available: False}."""
+        auth = self.review_artifact_authority(request_id)
+        if auth is None:
+            return None
+        submitter = auth.get("submitter_id")
+        artifact_ref = auth.get("artifact_ref")
+        msg = self._resolve_artifact_message(submitter, artifact_ref) if (submitter and artifact_ref) else None
+        if not msg:
+            return {"available": False, "messages": []}
+        conv_id = msg.get("conversation_id")
+        title = None
+        rows = []
+        try:
+            if conv_id:
+                m = self.client.table("messages").select(
+                    "role, content, sources, created_at"
+                ).eq("conversation_id", conv_id).eq("user_id", submitter).order(
+                    "created_at", desc=False
+                ).execute()
+                rows = m.data or []
+                conv = self.client.table("conversations").select("title").eq(
+                    "id", conv_id).eq("user_id", submitter).limit(1).execute()
+                if conv.data:
+                    title = conv.data[0].get("title")
+        except Exception as e:
+            if _is_missing_relation(e):
+                return {"available": False, "messages": []}
+            raise
+        return {
+            "available": True,
+            "title": title,
+            "conversation_id": str(conv_id) if conv_id else None,
+            "messages": rows,
+        }
+
     # Partner-tier sees the WHOLE firm (they run it); everyone else sees need-to-know:
     # the vaults they OWN plus the matters they are STAFFED on. In LOCKSTEP with
     # review_chain._RELEASE_TIER (the same "runs the firm" set).

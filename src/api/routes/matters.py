@@ -33,15 +33,35 @@ from src.api.dependencies import (
 from src.api.schemas import (
     MatterTeamAddRequest, MatterTeamMember, MatterTeamResponse,
     ReviewSubmitRequest, ReviewDecisionRequest, ReviewRequestResponse, ReviewQueueResponse,
-    SetReviewChainRequest,
+    SetReviewChainRequest, ReviewArtifactResponse, ReviewThreadResponse, ReviewThreadMessage,
 )
 from src.api.routes.audit import log_audit
 from src.components import authz
 from src.components import review_chain as rc
+from src.components import notifications as nf
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["Matters"])
+
+
+def _review_ctx(sb, *, actor_id, vault_id, note=None) -> dict:
+    """Best-effort human handles for a notification's rendered text (actor email + vault name). Never
+    raises — a missing handle just degrades to a short id / 'a matter' in the rendered copy."""
+    ctx: dict = {}
+    try:
+        if actor_id:
+            ctx["actor_email"] = sb.resolve_member_emails([actor_id]).get(str(actor_id))
+    except Exception:  # noqa: BLE001 — cosmetic only
+        pass
+    try:
+        if vault_id:
+            ctx["vault_name"] = (sb.get_collection(str(vault_id)) or {}).get("name")
+    except Exception:  # noqa: BLE001
+        pass
+    if note:
+        ctx["note"] = note
+    return ctx
 
 
 # ─────────────────────────────────────────
@@ -122,6 +142,13 @@ async def add_matter_team_member(
     # T10: staffing is a security/governance action — audit it.
     log_audit(sb, "matter.staff", "vault", str(vault_id),
               {"firm_id": str(firm_id), "added_user": body.user_id, "added_by": str(sb.user_id)})
+    # F2j: tell the added member they're on the matter (full access). Best-effort; the wall + firm
+    # filters fire inside emit (a screened/cross-firm recipient gets nothing — though staffing already
+    # asserted both above). Self-staffing notifies no one (recipient == actor).
+    nf.emit(sb, recipient_id=body.user_id, firm_id=str(firm_id), event="matter.staffed",
+            resource_type="vault", resource_id=str(vault_id), vault_id=str(vault_id),
+            actor_id=str(sb.user_id),
+            ctx=_review_ctx(sb, actor_id=sb.user_id, vault_id=vault_id))
     return _team_response(sb, vault_id, sb.list_matter_members(firm_id, vault_id))
 
 
@@ -263,6 +290,10 @@ async def submit_for_review(
               {"firm_id": str(firm_id), "vault_id": str(vault_id),
                "artifact_ref": body.artifact_ref, "current_owner": str(owner),
                "chain": chain})
+    # F2j: tell the FIRST owner that work is awaiting their review (anti-stall made visible).
+    nf.fan_out_review(sb, event="review.awaiting", review_request=req, firm_id=str(firm_id),
+                      actor_id=str(sb.user_id),
+                      ctx=_review_ctx(sb, actor_id=sb.user_id, vault_id=vault_id))
     return _review_response(req, firm_id)
 
 
@@ -315,8 +346,15 @@ async def approve_review(
     log_audit(sb, "review.approve", "review_request", str(request_id),
               {"firm_id": str(firm_id), "by": str(sb.user_id),
                "new_status": new_status, "new_owner": str(new_owner), "note": body.note})
-    return _review_response(updated or {**req, "status": new_status, "current_owner": new_owner},
-                            firm_id)
+    # F2j: on APPROVE, either the work advanced UP to a new reviewer (tell THEM it's awaiting) or it
+    # cleared internal review and is APPROVED (tell the SUBMITTER their work is ready to release). The
+    # persisted row carries the new current_owner + the submitter, so fan_out_review routes correctly.
+    final_row = updated or {**req, "status": new_status, "current_owner": new_owner}
+    nf_event = "review.approved" if new_status == "approved" else "review.awaiting"
+    nf.fan_out_review(sb, event=nf_event, review_request=final_row, firm_id=str(firm_id),
+                      actor_id=str(sb.user_id),
+                      ctx=_review_ctx(sb, actor_id=sb.user_id, vault_id=req.get("vault_id")))
+    return _review_response(final_row, firm_id)
 
 
 @router.post("/review/{request_id}/changes", response_model=ReviewRequestResponse)
@@ -341,8 +379,13 @@ async def request_changes(
     log_audit(sb, "review.changes_requested", "review_request", str(request_id),
               {"firm_id": str(firm_id), "by": str(sb.user_id),
                "returned_to": submitter, "note": body.note})
-    return _review_response(updated or {**req, "status": "changes_requested",
-                                        "current_owner": submitter}, firm_id)
+    # F2j: tell the SUBMITTER their work was returned for changes (with the reviewer's note).
+    final_row = updated or {**req, "status": "changes_requested", "current_owner": submitter}
+    nf.fan_out_review(sb, event="review.changes_requested", review_request=final_row,
+                      firm_id=str(firm_id), actor_id=str(sb.user_id),
+                      ctx=_review_ctx(sb, actor_id=sb.user_id, vault_id=req.get("vault_id"),
+                                      note=body.note))
+    return _review_response(final_row, firm_id)
 
 
 @router.post("/review/{request_id}/release", response_model=ReviewRequestResponse)
@@ -390,7 +433,12 @@ async def release_review(
               {"firm_id": str(firm_id), "released_by": str(sb.user_id),
                "role": membership.role, "vault_id": str(req.get("vault_id")),
                "artifact_ref": req.get("artifact_ref"), "note": body.note})
-    return _review_response(updated or {**req, "status": "released", "decided_at": now_iso}, firm_id)
+    # F2j: tell the SUBMITTER their work was released externally (the chain closed).
+    final_row = updated or {**req, "status": "released", "decided_at": now_iso}
+    nf.fan_out_review(sb, event="review.released", review_request=final_row, firm_id=str(firm_id),
+                      actor_id=str(sb.user_id),
+                      ctx=_review_ctx(sb, actor_id=sb.user_id, vault_id=req.get("vault_id")))
+    return _review_response(final_row, firm_id)
 
 
 @router.get("/review/queue", response_model=ReviewQueueResponse)
@@ -406,3 +454,62 @@ async def my_review_queue(
         raise HTTPException(status_code=403, detail="You are not a member of any firm.")
     rows = sb.list_my_review_queue(firm_id, owner_id=sb.user_id)
     return ReviewQueueResponse(requests=[_review_response(r, firm_id) for r in rows])
+
+
+# ─────────────────────────────────────────
+# F2j.1 — REVIEWABLE ARTIFACTS: let a reviewer SEE & verify the submitted work.
+#   A review you can't read is theatre. These two read-only endpoints surface the actual work behind
+#   a review request (a chat answer in the SUBMITTER's per-user conversation) to a reviewer — gated
+#   by the review RELATIONSHIP (the caller is the current_owner OR in the chain), scoped to that one
+#   artifact, firm + wall enforced server-side in db.review_artifact_authority (least privilege).
+#   A denied authority is a clean 404 (no existence leak). Every read is audited (T10).
+# ─────────────────────────────────────────
+
+@router.get("/review/{request_id}/artifact", response_model=ReviewArtifactResponse)
+async def get_review_artifact(
+    request_id: str,
+    sb=Depends(get_current_user),
+):
+    """The card preview — a legible summary of the submitted work (title + the question + the answer)
+    so a reviewer knows WHAT they're reviewing. The cross-user read is granted ONLY through the review
+    relationship (db.review_artifact_authority: caller is current_owner OR in the chain, same firm,
+    not screened). A caller without that authority gets a 404 (not a 403 — no leak of whether the id
+    exists). Audited `review.artifact.view` (T10 — who read what)."""
+    art = sb.get_review_artifact(request_id)
+    if art is None:
+        raise HTTPException(status_code=404, detail="No such review request, or you can't review it.")
+    # Audit the read only when it actually resolved the work (an unavailable artifact is a no-op view).
+    if art.get("available"):
+        log_audit(sb, "review.artifact.view", "review_request", str(request_id),
+                  {"submitter_id": art.get("submitter_id"),
+                   "conversation_id": art.get("conversation_id")})
+    return ReviewArtifactResponse(**{k: art.get(k) for k in (
+        "available", "title", "question", "answer_preview", "answer_full",
+        "conversation_id", "submitter_id", "created_at")})
+
+
+@router.get("/review/{request_id}/thread", response_model=ReviewThreadResponse)
+async def get_review_thread(
+    request_id: str,
+    sb=Depends(get_current_user),
+):
+    """View full work — the WHOLE conversation behind the submitted artifact, read-only, so the
+    reviewer verifies in context before deciding (the 'view full context' the review research calls
+    for). Same review-relationship authority as the preview; a denied caller gets a 404. Audited
+    `review.thread.view` (T10)."""
+    thread = sb.get_review_thread(request_id)
+    if thread is None:
+        raise HTTPException(status_code=404, detail="No such review request, or you can't review it.")
+    if thread.get("available"):
+        log_audit(sb, "review.thread.view", "review_request", str(request_id),
+                  {"conversation_id": thread.get("conversation_id"),
+                   "message_count": len(thread.get("messages") or [])})
+    return ReviewThreadResponse(
+        available=bool(thread.get("available")),
+        title=thread.get("title"),
+        conversation_id=thread.get("conversation_id"),
+        messages=[ReviewThreadMessage(
+            role=m.get("role", ""), content=m.get("content", ""),
+            sources=m.get("sources"), created_at=m.get("created_at"),
+        ) for m in (thread.get("messages") or [])],
+    )

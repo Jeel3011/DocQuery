@@ -1266,6 +1266,53 @@ export interface ReviewRequest {
   decided_at: string | null;
 }
 
+// F2j.1 — the submitted work behind a review request (so a reviewer can SEE & verify it).
+export interface ReviewArtifact {
+  available: boolean;
+  title: string | null;
+  question: string | null;
+  answer_preview: string | null;
+  answer_full: string | null;
+  conversation_id: string | null;
+  submitter_id: string | null;
+  created_at: string | null;
+}
+
+export interface ReviewThreadMessage {
+  role: string;
+  content: string;
+  sources: unknown[] | null;
+  created_at: string | null;
+}
+
+export interface ReviewThread {
+  available: boolean;
+  title: string | null;
+  conversation_id: string | null;
+  messages: ReviewThreadMessage[];
+}
+
+// The card preview. A 404 means the caller can't review this request — degrade to unavailable.
+export async function getReviewArtifact(token: string, requestId: string): Promise<ReviewArtifact> {
+  try {
+    const res = await makeClient(token).get<ReviewArtifact>(`/review/${requestId}/artifact`);
+    return res.data;
+  } catch {
+    return { available: false, title: null, question: null, answer_preview: null,
+             answer_full: null, conversation_id: null, submitter_id: null, created_at: null };
+  }
+}
+
+// The full read-only thread ("View full work").
+export async function getReviewThread(token: string, requestId: string): Promise<ReviewThread> {
+  try {
+    const res = await makeClient(token).get<ReviewThread>(`/review/${requestId}/thread`);
+    return res.data;
+  } catch {
+    return { available: false, title: null, conversation_id: null, messages: [] };
+  }
+}
+
 export async function submitForReview(
   token: string, collectionId: string, artifactRef: string
 ): Promise<ReviewRequest> {
@@ -1358,6 +1405,92 @@ export async function overrideAbstain(
     const res = await makeClient(token).post<OverrideAbstainResponse>(
       "/admin/firm/answers/override",
       { answer_ref: answerRef, collection_id: collectionId, reason, gate_objection: gateObjection ?? null }
+    );
+    return res.data;
+  } catch (err) {
+    handleAxiosError(err);
+  }
+}
+
+// ── F2j NOTIFICATIONS (the in-app inbox + anti-nag preferences) ───────────────
+// The inbox is the recipient's OWN — every endpoint is server-scoped to the caller
+// (a user can only read / mark / configure their own notifications, T2/T8).
+export interface AppNotification {
+  id: string;
+  event: string;
+  category: string;        // review | matter | governance
+  title: string | null;
+  body: string | null;
+  resource_type: string | null;
+  resource_id: string | null;
+  vault_id: string | null;
+  read: boolean;
+  created_at: string | null;
+}
+
+export interface NotificationList {
+  notifications: AppNotification[];
+  unread: number;
+}
+
+export interface NotificationPreferences {
+  muted_categories: string[];
+  quiet_start: number | null;
+  quiet_end: number | null;
+  digest_mode: boolean;
+}
+
+export async function getNotifications(
+  token: string, unreadOnly = false, limit = 50
+): Promise<NotificationList> {
+  try {
+    const res = await makeClient(token).get<NotificationList>(
+      `/notifications?unread_only=${unreadOnly}&limit=${limit}`
+    );
+    return res.data;
+  } catch (err) {
+    handleAxiosError(err);
+  }
+}
+
+export async function getUnreadCount(token: string): Promise<number> {
+  try {
+    const res = await makeClient(token).get<{ count: number }>("/notifications/unread-count");
+    return res.data.count ?? 0;
+  } catch {
+    // The bell is non-critical chrome — a failure degrades to 0, never a broken UI.
+    return 0;
+  }
+}
+
+export async function markNotificationsRead(
+  token: string, ids?: string[]
+): Promise<number> {
+  try {
+    const res = await makeClient(token).post<{ updated: number }>(
+      "/notifications/read", { ids: ids ?? null }
+    );
+    return res.data.updated ?? 0;
+  } catch (err) {
+    handleAxiosError(err);
+  }
+}
+
+export async function getNotificationPreferences(token: string): Promise<NotificationPreferences> {
+  try {
+    const res = await makeClient(token).get<NotificationPreferences>("/notifications/preferences");
+    return res.data;
+  } catch (err) {
+    handleAxiosError(err);
+  }
+}
+
+export async function setNotificationPreferences(
+  token: string, prefs: Partial<NotificationPreferences>
+): Promise<NotificationPreferences> {
+  try {
+    const res = await makeClient(token).put<NotificationPreferences>(
+      "/notifications/preferences", prefs
     );
     return res.data;
   } catch (err) {

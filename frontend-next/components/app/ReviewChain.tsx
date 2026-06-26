@@ -13,13 +13,14 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { motion } from "framer-motion";
-import { Send, ArrowRight, Check, RotateCcw, Upload, Inbox, AlertCircle } from "lucide-react";
+import { Send, ArrowRight, Check, RotateCcw, Upload, Inbox, AlertCircle, FileSearch } from "lucide-react";
 import { toast } from "sonner";
 import { useAuthStore } from "@/stores/auth.store";
 import { useFirmStore } from "@/stores/firm.store";
 import {
   submitForReview, getReviewQueue, approveReview, requestChanges, releaseExternal, listMembers,
-  APIError, type ReviewRequest, type MemberResponse,
+  getReviewArtifact,
+  APIError, type ReviewRequest, type MemberResponse, type ReviewArtifact,
 } from "@/lib/api";
 import { Button } from "@/components/ui/Button";
 import { Skeleton } from "@/components/ui/Skeleton";
@@ -28,6 +29,7 @@ import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter,
 } from "@/components/ui/Dialog";
 import { memberLabel } from "@/app/app/settings/firm/_shared";
+import { ReviewThreadView } from "./ReviewThreadView";
 
 const ease = [0.16, 1, 0.3, 1] as const;
 
@@ -203,57 +205,132 @@ export function ReviewQueue() {
 
   return (
     <div className="space-y-3">
-      {queue.map((r, i) => {
-        const owned = r.current_owner === me?.id;
-        const atChainEnd = r.status === "approved";
-        return (
-          <motion.div key={r.id}
-            initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }}
-            transition={{ ease, delay: Math.min(i * 0.04, 0.2) }}
-            className="rounded-2xl p-4" style={{ background: "var(--surface)", border: "1px solid var(--line)" }}>
-            <div className="flex items-start justify-between gap-3">
-              <div className="min-w-0">
-                <p className="text-[13px] font-medium truncate" style={{ color: "var(--ink)" }}>{r.artifact_ref}</p>
-                <p className="text-[11px] mt-0.5" style={{ color: "var(--ink-3)" }}>
-                  From {name(r.submitted_by)} · {STATUS_LABEL[r.status]}
-                </p>
-              </div>
-              {/* current_owner ALWAYS shown by name — the anti-stall property made visible */}
-              <span className="text-[10px] px-2 py-0.5 rounded-md shrink-0"
-                    style={{ background: "var(--surface-3)", color: "var(--ink-2)" }}>
-                Owner: {name(r.current_owner)}
-              </span>
-            </div>
-            {r.chain.length > 0 && (
-              <div className="mt-3"><ChainPreview chain={r.chain} ownerId={r.current_owner} nameOf={name} /></div>
-            )}
-            {owned && r.status !== "released" && (
-              <div className="flex items-center gap-2 mt-3">
-                {atChainEnd ? (
-                  canRelease ? (
-                    <Button variant="primary" size="sm" onClick={() => act(() => releaseExternal(token!, r.id), "Released externally")}>
-                      <Upload size={13} className="mr-1.5" /> Release externally
-                    </Button>
-                  ) : (
-                    <span className="text-[11px]" style={{ color: "var(--ink-3)" }}>
-                      Approved. A partner releases it outside the firm.
-                    </span>
-                  )
-                ) : (
-                  <>
-                    <Button variant="primary" size="sm" onClick={() => act(() => approveReview(token!, r.id), "Approved")}>
-                      <Check size={13} className="mr-1.5" /> Approve
-                    </Button>
-                    <Button variant="ghost" size="sm" onClick={() => act(() => requestChanges(token!, r.id), "Changes requested")}>
-                      <RotateCcw size={13} className="mr-1.5" /> Request changes
-                    </Button>
-                  </>
-                )}
-              </div>
-            )}
-          </motion.div>
-        );
-      })}
+      {queue.map((r, i) => (
+        <ReviewQueueCard
+          key={r.id} r={r} index={i}
+          ownedByMe={r.current_owner === me?.id}
+          canRelease={canRelease}
+          nameOf={name}
+          onApprove={() => act(() => approveReview(token!, r.id), "Approved")}
+          onChanges={() => act(() => requestChanges(token!, r.id), "Changes requested")}
+          onRelease={() => act(() => releaseExternal(token!, r.id), "Released externally")}
+        />
+      ))}
     </div>
+  );
+}
+
+// ── A single review-queue card — fetches its artifact preview so the reviewer SEES the work ──────
+function ReviewQueueCard({
+  r, index, ownedByMe, canRelease, nameOf, onApprove, onChanges, onRelease,
+}: {
+  r: ReviewRequest; index: number; ownedByMe: boolean; canRelease: boolean;
+  nameOf: (uid: string | null) => string;
+  onApprove: () => void; onChanges: () => void; onRelease: () => void;
+}) {
+  const token = useAuthStore((s) => s.token);
+  const [art, setArt] = useState<ReviewArtifact | null>(null);
+  const [viewOpen, setViewOpen] = useState(false);
+  const atChainEnd = r.status === "approved";
+
+  // Resolve the submitted work (title + question + answer preview) so the card is legible, not a uuid.
+  useEffect(() => {
+    if (!token) return;
+    let alive = true;
+    getReviewArtifact(token, r.id).then((a) => { if (alive) setArt(a); });
+    return () => { alive = false; };
+  }, [token, r.id]);
+
+  const heading = art?.title || art?.question || "Submitted work";
+
+  return (
+    <motion.div
+      initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }}
+      transition={{ ease, delay: Math.min(index * 0.04, 0.2) }}
+      className="rounded-2xl p-4" style={{ background: "var(--surface)", border: "1px solid var(--line)" }}>
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          {art === null ? (
+            <Skeleton className="h-4 w-48 rounded" />
+          ) : (
+            <p className="text-[13px] font-medium truncate" style={{ color: "var(--ink)" }}>{heading}</p>
+          )}
+          <p className="text-[11px] mt-0.5" style={{ color: "var(--ink-3)" }}>
+            From {nameOf(r.submitted_by)} · {STATUS_LABEL[r.status]}
+          </p>
+        </div>
+        {/* current_owner ALWAYS shown by name — the anti-stall property made visible */}
+        <span className="text-[10px] px-2 py-0.5 rounded-md shrink-0"
+              style={{ background: "var(--surface-3)", color: "var(--ink-2)" }}>
+          Owner: {nameOf(r.current_owner)}
+        </span>
+      </div>
+
+      {/* The work itself — so Approve/Request changes is a decision on content the reviewer READ. */}
+      {art?.available && (art.question || art.answer_preview) && (
+        <div className="mt-3 rounded-lg p-3 space-y-2" style={{ background: "var(--surface-2)" }}>
+          {art.question && (
+            <p className="text-[12px]" style={{ color: "var(--ink-2)" }}>
+              <span style={{ color: "var(--ink-3)" }}>Asked: </span>{art.question}
+            </p>
+          )}
+          {art.answer_preview && (
+            <p className="text-[12px] line-clamp-3" style={{ color: "var(--ink)" }}>{art.answer_preview}</p>
+          )}
+          <button
+            onClick={() => setViewOpen(true)}
+            className="inline-flex items-center gap-1.5 text-[11px] font-medium transition-colors active:scale-[0.97]"
+            style={{ color: "var(--ink-2)" }}
+          >
+            <FileSearch size={12} /> View full work
+          </button>
+        </div>
+      )}
+      {art !== null && !art.available && (
+        <p className="mt-2 text-[11px]" style={{ color: "var(--ink-3)" }}>
+          The submitted work is no longer available (the conversation may have been deleted). You can still
+          request changes.
+        </p>
+      )}
+
+      {r.chain.length > 0 && (
+        <div className="mt-3"><ChainPreview chain={r.chain} ownerId={r.current_owner} nameOf={nameOf} /></div>
+      )}
+      {ownedByMe && r.status !== "released" && (
+        <div className="flex items-center gap-2 mt-3">
+          {atChainEnd ? (
+            canRelease ? (
+              <Button variant="primary" size="sm" onClick={onRelease}>
+                <Upload size={13} className="mr-1.5" /> Release externally
+              </Button>
+            ) : (
+              <span className="text-[11px]" style={{ color: "var(--ink-3)" }}>
+                Approved. A partner releases it outside the firm.
+              </span>
+            )
+          ) : (
+            <>
+              <Button variant="primary" size="sm" onClick={onApprove}>
+                <Check size={13} className="mr-1.5" /> Approve
+              </Button>
+              <Button variant="ghost" size="sm" onClick={onChanges}>
+                <RotateCcw size={13} className="mr-1.5" /> Request changes
+              </Button>
+            </>
+          )}
+        </div>
+      )}
+
+      {/* Read-only full-work viewer */}
+      <Dialog open={viewOpen} onOpenChange={setViewOpen}>
+        <DialogContent maxWidth="640px">
+          <DialogHeader><DialogTitle>{heading}</DialogTitle></DialogHeader>
+          <ReviewThreadView requestId={r.id} />
+          <DialogFooter>
+            <Button variant="ghost" size="sm" onClick={() => setViewOpen(false)}>Close</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </motion.div>
   );
 }

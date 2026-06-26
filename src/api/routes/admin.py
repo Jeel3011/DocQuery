@@ -39,6 +39,7 @@ from src.api.schemas import (
     OverrideAbstainResponse,
 )
 from src.api.routes.audit import log_audit
+from src.components import notifications as nf
 
 logger = logging.getLogger(__name__)
 
@@ -677,6 +678,23 @@ async def override_abstain(
                "reason": body.reason,
                "gate_objection": body.gate_objection,
                "trust_state": "overridden"})
+    # F2j: an override on a matter is a high-trust event — tell the matter's OWNER (the partner/MP who
+    # owns the vault) unless they are the one who did it (self-skip in emit). The vault scope makes the
+    # ethical wall fire: a screened owner is never told (precedence, T5). Best-effort, never raises.
+    try:
+        vault_owner = (sb.get_collection(str(body.collection_id)) or {}).get("user_id")
+    except Exception:  # noqa: BLE001 — cosmetic; a missing owner just means no notify
+        vault_owner = None
+    if vault_owner:
+        actor_email = None
+        try:
+            actor_email = sb.resolve_member_emails([sb.user_id]).get(str(sb.user_id))
+        except Exception:  # noqa: BLE001
+            pass
+        nf.emit(sb, recipient_id=str(vault_owner), firm_id=str(firm_id), event="answer.overridden",
+                resource_type="answer", resource_id=str(body.answer_ref),
+                vault_id=str(body.collection_id), actor_id=str(sb.user_id),
+                ctx={"actor_email": actor_email})
     return OverrideAbstainResponse(
         answer_ref=str(body.answer_ref),
         collection_id=str(body.collection_id),

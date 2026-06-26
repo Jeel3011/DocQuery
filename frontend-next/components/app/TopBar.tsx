@@ -10,6 +10,7 @@ import { AnimatePresence, motion } from "framer-motion";
 import { Settings, LogOut, ChevronDown, Inbox, Building2 } from "lucide-react";
 import { CollectionResponse } from "@/lib/api";
 import { VaultSwitcher } from "./VaultSwitcher";
+import { NotificationBell } from "./NotificationBell";
 import { useFirmStore } from "@/stores/firm.store";
 import { ROLE_LABEL } from "@/app/app/settings/firm/_shared";
 
@@ -97,6 +98,9 @@ export function TopBar({ collections, activeId, email, name, onNewVault, onLogou
       >
         ⌘K
       </button>
+
+      {/* Notifications (F2j) */}
+      <NotificationBell />
 
       {/* Account menu */}
       <div ref={acctRef} className="relative flex-shrink-0">

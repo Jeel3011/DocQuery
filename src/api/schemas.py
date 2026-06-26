@@ -318,6 +318,37 @@ class ReviewQueueResponse(BaseModel):
     requests: List[ReviewRequestResponse] = Field(default_factory=list)
 
 
+# ── F2j.1 — reviewable artifacts: let a reviewer SEE the submitted work ──────────────────────────
+class ReviewArtifactResponse(BaseModel):
+    """The card-preview of a review request's submitted work, for a reviewer who passes the
+    review-read authority. `available=False` means the work was deleted after submission (graceful)."""
+    available: bool = False
+    title: Optional[str] = None
+    question: Optional[str] = None        # the user's question that produced the answer
+    answer_preview: Optional[str] = None  # first ~280 chars of the answer
+    answer_full: Optional[str] = None     # the full answer text
+    conversation_id: Optional[str] = None
+    submitter_id: Optional[str] = None
+    created_at: Optional[str] = None
+
+
+class ReviewThreadMessage(BaseModel):
+    """One turn in the read-only review thread."""
+    role: str
+    content: str
+    sources: Optional[list] = None
+    created_at: Optional[str] = None
+
+
+class ReviewThreadResponse(BaseModel):
+    """The whole conversation behind a submitted artifact, read-only — the reviewer's 'View full
+    work'. `available=False` if the conversation was deleted."""
+    available: bool = False
+    title: Optional[str] = None
+    conversation_id: Optional[str] = None
+    messages: List[ReviewThreadMessage] = Field(default_factory=list)
+
+
 # ── F2g / surface 6 — set a matter's CUSTOM review chain ───────────────────────────────────────
 class SetReviewChainRequest(BaseModel):
     """Set (or clear) a matter's custom review chain (D5 — "Customize review chain" for big
@@ -344,6 +375,51 @@ class CapabilitiesResponse(BaseModel):
     firm_id: Optional[str] = None
     is_external: bool = False
     delegated_verbs: List[str] = Field(default_factory=list)
+
+
+# ── F2j — NOTIFICATIONS (in-app inbox + anti-nag preferences) ───────────────────────────────────
+class NotificationResponse(BaseModel):
+    """One in-app notification (the recipient's own — the route only ever returns sb.user_id's rows)."""
+    id: str
+    event: str
+    category: str
+    title: Optional[str] = None
+    body: Optional[str] = None
+    resource_type: Optional[str] = None
+    resource_id: Optional[str] = None
+    vault_id: Optional[str] = None
+    read: bool = False
+    created_at: Optional[str] = None
+
+
+class NotificationListResponse(BaseModel):
+    """The inbox payload: the recent notifications + the unread count (the bell badge)."""
+    notifications: List[NotificationResponse] = Field(default_factory=list)
+    unread: int = 0
+
+
+class MarkReadRequest(BaseModel):
+    """Mark notifications read. `ids` = the specific ones (still scoped to the caller's own rows
+    server-side, T2/T8); omit / null ⇒ mark ALL the caller's unread."""
+    ids: Optional[List[str]] = None
+
+
+class NotificationPreferencesResponse(BaseModel):
+    """The caller's anti-nag preferences (defaults when no row — "notify normally")."""
+    muted_categories: List[str] = Field(default_factory=list)
+    quiet_start: Optional[int] = None
+    quiet_end: Optional[int] = None
+    digest_mode: bool = False
+
+
+class NotificationPreferencesRequest(BaseModel):
+    """Update the caller's preferences (own row, server-scoped). Only the provided fields change.
+    quiet_start/quiet_end are hours 0-23 (a window that may wrap midnight, e.g. 21→7); digest_mode
+    batches low-signal events into a daily email summary (honored at the email layer)."""
+    muted_categories: Optional[List[str]] = None
+    quiet_start: Optional[int] = None
+    quiet_end: Optional[int] = None
+    digest_mode: Optional[bool] = None
 
 
 # ─────────────────────────────────────────
