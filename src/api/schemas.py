@@ -311,6 +311,9 @@ class ReviewRequestResponse(BaseModel):
     chain: List[str] = Field(default_factory=list)
     created_at: Optional[str] = None
     decided_at: Optional[str] = None
+    # F2i: the sign-off attached to this transition (internal approve / external release), if one was
+    # produced. None on submit/changes and when the signatures table is unapplied (dormant).
+    signature: Optional["SignatureResponse"] = None
 
 
 class ReviewQueueResponse(BaseModel):
@@ -420,6 +423,126 @@ class NotificationPreferencesRequest(BaseModel):
     quiet_start: Optional[int] = None
     quiet_end: Optional[int] = None
     digest_mode: Optional[bool] = None
+
+
+# ── F2i — E-SIGNATURES (legally-valid sign-off, IT Act 2000) ─────────────────────────────────────
+
+class SignatureResponse(BaseModel):
+    """One tamper-evident, hash-chained sign-off (the secure-electronic-signature record, §85B). The
+    hashes are returned so a client can independently verify, and surfaced in the release record."""
+    id: str
+    firm_id: str
+    signer_id: str
+    signer_name: Optional[str] = None
+    artifact_type: str
+    artifact_ref: str
+    artifact_hash: str
+    intent: str
+    signature_method: str
+    signed_at: Optional[str] = None
+    chain_seq: Optional[int] = None
+    content_hash: Optional[str] = None
+    row_hash: Optional[str] = None
+    note: Optional[str] = None   # e.g. "strong tier unavailable; signed at secure tier"
+
+
+class SignatureListResponse(BaseModel):
+    signatures: List[SignatureResponse] = Field(default_factory=list)
+
+
+class ChainVerificationResponse(BaseModel):
+    """The result of walking a firm's signature chain end-to-end (tamper / deletion / reorder check)."""
+    ok: bool
+    count: int
+    first_broken_seq: Optional[int] = None
+    reason: Optional[str] = None
+
+
+# ── F2k — DPDP DATA-PRINCIPAL RIGHTS (access §11 / erasure §12 / grievance §13) ───────────────────
+# The FIRM owns the DPDP duty (Data Fiduciary); these shapes ENABLE it. NONE carries a firm_id (T3 —
+# the firm is resolved server-side); an admin on-behalf action names the PRINCIPAL (the subject), and
+# the cap (manage_members) is checked in the route. See routes/dpdp.py + src/components/dpdp.py.
+
+class DataExportResponse(BaseModel):
+    """A data principal's access/export payload (§11): their content + a processing summary + a manifest.
+    `processing_records` (audit) are INCLUDED as a §11 summary of processing but are RETAINED, not
+    erasable — the export and the erase honor different scopes (see the erase distinction)."""
+    data_principal: str
+    generated_at: Optional[str] = None
+    firm: Optional[dict] = None
+    documents: List[dict] = Field(default_factory=list)
+    conversations: List[dict] = Field(default_factory=list)
+    messages: List[dict] = Field(default_factory=list)
+    processing_records: List[dict] = Field(default_factory=list)
+    manifest: dict = Field(default_factory=dict)
+    notes: dict = Field(default_factory=dict)
+
+
+class OnBehalfRequest(BaseModel):
+    """An admin-initiated rights action ON BEHALF of another data principal (§11/§12). Cap-gated
+    (manage_members) + firm-boundary checked in the route. Carries the SUBJECT (principal_id) and an
+    optional reason — NEVER a firm_id (T3: the firm is the caller's own, resolved server-side)."""
+    principal_id: str
+    reason: Optional[str] = None
+
+
+class ErasureResponse(BaseModel):
+    """The result of a §12 erasure: counts of personal CONTENT soft-deleted, the records deliberately
+    PRESERVED (the immutable audit log + the F2i signature chain), and the erasure-ledger proof id."""
+    data_principal: str
+    documents_erased: int = 0
+    conversations_erased: int = 0
+    messages_erased: int = 0
+    preserved: List[str] = Field(default_factory=list)
+    erasure_id: Optional[str] = None
+    note: Optional[str] = None
+
+
+class GrievanceOfficerRequest(BaseModel):
+    """Name (or change) the firm's grievance officer (§13). Cap-gated (manage_members), firm
+    server-resolved (T3 — no firm_id field). `user_id` links the officer to a firm member when they
+    are one; name/email allow an external DPO too."""
+    name: str
+    email: Optional[str] = None
+    user_id: Optional[str] = None
+
+
+class GrievanceOfficerResponse(BaseModel):
+    name: Optional[str] = None
+    email: Optional[str] = None
+    user_id: Optional[str] = None
+    configured: bool = False
+
+
+class GrievanceRequest(BaseModel):
+    """File a §13 grievance. The complainant is the caller (server-side); the named officer is captured
+    from the firm record at filing time. No firm_id (T3)."""
+    subject: str
+
+
+class GrievanceStatusRequest(BaseModel):
+    """Action a grievance (acknowledge/resolve/reject), manager-gated. No firm_id (T3)."""
+    status: str
+    resolution_note: Optional[str] = None
+
+
+class GrievanceResponse(BaseModel):
+    id: str
+    firm_id: str
+    principal_id: str
+    subject: str
+    officer_name: Optional[str] = None
+    officer_email: Optional[str] = None
+    status: str
+    resolution_note: Optional[str] = None
+    created_at: Optional[str] = None
+    due_at: Optional[str] = None
+    resolved_at: Optional[str] = None
+
+
+class GrievanceListResponse(BaseModel):
+    grievances: List[GrievanceResponse] = Field(default_factory=list)
+    officer: GrievanceOfficerResponse = Field(default_factory=GrievanceOfficerResponse)
 
 
 # ─────────────────────────────────────────

@@ -252,6 +252,16 @@ class FakeSB:
                 if r["firm_id"] == firm_id and r["current_owner"] == uid
                 and r["status"] in ("pending", "approved", "changes_requested")]
 
+    # F2i e-sign seams — DORMANT here (the signatures table is unapplied in this gate's world, so
+    # signing degrades to None and the §1(4) title lookup finds no excluded instrument): the review
+    # chain's behavior is byte-identical with e-sign present-but-dormant. F2i's own gate (test_esign)
+    # covers the active signing + the §1(4) refusal.
+    def append_signature(self, **_kw):
+        return None
+
+    def get_review_artifact(self, _request_id):
+        return None
+
 
 def _patch_audit(*sbs):
     """Point log_audit at each fake's audit list (T10 capture). matters.py binds `log_audit` at

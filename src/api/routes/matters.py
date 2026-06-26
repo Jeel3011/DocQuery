@@ -25,7 +25,7 @@ applies it); every db method degrades to an empty result when its table is absen
 """
 import logging
 
-from fastapi import APIRouter, HTTPException, Depends
+from fastapi import APIRouter, HTTPException, Depends, Request
 
 from src.api.dependencies import (
     get_current_user, require_cap, resolve_membership, assert_vault_not_screened,
@@ -34,15 +34,109 @@ from src.api.schemas import (
     MatterTeamAddRequest, MatterTeamMember, MatterTeamResponse,
     ReviewSubmitRequest, ReviewDecisionRequest, ReviewRequestResponse, ReviewQueueResponse,
     SetReviewChainRequest, ReviewArtifactResponse, ReviewThreadResponse, ReviewThreadMessage,
+    SignatureResponse, SignatureListResponse, ChainVerificationResponse,
 )
 from src.api.routes.audit import log_audit
 from src.components import authz
+from src.components import esign
 from src.components import review_chain as rc
 from src.components import notifications as nf
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["Matters"])
+
+
+def _signed_artifact_content(sb, req: dict) -> str:
+    """The exact bytes a sign-off attests, for the artifact_hash (the tamper anchor). For a review
+    request the signed thing is the reviewed ANSWER text; we resolve it through the same review-gated
+    path the reviewer used (get_review_artifact → answer_full). Best-effort: if the content can't be
+    resolved (deleted artifact / unapplied tables), we hash a stable descriptor of the request instead,
+    so a signature is still produced and chained — it just can't later prove the answer text unchanged.
+    NEVER raises (a content-resolution blip must not block the legal sign-off)."""
+    try:
+        art = sb.get_review_artifact(str(req.get("id"))) or {}
+        if art.get("available") and art.get("answer_full"):
+            return art["answer_full"]
+    except Exception:  # noqa: BLE001 — best-effort; fall through to the descriptor
+        logger.warning("sign: could not resolve artifact content for %s", req.get("id"))
+    # Fallback descriptor — stable, so re-signing the same request hashes identically.
+    return (f"review_request:{req.get('id')}|artifact:{req.get('artifact_ref')}"
+            f"|vault:{req.get('vault_id')}")
+
+
+def _assert_artifact_signable(sb, req: dict) -> None:
+    """F2i §1(4) guard: refuse to e-sign a categorically non-e-signable instrument (raises HTTP 422
+    'wet-ink required'). Classifies by the artifact's title + the matter's declared instrument type:
+      • the matter (collection) may declare `matter_kind` / a parties-level instrument type;
+      • the artifact title (the conversation title) is the free-text signal.
+    Conservative — any §1(4) match refuses. NEVER falsely blocks a normal review (the patterns are
+    specific legal instruments). A resolution failure degrades to 'signable' (we don't block on a
+    lookup blip — the guard is for KNOWN excluded instruments, not unknowns)."""
+    title = ""
+    instrument_type = ""
+    try:
+        coll = sb.get_collection(str(req.get("vault_id"))) or {}
+        instrument_type = (coll.get("matter_kind") or "")
+        title = coll.get("name") or ""
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        art = sb.get_review_artifact(str(req.get("id"))) or {}
+        if art.get("title"):
+            title = f"{title} {art['title']}".strip()
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        esign.assert_signable(title=title, instrument_type=instrument_type)
+    except esign.SignabilityRefusal as r:
+        raise HTTPException(status_code=422, detail=r.reason)
+
+
+def _sign_request(sb, http_request, req: dict, *, firm_id, intent: str, role: str = None) -> dict:
+    """Produce a tamper-evident, hash-chained signature for a review transition (approve = internal
+    sign-off, release = external release — IT Act §85B secure tier). Runs the §1(4) exclusion guard
+    FIRST (a hard refusal is raised by the caller as 422); then resolves the signed content, captures
+    the device factors (IP / user-agent), and appends to the firm chain via db.append_signature.
+
+    Best-effort at the WRITE level (a missing signatures table / infra blip returns {} and the
+    transition still completes — verify() later reports 'unsigned'), but the §1(4) refusal is HARD and
+    raised by assert_signable() in the caller BEFORE the transition, because a void signature is worse
+    than none. Returns the signature row (or {} if it could not be written)."""
+    content = _signed_artifact_content(sb, req)
+    ip = ua = None
+    try:
+        if http_request is not None:
+            ip = http_request.client.host if http_request.client else None
+            ua = http_request.headers.get("user-agent")
+    except Exception:  # noqa: BLE001 — device factors are evidence, not gating
+        pass
+    signer_name = None
+    try:
+        signer_name = sb.resolve_member_emails([sb.user_id]).get(str(sb.user_id))
+    except Exception:  # noqa: BLE001
+        pass
+    row = sb.append_signature(
+        firm_id=str(firm_id), artifact_type="review_request", artifact_ref=str(req.get("id")),
+        artifact_content=content, intent=intent, vault_id=req.get("vault_id"),
+        signer_name=signer_name, ip_address=ip, user_agent=ua,
+        metadata={"role": role, "status_at_sign": req.get("status")},
+    )
+    return row or {}
+
+
+def _signature_response(row: dict, note: str = None) -> "SignatureResponse | None":
+    """Map a signature db row → the API model (or None if no signature was written)."""
+    if not row:
+        return None
+    return SignatureResponse(
+        id=str(row.get("id")), firm_id=str(row.get("firm_id")), signer_id=str(row.get("signer_id")),
+        signer_name=row.get("signer_name"), artifact_type=row.get("artifact_type"),
+        artifact_ref=str(row.get("artifact_ref")), artifact_hash=row.get("artifact_hash"),
+        intent=row.get("intent"), signature_method=row.get("signature_method"),
+        signed_at=row.get("signed_at"), chain_seq=row.get("chain_seq"),
+        content_hash=row.get("content_hash"), row_hash=row.get("row_hash"), note=note,
+    )
 
 
 def _review_ctx(sb, *, actor_id, vault_id, note=None) -> dict:
@@ -316,6 +410,7 @@ def _load_owned_request(sb, firm_id: str, request_id: str) -> dict:
 async def approve_review(
     request_id: str,
     body: ReviewDecisionRequest = ReviewDecisionRequest(),
+    http_request: Request = None,
     sb=Depends(get_current_user),
     membership=Depends(require_cap("send_for_review")),
 ):
@@ -323,12 +418,20 @@ async def approve_review(
     current_owner may approve (server-checked). When there is a NEXT reviewer, ownership moves to
     them (status stays `pending`). When the current owner is the LAST in the chain, the request
     becomes `approved` and ownership moves to the partner who may release_external at the end
-    (chain_end_owner) — still a NAMED owner (anti-stall). Audited (T10)."""
+    (chain_end_owner) — still a NAMED owner (anti-stall). Audited (T10).
+
+    F2i: each approval is an INTERNAL sign-off — a tamper-evident, hash-chained secure e-signature
+    (IT Act §85B). The §1(4) exclusion guard runs first: a categorically non-e-signable instrument
+    (will / PoA / negotiable instrument / trust / immovable sale) is REFUSED (422 'wet-ink required')
+    before any state change — a void signature must never be created."""
     firm_id = membership.firm_id
     if not firm_id:
         raise HTTPException(status_code=403, detail="You are not a member of any firm.")
     req = _load_owned_request(sb, firm_id, request_id)
     chain = [str(c) for c in (req.get("chain") or [])]
+
+    # F2i §1(4) guard — refuse to e-sign an excluded instrument BEFORE advancing the state.
+    _assert_artifact_signable(sb, req)
 
     nxt = rc.next_owner(chain, sb.user_id)
     if nxt:
@@ -346,15 +449,24 @@ async def approve_review(
     log_audit(sb, "review.approve", "review_request", str(request_id),
               {"firm_id": str(firm_id), "by": str(sb.user_id),
                "new_status": new_status, "new_owner": str(new_owner), "note": body.note})
+    # F2i: record this reviewer's internal sign-off in the firm's signature chain (best-effort write).
+    final_row = updated or {**req, "status": new_status, "current_owner": new_owner}
+    sig = _sign_request(sb, http_request, {**req, "status": new_status}, firm_id=firm_id,
+                        intent=esign.INTENT_APPROVE, role=membership.role)
+    if sig:
+        log_audit(sb, "signature.approve", "signature", str(sig.get("id")),
+                  {"firm_id": str(firm_id), "review_request": str(request_id),
+                   "chain_seq": sig.get("chain_seq"), "row_hash": sig.get("row_hash")})
     # F2j: on APPROVE, either the work advanced UP to a new reviewer (tell THEM it's awaiting) or it
     # cleared internal review and is APPROVED (tell the SUBMITTER their work is ready to release). The
     # persisted row carries the new current_owner + the submitter, so fan_out_review routes correctly.
-    final_row = updated or {**req, "status": new_status, "current_owner": new_owner}
     nf_event = "review.approved" if new_status == "approved" else "review.awaiting"
     nf.fan_out_review(sb, event=nf_event, review_request=final_row, firm_id=str(firm_id),
                       actor_id=str(sb.user_id),
                       ctx=_review_ctx(sb, actor_id=sb.user_id, vault_id=req.get("vault_id")))
-    return _review_response(final_row, firm_id)
+    resp = _review_response(final_row, firm_id)
+    resp.signature = _signature_response(sig)
+    return resp
 
 
 @router.post("/review/{request_id}/changes", response_model=ReviewRequestResponse)
@@ -392,6 +504,7 @@ async def request_changes(
 async def release_review(
     request_id: str,
     body: ReviewDecisionRequest = ReviewDecisionRequest(),
+    http_request: Request = None,
     sb=Depends(get_current_user),
     membership=Depends(require_cap("release_external")),
 ):
@@ -400,7 +513,11 @@ async def release_review(
     partners + senior associates hold it; the chain END is a PARTNER — can_release_external). The
     request MUST be `approved` (the chain cleared internal review) and the CALLER must be its
     current_owner. The ethical wall floor still applies (a screened partner can't release a walled
-    matter). Becomes `released` (terminal); decided_at is set. Audited (T10 — the release record)."""
+    matter). Becomes `released` (terminal); decided_at is set. Audited (T10 — the release record).
+
+    F2i: external release is the highest-stakes sign-off — a tamper-evident, hash-chained secure
+    e-signature (IT Act §85B) attesting WHO released WHAT, WHEN, with the artifact hash. The §1(4)
+    exclusion guard runs first (a void e-sign on a will/PoA/etc. is refused 422 BEFORE release)."""
     firm_id = membership.firm_id
     if not firm_id:
         raise HTTPException(status_code=403, detail="You are not a member of any firm.")
@@ -423,6 +540,8 @@ async def release_review(
                             detail="External release at the end of the chain is a partner action.")
     # The ethical wall floor — a screened partner cannot release a walled matter (precedence, T6).
     assert_vault_not_screened(sb, req.get("vault_id"))
+    # F2i §1(4) guard — refuse a void external e-sign BEFORE the terminal transition.
+    _assert_artifact_signable(sb, req)
 
     from datetime import datetime, timezone
     now_iso = datetime.now(timezone.utc).isoformat()
@@ -433,12 +552,51 @@ async def release_review(
               {"firm_id": str(firm_id), "released_by": str(sb.user_id),
                "role": membership.role, "vault_id": str(req.get("vault_id")),
                "artifact_ref": req.get("artifact_ref"), "note": body.note})
+    # F2i: the external-release sign-off — the legally-citable record of the release (hash-chained).
+    sig = _sign_request(sb, http_request, {**req, "status": "released"}, firm_id=firm_id,
+                        intent=esign.INTENT_RELEASE, role=membership.role)
+    if sig:
+        log_audit(sb, "signature.release", "signature", str(sig.get("id")),
+                  {"firm_id": str(firm_id), "review_request": str(request_id),
+                   "chain_seq": sig.get("chain_seq"), "row_hash": sig.get("row_hash")})
     # F2j: tell the SUBMITTER their work was released externally (the chain closed).
     final_row = updated or {**req, "status": "released", "decided_at": now_iso}
     nf.fan_out_review(sb, event="review.released", review_request=final_row, firm_id=str(firm_id),
                       actor_id=str(sb.user_id),
                       ctx=_review_ctx(sb, actor_id=sb.user_id, vault_id=req.get("vault_id")))
-    return _review_response(final_row, firm_id)
+    resp = _review_response(final_row, firm_id)
+    resp.signature = _signature_response(sig)
+    return resp
+
+
+@router.get("/review/{request_id}/signatures", response_model=SignatureListResponse)
+async def get_review_signatures(
+    request_id: str,
+    sb=Depends(get_current_user),
+    membership=Depends(require_cap("send_for_review")),
+):
+    """The sign-off record(s) on a review request — the approve + release signatures, oldest first.
+    Read-gated by the review relationship (review_artifact_authority — the same least-privilege gate
+    that lets a reviewer SEE the work lets them see who signed it). 404-on-deny (no existence leak)."""
+    if not sb.review_artifact_authority(request_id):
+        raise HTTPException(status_code=404, detail="No such review request in your firm.")
+    rows = sb.get_signatures_for_artifact("review_request", request_id)
+    return SignatureListResponse(signatures=[_signature_response(r) for r in rows if r])
+
+
+@router.get("/firm/signatures/verify", response_model=ChainVerificationResponse)
+async def verify_signature_chain(
+    sb=Depends(get_current_user),
+    membership=Depends(require_cap("manage_members")),
+):
+    """Walk the firm's whole signature chain and verify its integrity (no tampering / deletion /
+    reorder). A firm-evidence operation — `manage_members` (partner-tier) gated. Firm resolved
+    server-side (T3). An empty/unapplied ledger verifies trivially intact."""
+    firm_id = membership.firm_id
+    if not firm_id:
+        raise HTTPException(status_code=403, detail="You are not a member of any firm.")
+    result = sb.verify_firm_chain(firm_id)
+    return ChainVerificationResponse(**result)
 
 
 @router.get("/review/queue", response_model=ReviewQueueResponse)

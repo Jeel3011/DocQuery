@@ -28,6 +28,7 @@ from src.api.routes import doc_catalog as doc_catalog_routes  # Legal catalog §
 from src.api.routes import connectors as connectors_routes    # G8.6 vault connectors (flag-gated)
 from src.api.routes import matters as matters_routes          # F2e: matter staffing + review chain
 from src.api.routes import notifications as notifications_routes  # F2j: in-app inbox + preferences
+from src.api.routes import dpdp as dpdp_routes                  # F2k: DPDP rights + grievance officer
 from src.api.middleware import CorrelationIDMiddleware, SecurityHeadersMiddleware
 
 from slowapi.errors import RateLimitExceeded
@@ -56,6 +57,19 @@ _IS_PROD = os.getenv("IS_PROD", "false").lower() == "true"
 async def lifespan(app: FastAPI):
     """Initialize shared resources on startup."""
     init_config()
+
+    # F2k (DPDP Rule 6.5): assert the audit-log retention floor (>= 1 year) at startup. A deployment
+    # configured to under-retain processing logs is a compliance breach we refuse to start silently —
+    # the constant is also pinned by the F2k gate, but this catches a live env override.
+    try:
+        from src.api.dependencies import get_config as _get_cfg
+        from src.components import dpdp as _dpdp
+        _dpdp.assert_retention_floor(int(getattr(_get_cfg(), "AUDIT_LOG_RETENTION_DAYS", 0)))
+    except ValueError:
+        raise  # a sub-year retention is a hard misconfiguration — fail loudly, do not start.
+    except Exception as exc:  # noqa: BLE001 — a missing config attr must not block startup
+        import logging
+        logging.getLogger(__name__).warning("DPDP retention-floor check skipped: %s", exc)
 
     # Pre-warm the cross-encoder reranker so the FIRST query doesn't pay the
     # 1-3s model-load (and the Hub network checks) inline. Best-effort: a failure
@@ -143,6 +157,7 @@ app.include_router(doc_catalog_routes.router, prefix=API_PREFIX, tags=["DocCatal
 app.include_router(connectors_routes.router,  prefix=API_PREFIX, tags=["Connectors"])  # G8.6 (flag-gated)
 app.include_router(matters_routes.router,     prefix=API_PREFIX, tags=["Matters"])    # F2e: matter staffing + review chain
 app.include_router(notifications_routes.router, prefix=API_PREFIX, tags=["Notifications"])  # F2j: in-app inbox
+app.include_router(dpdp_routes.router, prefix=API_PREFIX, tags=["DPDP"])  # F2k: data-principal rights + grievance officer
 
 
 # -- Prometheus Metrics --

@@ -235,3 +235,28 @@ class Config:
     # id the frontend uses for the browser-side token flow (no server secret stored in v1).
     USE_CONNECTORS: bool = os.getenv("USE_CONNECTORS", "false").lower() == "true"
     GOOGLE_DRIVE_CLIENT_ID: str = os.getenv("GOOGLE_DRIVE_CLIENT_ID", "")
+
+    # ── F2k: DPDP Rules 2025 — Rule 6.5 mandatory log retention ───────────────────────────────────
+    # DPDP Rule 6 lists SEVEN security safeguards a Data Fiduciary (the firm) and its Processor
+    # (DocQuery) must keep; (6.5) requires that ACCESS/PROCESSING LOGS be retained for AT LEAST ONE
+    # YEAR. We set this EXPLICITLY (not implicitly "we never delete") so the floor is a single asserted
+    # constant the F2k gate pins — a value below 365 is a compliance regression and fails the gate.
+    # The audit_log is the record of processing; it is NOT erased by a data-principal erasure request
+    # (erasure targets personal CONTENT, the immutable processing record is retained for the legal
+    # period — see src/components/dpdp.py, the §12-vs-immutable-log distinction). Env-overridable UP
+    # only in spirit (a longer retention is fine; the gate asserts the floor).
+    AUDIT_LOG_RETENTION_DAYS: int = int(os.getenv("AUDIT_LOG_RETENTION_DAYS", "400"))
+
+    # ── F2l: Legal artifacts — the "no training on your data" switch (DPA/AI-addendum load-bearing) ──
+    # The DPA (docs/legal/DPA.md §3) and AI-use addendum promise Customer Data is processed ONLY on the
+    # firm's documented instructions and is NEVER used to train/fine-tune/improve a model without the
+    # firm's written, opt-in consent. This flag is the ENFORCEMENT POINT that makes that promise TRUE,
+    # not just prose: it is OFF by default (no training), and src/components/legal_posture.py guards any
+    # "improve the model on Customer Data" seam against it — there is no such path in the product today,
+    # so the guard protects the SEAM (a future fine-tune/feedback-export path must call assert_no_training
+    # and is refused while this is off). Env-overridable UP only by an explicit, deliberate opt-in
+    # (per-tenant, time-boxed, written consent — the DPA's terms); the default ships compliant.
+    #   ALLOW_MODEL_TRAINING_ON_CUSTOMER_DATA = False  ⇒  no training (the DPA-true default).
+    MODEL_TRAINING_ON_CUSTOMER_DATA: bool = (
+        os.getenv("ALLOW_MODEL_TRAINING_ON_CUSTOMER_DATA", "false").lower() == "true"
+    )

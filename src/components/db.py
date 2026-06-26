@@ -2085,3 +2085,374 @@ class SupabaseManager:
             import logging
             logging.getLogger(__name__).warning("Conflict scan failed (non-blocking): %s", exc)
             return []
+
+    # ── F2i E-SIGNATURES — append-only, per-firm hash-chained sign-off (IT Act §85B) ────────────────
+    #   The chain extension is read-tip-then-append. Two writers racing on the same firm could both read
+    #   the same tip and try the same chain_seq; the uq_signatures_firm_seq UNIQUE index makes the
+    #   loser's insert fail (23505), and append_signature RETRIES from the fresh tip (bounded). So the
+    #   chain stays strictly monotonic without a DB-side sequence or advisory lock. All DORMANT-ON-EMPTY:
+    #   a missing `signatures` table degrades to None/[] via _is_missing_relation = byte-identical pre-F2i.
+
+    def _signature_chain_tip(self, firm_id: str) -> "dict | None":
+        """The current tip (highest chain_seq row) of a firm's signature chain, or None if the chain is
+        empty / the table is unapplied. Service-role read (the chain is firm-internal, append happens
+        server-side). Returns {chain_seq, row_hash}."""
+        try:
+            res = self.client.table("signatures").select("chain_seq, row_hash").eq(
+                "firm_id", firm_id
+            ).order("chain_seq", desc=True).limit(1).execute()
+        except Exception as e:
+            if _is_missing_relation(e):
+                return None
+            raise
+        return (res.data or [None])[0] if res.data else None
+
+    def append_signature(
+        self,
+        *,
+        firm_id: str,
+        artifact_type: str,
+        artifact_ref: str,
+        artifact_content: str,
+        intent: str,
+        signature_method: str = None,
+        signer_name: str = None,
+        vault_id: str = None,
+        ip_address: str = None,
+        user_agent: str = None,
+        metadata: dict = None,
+        _retries: int = 3,
+    ) -> "dict | None":
+        """Sign `artifact_ref`: build a chain-linked signature row off the firm's current tip and append
+        it. The signer is ALWAYS the current user (self.user_id) — identity is the JWT-verified member,
+        the "secure" tier's authentication factor; a caller cannot sign as someone else. Returns the
+        inserted row, or None if the table is unapplied (dormant) / signing fails to write (best-effort
+        at the audit level — the route still completes the release; verify() later reports "unsigned").
+
+        The §1(4) exclusion guard is the ROUTE's job (esign.assert_signable, a hard 422 BEFORE this) —
+        by the time we're here the artifact is signable. Concurrency: on a chain_seq collision (another
+        signature landed first) we re-read the tip and retry, bounded by _retries."""
+        from src.components import esign
+        if not (self.user_id and firm_id and artifact_ref):
+            return None
+        method, _note = esign.resolve_method(signature_method)
+        signed_at = datetime.now(timezone.utc).isoformat()
+        attempt = 0
+        while attempt <= _retries:
+            attempt += 1
+            tip = self._signature_chain_tip(firm_id)
+            if tip is None and not self._signatures_table_present():
+                return None  # unapplied table ⇒ dormant
+            seq = (tip.get("chain_seq", 0) if tip else 0) + 1
+            prev = tip.get("row_hash") if tip else None
+            row = esign.build_signature_row(
+                firm_id=firm_id, signer_id=self.user_id, artifact_type=artifact_type,
+                artifact_ref=artifact_ref, artifact_content=artifact_content, intent=intent,
+                signed_at=signed_at, chain_seq=seq, prev_row_hash=prev, signature_method=method,
+                signer_name=signer_name, ip_address=ip_address, user_agent=user_agent,
+                metadata=metadata,
+            )
+            if vault_id:
+                row["vault_id"] = str(vault_id)
+            try:
+                res = self.client.table("signatures").insert(row).execute()
+                return res.data[0] if res.data else None
+            except Exception as e:
+                if _is_missing_relation(e):
+                    return None
+                s = str(e).lower()
+                # Lost the chain_seq race — another signature took this seq. Re-read the tip and retry.
+                if ("duplicate key" in s or "23505" in s or "uq_signatures_firm_seq" in s) and attempt <= _retries:
+                    continue
+                import logging
+                logging.getLogger(__name__).warning("append_signature failed (non-fatal): %s", e)
+                return None
+        return None
+
+    def _signatures_table_present(self) -> bool:
+        """True if the signatures table exists (used to distinguish 'empty chain' from 'unapplied table'
+        when the tip read returns None). Cheap count-0 probe; degrades to False if absent."""
+        try:
+            self.client.table("signatures").select("id").limit(1).execute()
+            return True
+        except Exception as e:
+            if _is_missing_relation(e):
+                return False
+            return True  # a transient fault is not 'absent' — assume present, the insert will tell us
+
+    def get_signatures_for_artifact(self, artifact_type: str, artifact_ref: str) -> list:
+        """All signatures on one artifact, oldest first (e.g. the approve + the release sign-offs on a
+        review request). Read-client (RLS scopes to the firm). Missing table ⇒ [] (dormant)."""
+        if not artifact_ref:
+            return []
+        try:
+            res = self.read_client.table("signatures").select("*").eq(
+                "artifact_type", artifact_type
+            ).eq("artifact_ref", str(artifact_ref)).order("chain_seq", desc=False).execute()
+        except Exception as e:
+            if _is_missing_relation(e):
+                return []
+            raise
+        return res.data or []
+
+    def verify_firm_chain(self, firm_id: str) -> dict:
+        """Walk a firm's whole signature chain in seq order and verify (a) each row's record + link
+        integrity (esign.verify_signature_against, artifact content not re-checked here — that needs the
+        live artifact) and (b) the CHAIN continuity: seq is 1..N contiguous and each prev_hash equals the
+        prior row's row_hash. Returns {ok, count, first_broken_seq, reason}. A deletion / reorder / edit
+        anywhere breaks continuity and is reported. Missing table ⇒ {ok:True,count:0} (an empty ledger is
+        trivially intact). Service-role read (verification is a firm-evidence operation)."""
+        from src.components import esign
+        try:
+            res = self.client.table("signatures").select("*").eq(
+                "firm_id", firm_id
+            ).order("chain_seq", desc=False).execute()
+        except Exception as e:
+            if _is_missing_relation(e):
+                return {"ok": True, "count": 0, "first_broken_seq": None, "reason": "empty/unapplied"}
+            raise
+        rows = res.data or []
+        prev_hash = None
+        expected_seq = 1
+        for r in rows:
+            per_row = esign.verify_signature_against(r)
+            if not per_row["record_intact"] or not per_row["link_intact"]:
+                return {"ok": False, "count": len(rows), "first_broken_seq": r.get("chain_seq"),
+                        "reason": f"seq {r.get('chain_seq')}: {per_row['reason']}"}
+            if r.get("chain_seq") != expected_seq:
+                return {"ok": False, "count": len(rows), "first_broken_seq": r.get("chain_seq"),
+                        "reason": f"chain gap: expected seq {expected_seq}, got {r.get('chain_seq')} "
+                                  "(a signature was deleted or reordered)"}
+            if (r.get("prev_hash") or None) != (prev_hash or None):
+                return {"ok": False, "count": len(rows), "first_broken_seq": r.get("chain_seq"),
+                        "reason": f"seq {r.get('chain_seq')}: prev_hash does not match the prior row "
+                                  "(chain broken — a row was tampered or removed)"}
+            prev_hash = r.get("row_hash")
+            expected_seq += 1
+        return {"ok": True, "count": len(rows), "first_broken_seq": None, "reason": ""}
+
+    # ─────────────────────────────────────────
+    # DPDP DATA-PRINCIPAL RIGHTS  (F2k — plans/F2_FIRM_CONSOLE_PLAN.md §F2k + F2_ARCHITECTURE.md §6)
+    #   Access/export (§11), erasure-in-90-days (§12), grievance-to-named-officer (§13). The FIRM owns
+    #   the DPDP duty (Data Fiduciary); these methods ENABLE it. The route authorizes (the requester
+    #   themselves for their OWN data; manage_members for admin-initiated ON-BEHALF) + resolves firm
+    #   server-side (T2/T3) BEFORE calling. Every method degrades to a safe default on a missing
+    #   relation/column (migration 019 unapplied) = byte-identical pre-F2k. The export of a user's OWN
+    #   content needs NO new table — it reads documents/conversations/messages/audit_log directly.
+    # ─────────────────────────────────────────
+
+    def export_personal_data(self, principal_id: str = None, firm: dict = None) -> dict:
+        """Assemble a data principal's ACCESS/EXPORT payload (§11): their documents, conversations,
+        messages, and processing (audit) records. Defaults to the current user; an admin on-behalf
+        export passes `principal_id` (the route has authorized manage_members + asserted the target is
+        in the caller's firm). Reads are service-role (the route is the guard). Returns the assembled
+        dict (dpdp.assemble_export shape). Never raises on a missing audit table — degrades to []."""
+        from src.components import dpdp
+        uid = principal_id or self.user_id
+        if not uid:
+            return dpdp.assemble_export(principal_id="", documents=[], conversations=[], messages=[],
+                                        audit_rows=[], firm=firm)
+        docs = self.client.table("documents").select("*").eq("user_id", uid).execute().data or []
+        convos = self.client.table("conversations").select("*").eq("user_id", uid).execute().data or []
+        msgs = self.client.table("messages").select("*").eq("user_id", uid).execute().data or []
+        try:
+            audit_rows = self.client.table("audit_log").select("*").eq("user_id", uid).execute().data or []
+        except Exception as e:
+            if _is_missing_relation(e):
+                audit_rows = []
+            else:
+                raise
+        return dpdp.assemble_export(
+            principal_id=uid, documents=docs, conversations=convos, messages=msgs,
+            audit_rows=audit_rows, firm=firm,
+        )
+
+    def erase_personal_data(self, principal_id: str = None, firm_id: str = None,
+                            requested_by: str = None, reason: str = None) -> dict:
+        """ERASE a data principal's personal CONTENT (§12) — SOFT-DELETE only, with the immutable
+        records of processing PRESERVED. THE LOAD-BEARING DISTINCTION (src/components/dpdp.py):
+
+          ERASED (soft):  documents (status→'erased', filename/storage_path blanked), conversations
+                          (title blanked), messages (content+sources blanked). The personal data is
+                          rendered unreadable while the row remains (so referential integrity + the
+                          erasure proof hold).
+          PRESERVED:      the audit_log (Rule 6.5 record of processing, retained >= 1 year) AND the
+                          F2i `signatures` hash-chain — we NEVER delete a signature (it would break
+                          every other member's sign-off in the chain and destroy non-repudiation). The
+                          chain stays verifiable end-to-end AFTER an erasure (the gate asserts this).
+
+        Then writes the `data_erasures` tombstone (the PROOF the request was honored, with counts, WITHOUT
+        retaining the erased content). Best-effort on the tombstone (a missing 019 table ⇒ content is
+        still erased; the proof write is skipped, logged). Returns {documents, conversations, messages,
+        preserved, erasure_id}."""
+        from src.components import dpdp
+        uid = principal_id or self.user_id
+        if not uid:
+            return {"documents": 0, "conversations": 0, "messages": 0,
+                    "preserved": list(dpdp.PRESERVED_RECORDS), "erasure_id": None}
+
+        # ── 1. Soft-delete CONTENT only (never the preserved records of processing) ──
+        doc_ids = [r["id"] for r in (self.client.table("documents").select("id").eq(
+            "user_id", uid).neq("status", "erased").execute().data or []) if r.get("id")]
+        if doc_ids:
+            self.client.table("documents").update(
+                {"status": "erased", "filename": "[erased]", "storage_path": None}
+            ).in_("id", doc_ids).execute()
+        convo_ids = [r["id"] for r in (self.client.table("conversations").select("id").eq(
+            "user_id", uid).execute().data or []) if r.get("id")]
+        if convo_ids:
+            self.client.table("conversations").update(
+                {"title": "[erased]"}
+            ).in_("id", convo_ids).execute()
+        msg_ids = [r["id"] for r in (self.client.table("messages").select("id").eq(
+            "user_id", uid).neq("content", "[erased]").execute().data or []) if r.get("id")]
+        if msg_ids:
+            self.client.table("messages").update(
+                {"content": "[erased]", "sources": []}
+            ).in_("id", msg_ids).execute()
+
+        # ── 2. Write the erasure tombstone (the §12 proof) — best-effort (dormant ⇒ skip) ──
+        erasure_id = None
+        try:
+            row = {
+                "firm_id": firm_id,
+                "principal_id": uid,
+                "requested_by": requested_by or self.user_id,
+                "reason": reason or "data-principal erasure request (DPDP §12)",
+                "documents_erased": len(doc_ids),
+                "conversations_erased": len(convo_ids),
+                "messages_erased": len(msg_ids),
+                "preserved": ",".join(dpdp.PRESERVED_RECORDS),
+            }
+            res = self.client.table("data_erasures").insert(row).execute()
+            erasure_id = (res.data or [{}])[0].get("id") if res.data else None
+        except Exception as e:
+            if not _is_missing_relation(e):
+                import logging
+                logging.getLogger(__name__).warning("erasure tombstone write failed (non-fatal): %s", e)
+            # dormant (019 unapplied) ⇒ content is still erased; the proof row is skipped.
+
+        return {"documents": len(doc_ids), "conversations": len(convo_ids), "messages": len(msg_ids),
+                "preserved": list(dpdp.PRESERVED_RECORDS), "erasure_id": erasure_id}
+
+    def list_erasures(self, firm_id: str) -> list:
+        """The erasure ledger for a firm (the §12 compliance proof view, manager-gated by the route).
+        Degrades to [] if the table is unapplied."""
+        if not firm_id:
+            return []
+        try:
+            res = self.client.table("data_erasures").select("*").eq(
+                "firm_id", firm_id
+            ).order("created_at", desc=True).execute()
+        except Exception as e:
+            if _is_missing_relation(e):
+                return []
+            raise
+        return res.data or []
+
+    # ── the named grievance officer (§13) — on the FIRM record (per-firm identity) ──────────────────
+
+    def get_grievance_officer(self, firm_id: str) -> dict:
+        """The firm's named grievance officer (§13), or {} if none set / column unapplied. Read off the
+        firms row (per-firm identity). Shape: {name, email, user_id}."""
+        if not firm_id:
+            return {}
+        try:
+            res = self.client.table("firms").select(
+                "grievance_officer_name, grievance_officer_email, grievance_officer_user_id"
+            ).eq("id", firm_id).limit(1).execute()
+        except Exception as e:
+            if _is_missing_relation(e):
+                return {}
+            raise
+        row = (res.data or [{}])[0] if res.data else {}
+        return {
+            "name": row.get("grievance_officer_name"),
+            "email": row.get("grievance_officer_email"),
+            "user_id": row.get("grievance_officer_user_id"),
+        }
+
+    def set_grievance_officer(self, firm_id: str, name: str, email: str = None,
+                              user_id: str = None) -> dict:
+        """Name (or change) the firm's grievance officer (§13). The route has authorized manage_members
+        + resolved firm_id server-side (T3). Returns the updated officer dict, or {} on a missing column."""
+        if not (firm_id and (name or "").strip()):
+            raise ValueError("firm_id and an officer name are required.")
+        try:
+            self.client.table("firms").update({
+                "grievance_officer_name": name.strip(),
+                "grievance_officer_email": (email or "").strip() or None,
+                "grievance_officer_user_id": user_id,
+            }).eq("id", firm_id).execute()
+        except Exception as e:
+            if _is_missing_relation(e):
+                return {}
+            raise
+        return {"name": name.strip(), "email": email, "user_id": user_id}
+
+    def create_grievance(self, firm_id: str, subject: str, principal_id: str = None) -> dict:
+        """File a §13 grievance, ROUTED to the firm's named officer (captured at filing time so the
+        record is stable). `principal_id` defaults to the current user (the complainant). Stamps a
+        90-day due date (dpdp.window_due_at). The route resolved firm_id server-side (T3). Degrades to
+        {} if the table is unapplied. Returns the inserted row (+ the routed officer)."""
+        from src.components import dpdp
+        uid = principal_id or self.user_id
+        if not (firm_id and uid and (subject or "").strip()):
+            raise ValueError("firm_id, a principal, and a subject are required to file a grievance.")
+        officer = self.get_grievance_officer(firm_id)
+        row = {
+            "firm_id": firm_id,
+            "principal_id": uid,
+            "subject": subject.strip(),
+            "officer_name": officer.get("name"),
+            "officer_email": officer.get("email"),
+            "officer_user_id": officer.get("user_id"),
+            "status": "open",
+            "due_at": dpdp.window_due_at(),
+        }
+        try:
+            res = self.client.table("grievances").insert(row).execute()
+        except Exception as e:
+            if _is_missing_relation(e):
+                return {}
+            raise
+        return (res.data or [row])[0] if res.data else row
+
+    def list_grievances(self, firm_id: str, principal_id: str = None) -> list:
+        """Grievances for a firm (manager view) or for one principal (their own). The route picks: a
+        manager lists the firm's; a non-manager lists only their own (principal_id = self). Degrades []."""
+        if not firm_id:
+            return []
+        try:
+            q = self.client.table("grievances").select("*").eq("firm_id", firm_id)
+            if principal_id:
+                q = q.eq("principal_id", principal_id)
+            res = q.order("created_at", desc=True).execute()
+        except Exception as e:
+            if _is_missing_relation(e):
+                return []
+            raise
+        return res.data or []
+
+    def update_grievance_status(self, grievance_id: str, firm_id: str, status: str,
+                                resolution_note: str = None) -> dict:
+        """Action a grievance (acknowledge/resolve/reject). Firm-scoped (T2/T3 — a cross-firm id
+        touches nothing). On a terminal status, stamps resolved_at. The route authorized manage_members.
+        Returns the updated row, or {} if nothing matched / table unapplied."""
+        from src.components import dpdp
+        if status not in dpdp.GRIEVANCE_STATUSES:
+            raise ValueError(f"invalid grievance status: {status!r}")
+        update = {"status": status}
+        if resolution_note is not None:
+            update["resolution_note"] = resolution_note
+        if status in ("resolved", "rejected"):
+            update["resolved_at"] = datetime.now(timezone.utc).isoformat()
+        try:
+            res = self.client.table("grievances").update(update).eq(
+                "id", grievance_id
+            ).eq("firm_id", firm_id).execute()
+        except Exception as e:
+            if _is_missing_relation(e):
+                return {}
+            raise
+        return (res.data or [{}])[0] if res.data else {}
