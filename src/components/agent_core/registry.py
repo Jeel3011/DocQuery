@@ -19,9 +19,12 @@ from .model import ToolCall
 from .tools import (
     SCHEMAS,
     compute as compute_tool,
+    list_documents as list_documents_tool,
     list_metrics as metrics_tool,
     read_document as read_tool,
+    read_section as read_section_tool,
     search_knowledge as knowledge_tool,
+    search_text as search_text_tool,
     search_vault as search_tool,
     survey_collection as survey_tool,
     table_lookup as table_tool,
@@ -64,6 +67,10 @@ class RunScope:
     # allow-list, so the agent physically cannot retrieve a source the user turned off — the
     # chip gates the backend, not just the UI. None ⇒ no restriction (all in-scope types).
     kb_instrument_types: Optional[List[str]] = None
+    # DOCUMENT_HARNESS Phase 1: when True, the run offers the document-filesystem tools
+    # (list_documents/search_text/read_section + whole-doc read_document) instead of
+    # search_vault. Set from config.USE_DOC_HARNESS at the route. False ⇒ byte-identical.
+    harness: bool = False
 
     def scope_dict(self) -> Dict[str, Any]:
         d: Dict[str, Any] = {
@@ -113,12 +120,30 @@ _MODE_TOOLS = {
               "search_knowledge"],
 }
 
+# DOCUMENT_HARNESS Phase 1: when USE_DOC_HARNESS is on, the offered tools in each mode
+# become the "document filesystem" — ls/grep/read replace the embedding top-k (§5). The
+# numeric moat (table_lookup/compute/list_metrics) is UNCHANGED. `search_vault`, vector
+# survey, and the decomposer are NOT offered in harness mode (kept flag-off, retired at
+# Phase 4). The map is consulted ONLY when the harness flag is set, so flag-OFF is
+# byte-identical to `_MODE_TOOLS` above.
+_HARNESS_TOOLS = {
+    "standard": ["list_documents", "search_text", "read_document", "read_section",
+                 "list_metrics", "table_lookup", "compute", "search_knowledge"],
+    "deep": ["list_documents", "search_text", "read_document", "read_section",
+             "list_metrics", "table_lookup", "compute", "search_knowledge"],
+    "fast": [],
+    "grid": ["list_documents", "search_text", "read_document", "read_section",
+             "list_metrics", "table_lookup", "compute", "search_knowledge"],
+    "draft": ["list_documents", "search_text", "read_document", "read_section",
+              "list_metrics", "table_lookup", "compute", "search_knowledge"],
+}
+
 
 class ToolRegistry:
     """Schemas + dispatch. One instance per process is fine (stateless besides config)."""
 
     def schemas(self, mode: str, *, tools: Optional[List[str]] = None,
-                include_knowledge: bool = False) -> List[Dict[str, Any]]:
+                include_knowledge: bool = False, harness: bool = False) -> List[Dict[str, Any]]:
         """The tool schemas exposed for a run, in the model's native tool shape.
 
         G7: a workflow template names its OWN `tool_subset` — when `tools` is given it is
@@ -131,21 +156,29 @@ class ToolRegistry:
         whether `search_knowledge` is OFFERED. The loop passes
         `include_knowledge=scope.kb_retrieval_manager is not None`, so the legal KB tool
         appears only when USE_KNOWLEDGE is on AND a KB manager was threaded."""
-        names = self.names(mode, tools=tools, include_knowledge=include_knowledge)
+        names = self.names(mode, tools=tools, include_knowledge=include_knowledge,
+                           harness=harness)
         return [SCHEMAS[n] for n in names if n in SCHEMAS]
 
     def names(self, mode: str, *, tools: Optional[List[str]] = None,
-              include_knowledge: bool = False) -> List[str]:
+              include_knowledge: bool = False, harness: bool = False) -> List[str]:
         """The tool NAMES for a run. `tools` (a workflow's subset) takes precedence, kept
         only where the name is a real registered tool (validated against SCHEMAS); else the
-        `_MODE_TOOLS[mode]` map. Additive — `tools=None` is the old behavior.
+        mode map. Additive — `tools=None` is the old behavior.
 
         G8: unless `include_knowledge` is True, `search_knowledge` is stripped from the
-        result — so the default (every existing caller) is byte-identical to pre-G8."""
+        result — so the default (every existing caller) is byte-identical to pre-G8.
+
+        DOCUMENT_HARNESS Phase 1: `harness` (default False — the byte-identical default)
+        switches the mode map from `_MODE_TOOLS` to `_HARNESS_TOOLS` (the document-
+        filesystem tools). A workflow `tools` subset still takes precedence over both.
+        Flag off ⇒ `names(...)` is byte-identical to pre-harness."""
         if tools is not None:
             out = [n for n in tools if n in SCHEMAS]
         else:
-            out = list(_MODE_TOOLS.get(mode, _MODE_TOOLS["standard"]))
+            mode_map = _HARNESS_TOOLS if harness else _MODE_TOOLS
+            default = mode_map.get("standard", _MODE_TOOLS["standard"])
+            out = list(mode_map.get(mode, default))
         if not include_knowledge:
             out = [n for n in out if n != "search_knowledge"]
         return out
@@ -185,6 +218,8 @@ class ToolRegistry:
                     filename_by_doc=scope.filename_by_doc,
                     page_range=args.get("page_range"),
                     table_grids=args.get("table_grids", True),
+                    # DOCUMENT_HARNESS §6.3: whole-clean-text read (harness `cat`).
+                    full_text=bool(args.get("full_text", False)),
                     owner_id=scope.vault_owner,  # F2m: shared matter ⇒ read the owner's chunks
 
                     # The run's LIVE grid scope (mutable): grids read_document loads
@@ -192,6 +227,43 @@ class ToolRegistry:
                     # Live (2026-06-11) the model read the right doc but compute
                     # couldn't see it — "document not in scope".
                     scope_grids=scope.grids,
+                )
+
+            # ── DOCUMENT_HARNESS Phase 1: the document-filesystem tools ──────────────
+            # Security L2 (G-c): identity keys (user_id/collection_id/owner_id) are
+            # NEVER read from the model's `args` — they come from `scope`, which is built
+            # server-side from the authenticated session. The model can only propose a
+            # `doc_id`, validated against scope inside each tool (resolve_doc_id → None
+            # ⇒ refuse). A forged identity arg is simply ignored here.
+            if name == "list_documents":
+                return list_documents_tool(
+                    db_client=scope.db_client,
+                    collection_id=scope.collection_id,
+                    filename_by_doc=scope.filename_by_doc,
+                    filter=args.get("filter") or None,
+                )
+
+            if name == "search_text":
+                return search_text_tool(
+                    args.get("query", ""),
+                    any_of=args.get("any_of"),
+                    doc_ids=args.get("doc_ids"),
+                    is_regex=bool(args.get("is_regex", False)),
+                    k=args.get("k", 20),
+                    db_client=scope.db_client,
+                    filename_by_doc=scope.filename_by_doc,
+                    scope_doc_ids=scope.doc_ids,
+                    owner_id=scope.vault_owner,
+                )
+
+            if name == "read_section":
+                return read_section_tool(
+                    args.get("doc_id", ""),
+                    heading=args.get("heading"),
+                    page_range=args.get("page_range"),
+                    db_client=scope.db_client,
+                    filename_by_doc=scope.filename_by_doc,
+                    owner_id=scope.vault_owner,
                 )
 
             if name == "search_knowledge":

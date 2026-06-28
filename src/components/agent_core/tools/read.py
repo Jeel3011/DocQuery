@@ -19,15 +19,24 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
 
+from ._chunks import resolve_doc_id, text_chunks_for_doc
 from ._envelope import error_result, ok_result, safe_tool
+from ._outline import build_outline
+
+# DOCUMENT_HARNESS §6.3: whole-doc reads get the clean prose; a huge filing returns its
+# OUTLINE instead so the model reads the right section (read_section) rather than blowing
+# the budget on a truncated dump. ~4 chars/token; 150k tokens ≈ 600k chars.
+_FULL_DOC_READ_MAX_TOKENS = 150_000
 
 SCHEMA: Dict[str, Any] = {
     "name": "read_document",
     "description": (
         "Read a document's structured table grids (and optionally its page text) so "
         "you can see the actual rows, sections, and periods before making any claim. "
-        "Returns grid JSONs (headers, rows, periods) with source addressing. Use this "
-        "before table_lookup/compute when you are unsure what rows or periods exist."
+        "Returns grid JSONs (headers, rows, periods) with source addressing. Set "
+        "full_text=true to read the document's FULL clean prose (the harness way to read "
+        "the real document, not a top-k snippet) — for a very large document this returns "
+        "its outline instead and asks you to read_section, so you read the right part."
     ),
     "input_schema": {
         "type": "object",
@@ -41,10 +50,94 @@ SCHEMA: Dict[str, Any] = {
                 "type": "boolean",
                 "description": "Include structured table grids (default true).",
             },
+            "full_text": {
+                "type": "boolean",
+                "description": (
+                    "Read the document's FULL clean prose (harness mode). Default false. "
+                    "A very large doc returns its outline instead — then use read_section."
+                ),
+            },
         },
         "required": ["doc_id"],
     },
 }
+
+
+def _est_tokens(text: str) -> int:
+    """Rough token estimate (chars/4) — the §6.3 token guard, no tiktoken dependency."""
+    return len(text) // 4
+
+
+def _read_full_text(
+    doc_id: str,
+    *,
+    db_client: Any,
+    grids: Optional[List[Any]],
+    filename_by_doc: Optional[Dict[str, str]],
+    owner_id: Optional[str],
+    table_grids: bool,
+) -> Dict[str, Any]:
+    """Whole-clean-text read (DOCUMENT_HARNESS §6.3) — the harness `cat`.
+
+    Concatenate the doc's text chunks in (page, chunk_index) order with page markers,
+    attach grids, and enforce the token guard: over the cap → return the outline and
+    `too_large=true` instead of dumping (never blind-cat a huge file). Vault isolation
+    is in `text_chunks_for_doc` (§8). One provenance span per page block.
+    """
+    if db_client is None:
+        return error_result(
+            "read_document full_text requires a live db_client (internal routing bug)."
+        )
+    resolved = resolve_doc_id(doc_id, filename_by_doc)
+    if resolved is None:
+        return error_result(
+            f"document {doc_id!r} is not in this matter — cannot read it (no cross-vault read)."
+        )
+    chunks = text_chunks_for_doc(db_client, resolved, owner_id=owner_id)
+    if not chunks:
+        # G-g: empty/0-chunk doc → honest abstain, never a crash/loop or a silent blank.
+        return error_result(
+            f"document {doc_id!r} has no readable text (it may be a scanned image with no "
+            f"text layer, or it ingested empty) — re-upload a text PDF or enable OCR."
+        )
+
+    # Build the page-blocked clean text + per-page provenance.
+    blocks: List[str] = []
+    provenance: List[Dict[str, Any]] = []
+    last_page = object()  # sentinel so the first chunk always emits a marker
+    fname = (filename_by_doc or {}).get(resolved, doc_id)
+    for c in chunks:
+        pg = c.get("page")
+        if pg != last_page:
+            blocks.append(f"\n\n[p.{pg}]\n")
+            provenance.append({"kind": "span", "doc": fname, "doc_id": resolved, "page": pg})
+            last_page = pg
+        blocks.append(c.get("content", ""))
+    body = "".join(blocks).strip()
+
+    n_tokens = _est_tokens(body)
+    if n_tokens > _FULL_DOC_READ_MAX_TOKENS:
+        outline = build_outline(chunks)
+        return ok_result(
+            summary=(
+                f"read_document {doc_id} too large to read whole (~{n_tokens} tokens) — "
+                f"returning its outline; use read_section to read the right part"
+            ),
+            data={"doc_id": doc_id, "too_large": True, "n_tokens_est": n_tokens,
+                  "outline": outline},
+            provenance=[],
+        )
+
+    grid_jsons = [_grid_to_json(g) for g in (grids or []) if _doc_like(getattr(g, "doc", None), doc_id)] \
+        if table_grids else []
+    summary = (f"read_document {doc_id} (full text): {len(chunks)} chunk(s), "
+               f"~{n_tokens} tokens, {len(grid_jsons)} grid(s)")
+    return ok_result(
+        summary=summary,
+        data={"doc_id": doc_id, "full_text": body, "grids": grid_jsons,
+              "n_tokens_est": n_tokens},
+        provenance=provenance,
+    )
 
 
 def _grid_to_json(g: Any) -> Dict[str, Any]:
@@ -59,6 +152,16 @@ def _grid_to_json(g: Any) -> Dict[str, Any]:
         "units": getattr(g, "units", None),
         "rows": getattr(g, "rows", []),
     }
+
+
+def _doc_like(grid_doc: Any, want: str) -> bool:
+    """Kernel-consistent doc matching (a distinctive substring is enough)."""
+    try:
+        from src.components.brain.analyst import _doc_match
+        return _doc_match(grid_doc, want)
+    except Exception:  # noqa: BLE001 — fall back to exact/substring
+        gd = str(grid_doc or "")
+        return bool(want) and (gd == want or want in gd or gd in want)
 
 
 def _parse_page_range(page_range: Optional[str]):
@@ -84,15 +187,26 @@ def read_document(
     filename_by_doc: Optional[Dict[str, str]] = None,
     page_range: Optional[str] = None,
     table_grids: bool = True,
+    full_text: bool = False,
     scope_grids: Optional[List[Any]] = None,
     owner_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Read grids (+ optional page text) for `doc_id`; return the §3.3 envelope.
 
     Provenance lists one span per grid (doc/page) so the ledger records what was read.
+
+    DOCUMENT_HARNESS §6.3: `full_text=True` reads the doc's FULL clean prose (concat by
+    page/chunk_index, token-guarded) instead of grids+page-snippets — the harness `cat`.
+    Default False ⇒ byte-identical to the pre-harness behavior.
     """
     if not doc_id and not grids:
         return error_result("read_document requires a 'doc_id' (or pre-loaded grids)")
+
+    if full_text:
+        return _read_full_text(
+            doc_id, db_client=db_client, grids=grids,
+            filename_by_doc=filename_by_doc, owner_id=owner_id, table_grids=table_grids,
+        )
 
     def _fresh_load(target: str) -> List[Any]:
         """Load `target`'s grids from the DB and JOIN them to the run's grid scope.
@@ -134,15 +248,6 @@ def read_document(
                     scope_grids.append(g)
                     seen.add(k)
         return fresh
-
-    def _doc_like(grid_doc: Any, want: str) -> bool:
-        """Kernel-consistent doc matching (a distinctive substring is enough)."""
-        try:
-            from src.components.brain.analyst import _doc_match
-            return _doc_match(grid_doc, want)
-        except Exception:  # noqa: BLE001 — fall back to exact/substring
-            gd = str(grid_doc or "")
-            return bool(want) and (gd == want or want in gd or gd in want)
 
     loaded: List[Any] = []
     if grids:

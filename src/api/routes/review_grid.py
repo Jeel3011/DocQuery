@@ -151,7 +151,16 @@ async def review_grid_stream(
     # ── Build a model factory (fresh model per cell, no shared state) ───────────────
     from src.components.agent_core.budgets import budget_for
     from src.components.agent_core.model import build_model
-    from src.components.agent_core.grid_engine import build_cell
+    from src.components.agent_core.grid_engine import build_cell, build_doc_cells
+
+    # DOCUMENT_HARNESS Phase 1: read-once-per-doc when USE_DOC_HARNESS is on. OFF ⇒
+    # byte-identical per-cell fan-out (search_vault path).
+    _use_harness = bool(getattr(user_config, "USE_DOC_HARNESS", False))
+    # F2m: shared-matter read → scope the harness read tools to the vault owner.
+    try:
+        _vault_owner = sb.accessible_vault_owner(collection_id)
+    except Exception:  # noqa: BLE001 — best-effort; own vault uses caller's uid
+        _vault_owner = None
 
     # Cells use the "grid" tool set but the STANDARD model tier (one focused extraction
     # each). budget_for("standard") gives the configured model id; build_model wires the
@@ -176,10 +185,43 @@ async def review_grid_stream(
     # The cell loop is BLOCKING (each build_cell runs a sync agent loop). Run it in a
     # worker thread and hand results back through a queue the async generator drains, so
     # the event loop stays free (mirrors how the other streaming routes offload work).
+    def _emit_cell(emit, cell) -> None:
+        emit({
+            "type": "cell",
+            "doc_id": cell.doc_id,
+            "doc_name": cell.doc_name,
+            "column_key": cell.column_key,
+            "status": cell.status.value,
+            "value": cell.value,
+            "quote": cell.quote,
+            "risk": cell.risk.value,
+            "note": cell.note,
+            "abstain_reason": cell.abstain_reason,  # unparsed|no_evidence|ambiguous
+            "provenance": cell.provenance,
+            "verified": cell.is_verified,
+        })
+
     def _run_all_cells(emit) -> Dict[str, int]:
-        from src.components.agent_core.review_grid import GridResult, CellStatus
+        from src.components.agent_core.review_grid import GridResult
         cells = []
         for did in spec.doc_ids:
+            if _use_harness:
+                # DOCUMENT_HARNESS §7.3: ONE agent reads this doc once, answers all
+                # columns. Same GridCell/abstain_reason taxonomy as per-cell.
+                doc_cells = build_doc_cells(
+                    did, spec.columns,
+                    collection_id=collection_id,
+                    model=model,
+                    filename_by_doc=filename_by_doc,
+                    grids_by_doc=grids_by_doc,
+                    db_client=sb,
+                    vault_owner=_vault_owner,
+                    model_id=model_id,
+                )
+                for cell in doc_cells:
+                    cells.append(cell)
+                    _emit_cell(emit, cell)
+                continue
             for column in spec.columns:
                 cell = build_cell(
                     did, column,
@@ -192,20 +234,7 @@ async def review_grid_stream(
                     model_id=model_id,
                 )
                 cells.append(cell)
-                emit({
-                    "type": "cell",
-                    "doc_id": cell.doc_id,
-                    "doc_name": cell.doc_name,
-                    "column_key": cell.column_key,
-                    "status": cell.status.value,
-                    "value": cell.value,
-                    "quote": cell.quote,
-                    "risk": cell.risk.value,
-                    "note": cell.note,
-                    "abstain_reason": cell.abstain_reason,  # unparsed|no_evidence|ambiguous
-                    "provenance": cell.provenance,
-                    "verified": cell.is_verified,
-                })
+                _emit_cell(emit, cell)
         return GridResult(spec=spec, cells=cells).coverage()
 
     async def _stream():

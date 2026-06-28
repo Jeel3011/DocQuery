@@ -102,6 +102,83 @@ def _cell_question(column: GridColumn) -> str:
 
 
 # ──────────────────────────────────────────────────────────────────────────────
+# DOCUMENT_HARNESS §7.3 — read-once-per-doc: ONE agent reads the document with the
+# harness tools, then extracts ALL M columns from that single clean read.
+# ──────────────────────────────────────────────────────────────────────────────
+
+def _doc_cells_system_prompt(columns: List[GridColumn], doc_name: str) -> str:
+    """The per-DOCUMENT prompt (harness mode): read the real document once, then extract
+    every column from it. Same cite-or-abstain contract as the per-cell prompt; the only
+    change is the fan-out unit (one doc → M columns) and the tools (grep + read, no
+    search_vault). Returns a JSON ARRAY of M envelopes keyed by column `key`."""
+    field_lines = []
+    for c in columns:
+        rubric = f" Risk rubric: {c.risk_rubric}" if c.risk_rubric else ""
+        field_lines.append(f'  - key "{c.key}" — {c.label}: {c.prompt}{rubric}')
+    fields = "\n".join(field_lines)
+    return f"""You extract several specific facts from ONE document for a review grid.
+
+Document: {doc_name}
+
+READ THE REAL DOCUMENT FIRST, then extract every field below from what you read:
+- Call `read_document(doc_id="{doc_name}", full_text=true)` to read the document's full
+  clean text. If it is too large it returns an outline — then `read_section(...)` the
+  relevant part. To locate a specific clause, `search_text(query="...", any_of=[...])`
+  (exact text search; pass synonyms) and read around the hits.
+- Ground EVERY value in the ACTUAL text you read. QUOTE the exact source sentence.
+- If the document genuinely does NOT contain a field, status "missing" for that field.
+- If a field is ambiguous/conflicting, status "abstain". Never invent a value.
+
+Fields to extract (one envelope per key):
+{fields}
+
+Your ENTIRE final answer MUST be ONE JSON ARRAY of objects, one per field above, each
+with EXACTLY these keys: key, status, value, quote, risk, note. Use the field's "key"
+verbatim. No prose outside the array, no nesting, no extra keys.
+
+Each element shape:
+{{"key": "<the field key>",
+  "status": "found" | "missing" | "abstain",
+  "value": "<extracted value, or null>",
+  "quote": "<exact source text grounded on, or null>",
+  "risk": "standard" | "non_standard" | "missing" | "none",
+  "note": "<one short clause, or null>"}}"""
+
+
+def _doc_cells_question(columns: List[GridColumn]) -> str:
+    keys = ", ".join(c.key for c in columns)
+    return (
+        f"Read this document, then extract these fields and return the JSON array: {keys}. "
+        f"Quote your source for each; abstain rather than guess."
+    )
+
+
+def _extract_envelope_array(text: str) -> Optional[List[Dict[str, Any]]]:
+    """Pull a JSON ARRAY of cell envelopes out of the agent's final answer. Tolerant of a
+    code fence / leading prose; returns None if no array parses. (A single object is
+    wrapped into a one-element list so a model that answered one column still parses.)"""
+    if not text:
+        return None
+    s = text.strip()
+    if s.startswith("```"):
+        s = s.split("```", 2)[1] if "```" in s[3:] else s
+        s = s.lstrip("json").lstrip()
+        s = s.split("```", 1)[0]
+    start = s.find("[")
+    end = s.rfind("]")
+    if start != -1 and end != -1 and end > start:
+        try:
+            obj = json.loads(s[start:end + 1])
+            if isinstance(obj, list):
+                return [e for e in obj if isinstance(e, dict)]
+        except json.JSONDecodeError:
+            pass
+    # Fall back: a single object (the model answered one column or ignored the array).
+    one = _extract_envelope(text)
+    return [one] if one is not None else None
+
+
+# ──────────────────────────────────────────────────────────────────────────────
 # The grid output gate — the cite-or-abstain contract for STRUCTURED extraction.
 # ──────────────────────────────────────────────────────────────────────────────
 
@@ -274,6 +351,24 @@ def _cell_from_run(
                         status=CellStatus.ERROR, note="agent run degraded (model/tool error)")
 
     env = _extract_envelope(final_text)
+    return _cell_from_envelope(doc_id, doc_name, column, env, provenance,
+                               raw_text=final_text)
+
+
+def _cell_from_envelope(
+    doc_id: str,
+    doc_name: str,
+    column: GridColumn,
+    env: Optional[Dict[str, Any]],
+    provenance: List[Dict[str, Any]],
+    *,
+    raw_text: str = "",
+) -> GridCell:
+    """Fold ONE parsed envelope (+ the provenance the agent read) into a GridCell,
+    enforcing the cite-or-abstain contract. Shared by the per-cell path (_cell_from_run)
+    and the read-once-per-doc path (build_doc_cells) so the G4 taxonomy
+    (unparsed/no_evidence/ambiguous) is IDENTICAL across both fan-out shapes."""
+    final_text = raw_text
     if env is None:
         # No JSON at all (free-text answer). This is an envelope/parse failure, NOT a
         # genuine "couldn't find it" — record it distinguishably (abstain_reason
@@ -492,6 +587,131 @@ def build_cell(
     return cell
 
 
+def build_doc_cells(
+    doc_id: str,
+    columns: List[GridColumn],
+    *,
+    collection_id: str,
+    model,
+    filename_by_doc: Dict[str, str],
+    grids_by_doc: Optional[Dict[str, Any]] = None,
+    db_client: Any = None,
+    vault_owner: Optional[str] = None,
+    model_id: str = "",
+    model_factory: Optional[Callable[[], Any]] = None,
+) -> List[GridCell]:
+    """DOCUMENT_HARNESS §7.3 — read ONE document once, answer ALL M columns.
+
+    ONE bounded agent reads the real document (harness tools: read_document/read_section/
+    search_text), then emits a JSON array of M envelopes. We map each envelope to its
+    column by `key` and fold it into a GridCell via the SHARED `_cell_from_envelope`, so
+    the GridCell shape, the cite-or-abstain contract, and the abstain_reason taxonomy are
+    IDENTICAL to the per-cell path — only the fan-out unit changes (N×M agents → N).
+
+    Robustness (DOCUMENT_HARNESS §7.3 tradeoff + G-f):
+      - per-column degrade: a column missing from the agent's array → that cell ABSTAINs
+        (no_evidence); the others still resolve. One column never sinks the rest.
+      - per-doc fallback: a hard error (agent crash / empty run) returns ERROR cells for
+        every column — the caller may fall back to the old per-cell path for this doc.
+
+    The run is scoped to THIS document (doc_ids=[doc_id]) with harness=True so the doc-
+    filesystem tools are offered. Budget is a per-doc budget (well under the 220k wall):
+    M columns × the per-cell ceiling, capped, since one read serves all M questions.
+    """
+    doc_name = filename_by_doc.get(doc_id, doc_id)
+    scope = RunScope(
+        collection_id=collection_id,
+        doc_ids=[doc_id],
+        filenames=[doc_name] if doc_name else [],
+        filename_by_doc={doc_id: doc_name} if doc_name else {},
+        grids=list((grids_by_doc or {}).get(doc_id, []) or []),
+        db_client=db_client,
+        vault_owner=vault_owner,
+        harness=True,  # offer the document-filesystem tools (read once, no search_vault)
+    )
+
+    # A per-DOC budget: one read serves M columns, so scale steps with M but cap the
+    # tokens well under the 220k wall (DOCUMENT_HARNESS §7.3: ~80–120k).
+    n_cols = max(len(columns), 1)
+    budget = Budget(
+        mode="grid",
+        model=model_id or getattr(model, "model_id", "") or "",
+        max_steps=min(_GRID_CELL_MAX_STEPS + 2 * n_cols, 24),
+        wall_clock_s=_GRID_CELL_WALL_S * 2,
+        token_budget=min(_GRID_CELL_TOKEN_BUDGET * n_cols, 120_000),
+    )
+
+    events: List[Dict[str, Any]] = []
+    try:
+        for ev in run_agent(
+            _doc_cells_question(columns),
+            model=model,
+            scope=scope,
+            budget=budget,
+            system_prompt=_doc_cells_system_prompt(columns, doc_name),
+            gate_fn=grid_gate,
+        ):
+            events.append(ev)
+    except Exception as exc:  # noqa: BLE001 — a doc never crashes the grid
+        logger.warning("[grid] doc-cells (%s) raised: %s — caller may fall back to per-cell",
+                       doc_name, exc)
+        return [GridCell(doc_id=doc_id, column_key=c.key, doc_name=doc_name,
+                         status=CellStatus.ERROR, note=f"doc-cells error: {exc}")
+                for c in columns]
+
+    # Fold the run into final text + provenance (same event shape as _cell_from_run).
+    final_text = ""
+    provenance: List[Dict[str, Any]] = []
+    degraded = False
+    for ev in events:
+        t = ev.get("type")
+        if t == "token":
+            final_text = ev.get("text", "") or final_text
+        elif t == "sources":
+            provenance = ev.get("sources", []) or provenance
+        elif t == "meta" and (ev.get("degrade") or ev.get("error")):
+            degraded = True
+
+    if degraded and not final_text:
+        return [GridCell(doc_id=doc_id, column_key=c.key, doc_name=doc_name,
+                         status=CellStatus.ERROR, note="doc-cells run degraded (model/tool error)")
+                for c in columns]
+
+    envelopes = _extract_envelope_array(final_text) or []
+    by_key: Dict[str, Dict[str, Any]] = {}
+    for e in envelopes:
+        k = str(e.get("key", "")).strip()
+        if k:
+            by_key[k] = e
+
+    cells: List[GridCell] = []
+    for column in columns:
+        env = by_key.get(column.key)
+        if env is None:
+            # Per-column degrade: the agent didn't return this column. That's a genuine
+            # lack of evidence for THIS field (no_evidence), not a parse failure — the
+            # other columns parsed fine.
+            cells.append(GridCell(
+                doc_id=doc_id, column_key=column.key, doc_name=doc_name,
+                status=CellStatus.ABSTAIN, provenance=[],
+                note="doc-cells: no envelope returned for this column",
+                abstain_reason="no_evidence",
+            ))
+            continue
+        cell = _cell_from_envelope(doc_id, doc_name, column, env, provenance,
+                                   raw_text=final_text)
+        # T4 de-correlated second verify on FOUND clause cells (same policy as per-cell).
+        if (
+            _SECOND_VERIFY
+            and model_factory is not None
+            and cell.status == CellStatus.FOUND
+            and column.kind != ColumnKind.NUMERIC
+        ):
+            cell = _second_verify_cell(cell, model_factory)
+        cells.append(cell)
+    return cells
+
+
 def build_grid(
     spec: GridSpec,
     *,
@@ -500,6 +720,9 @@ def build_grid(
     grids_by_doc: Optional[Dict[str, Any]] = None,
     model_id: str = "",
     on_cell: Optional[Callable[[GridCell], None]] = None,
+    harness: bool = False,
+    db_client: Any = None,
+    vault_owner: Optional[str] = None,
 ) -> GridResult:
     """Fill the whole grid sequentially (the route may instead fan cells out across a
     pool; this is the simple, deterministic driver used by tests and small grids).
@@ -507,8 +730,35 @@ def build_grid(
     `model_factory` returns a FRESH model per cell (no shared mutable state across the
     fan-out). `on_cell`, if given, is called as each cell completes (for streaming
     progress to the UI).
+
+    DOCUMENT_HARNESS §7.3: `harness=True` switches the fan-out from N×M per-cell agents
+    to N per-DOC agents (each reads the doc once, answers all M columns via build_doc_cells).
+    Same GridCell/grid_gate/abstain_reason taxonomy — only the fan-out unit changes. Flag
+    off ⇒ byte-identical per-cell behavior.
     """
     cells: List[GridCell] = []
+    if harness:
+        for doc_id in spec.doc_ids:
+            doc_cells = build_doc_cells(
+                doc_id, spec.columns,
+                collection_id=spec.collection_id,
+                model=model_factory(),
+                filename_by_doc=filename_by_doc,
+                grids_by_doc=grids_by_doc,
+                db_client=db_client,
+                vault_owner=vault_owner,
+                model_id=model_id,
+                model_factory=model_factory,
+            )
+            for cell in doc_cells:
+                cells.append(cell)
+                if on_cell is not None:
+                    try:
+                        on_cell(cell)
+                    except Exception:  # noqa: BLE001 — progress callback must never break the grid
+                        logger.debug("[grid] on_cell callback raised; ignoring")
+        return GridResult(spec=spec, cells=cells)
+
     for doc_id in spec.doc_ids:
         for column in spec.columns:
             cell = build_cell(

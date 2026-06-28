@@ -347,6 +347,9 @@ async def agentcore_query_stream(
         config=user_config,
         # G8.7: the source-chip instrument allow-list enforced in search_knowledge.
         kb_instrument_types=kb_instrument_types,
+        # DOCUMENT_HARNESS Phase 1: route grid/standard/deep through the document-
+        # filesystem tools when USE_DOC_HARNESS is on. OFF ⇒ byte-identical (search_vault).
+        harness=bool(getattr(user_config, "USE_DOC_HARNESS", False)),
     )
     budget = budget_for(mode, user_config)
     # G5: deep mode gets the Deep Analysis overlay (sectioned report + breadth-first

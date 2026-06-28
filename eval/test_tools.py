@@ -851,8 +851,10 @@ def main() -> int:
 
     print("\n── schemas (registry-ready, A2) ─────────────────────────────────")
     c.ok(set(SCHEMAS) == {"search_vault", "read_document", "list_metrics",
-                          "table_lookup", "compute", "survey_collection", "search_knowledge"},
-         "SCHEMAS: all tools registered (incl. G5 survey_collection, G8 search_knowledge)")
+                          "table_lookup", "compute", "survey_collection", "search_knowledge",
+                          # DOCUMENT_HARNESS Phase 1: the document-filesystem tools.
+                          "list_documents", "search_text", "read_section"},
+         "SCHEMAS: all tools registered (incl. harness ls/grep/sed)")
     c.ok(all("name" in s and "input_schema" in s for s in SCHEMAS.values()),
          "SCHEMAS: each has name + input_schema")
     # G5: survey_collection is deep-mode only — it must NOT leak into standard mode.

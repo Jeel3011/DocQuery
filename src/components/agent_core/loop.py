@@ -178,6 +178,10 @@ def run_agent(
     tool_schemas = registry.schemas(
         budget.mode, tools=tools,
         include_knowledge=scope.kb_retrieval_manager is not None,
+        # DOCUMENT_HARNESS Phase 1: offer the document-filesystem tools instead of
+        # search_vault when the run is in harness mode (set from config.USE_DOC_HARNESS
+        # at the route). False ⇒ byte-identical tool set.
+        harness=getattr(scope, "harness", False),
     )
 
     messages: List[Dict[str, Any]] = list(history or [])

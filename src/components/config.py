@@ -179,6 +179,14 @@ class Config:
     # and every existing Brain/Spine path is byte-identical (the plan's prime directive).
     USE_AGENT_CORE: bool = os.getenv("USE_AGENT_CORE", "false").lower() == "true"
 
+    # DOCUMENT_HARNESS Phase 1 (the wedge). OFF ⇒ byte-identical to today: the harness
+    # tools (list_documents/search_text/read_section + whole-doc read_document + the
+    # build_doc_cells grid restructure) are NEVER offered, so `_MODE_TOOLS` and the grid
+    # fan-out are unchanged. ON routes grid/standard/deep through the "read the real
+    # document" tools (grep + read) instead of `search_vault` top-k — killing the
+    # false-abstain-from-retrieval-miss class (plans/DOCUMENT_HARNESS.md §17 Phase 1).
+    USE_DOC_HARNESS: bool = os.getenv("USE_DOC_HARNESS", "false").lower() == "true"
+
     # Orchestrator model policy is CONFIG, not code (§3.1) — multi-vendor from day one.
     # Jeel's call (2026-06-10): Opus 4.8 for BOTH standard and deep — max quality
     # everywhere, overriding the plan's Sonnet-for-standard default. Env-overridable so

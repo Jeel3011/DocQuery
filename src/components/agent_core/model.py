@@ -71,7 +71,7 @@ class AnthropicModel(BaseModel):
     `messages.create` call, then normalizes the response back to ModelResponse.
     """
 
-    def __init__(self, model: str, api_key: str, *, max_tokens: int = 4096,
+    def __init__(self, model: str, api_key: str, *, max_tokens: int = 16000,
                  system: Optional[str] = None, temperature: float = 0.0):
         self.model = model
         self.api_key = api_key
@@ -83,10 +83,15 @@ class AnthropicModel(BaseModel):
         import anthropic  # lazy — no import/key cost unless a live call happens
 
         client = anthropic.Anthropic(api_key=self.api_key)
+        # Phase 0 (DOCUMENT_HARNESS §15.3): Opus 4.8 (the production model) REMOVES
+        # `temperature` — sending it returns a 400. We deliberately DON'T pass it.
+        # `temperature` stays on the constructor only because OpenAIModel's 4.x path
+        # still accepts it; the Claude path never sends a sampling param.
+        # max_tokens default raised 4096→16000: whole-doc reads (read_document) need
+        # room, and 16000 stays under the SDK's non-streaming HTTP-timeout guard.
         kwargs: Dict[str, Any] = {
             "model": self.model,
             "max_tokens": self.max_tokens,
-            "temperature": self.temperature,
             "messages": messages,
         }
         if self.system:
