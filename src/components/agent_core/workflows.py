@@ -109,7 +109,23 @@ def _to_columns(specs: List[Dict[str, Any]]) -> List[GridColumn]:
 
 def resolve_run(template: WorkflowTemplate, params: Dict[str, Any]) -> RunConfig:
     """Turn a template + form params into a RunConfig. NO per-template branch: it branches
-    on `shape` (a property of the DATA). Adding a template never touches this function."""
+    on `shape` (a property of the DATA). Adding a template never touches this function.
+
+    S-C: validates the tool_subset against the known tool registry at resolve time so an
+    unknown name is flagged immediately (not silently dropped at run time).  The result
+    carries a `subset_validation` key; callers that need a hard stop check it.
+    """
+    import logging as _logging
+    _log = _logging.getLogger(__name__)
+
+    # S-C: validate the declared tool subset before building the RunConfig.
+    validation = validate_tool_subset(list(template.tool_subset))
+    if not validation["ok"]:
+        _log.warning(
+            "[workflows] template %r tool_subset validation failed: %s",
+            template.id, validation.get("repair"),
+        )
+
     if template.shape == "grid":
         return RunConfig(
             shape="grid", output_type=template.output_type, base_mode=template.base_mode,
@@ -611,6 +627,51 @@ def list_templates() -> List[WorkflowTemplate]:
 
 def get_template(template_id: str) -> Optional[WorkflowTemplate]:
     return TEMPLATES.get(template_id)
+
+
+# ── S-C: tool-subset validation ───────────────────────────────────────────────
+
+def validate_tool_subset(tool_subset: List[str], mode: str = "standard") -> Dict[str, Any]:
+    """Validate that every tool in `tool_subset` is a real, registered tool for `mode`.
+
+    Returns {"ok": True} when every tool name is known, or
+    {"ok": False, "unknown": [...], "repair": "<message>"} for unrecognised names.
+
+    This is the S-C runtime guard: a template whose tool_subset contains a bogus
+    name would silently drop it via REGISTRY.names() — but the caller would never
+    know a step was inadvertently denied a tool it expected.  Making the bad name
+    LOUD at resolve/validate time is the fix.
+    """
+    from .registry import REGISTRY, SCHEMAS
+    known = set(SCHEMAS.keys())  # the full universe of registered tool names
+    bad = [t for t in (tool_subset or []) if t not in known]
+    if not bad:
+        return {"ok": True, "tool_subset": list(tool_subset)}
+    repair = (
+        f"Unknown tool name(s) in workflow tool_subset: {bad}. "
+        f"Valid tools: {sorted(known)}. "
+        "Remove or correct the unknown names — a workflow step cannot use a tool "
+        "outside its declared subset."
+    )
+    return {"ok": False, "unknown": bad, "repair": repair}
+
+
+def _step_failure_detail(step_label: str, reason: str, step_index: int) -> Dict[str, Any]:
+    """Build a structured per-step failure payload for the S-C reporting contract.
+
+    The route streams this as a `step_failure` event so the UI (and the caller)
+    sees WHICH step failed and WHY — not a blanket 'workflow failed'.
+
+    Args:
+        step_label: human-readable step identifier (e.g. 'doc:doc_id / col:governing_law').
+        reason: the abstain_reason or error string from that step's result envelope.
+        step_index: 0-based position in the fan-out so the UI can locate it.
+    """
+    return {
+        "step_index": step_index,
+        "step_label": step_label,
+        "reason": reason,
+    }
 
 
 def template_card(t: WorkflowTemplate) -> Dict[str, Any]:

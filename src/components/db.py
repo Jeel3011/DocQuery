@@ -1057,7 +1057,11 @@ class SupabaseManager:
         uid = user_id or self.user_id
         if not uid:
             return set()
-        q = self.read_client.table("screens").select("vault_id").eq(
+        # MUST use self.client (service-role), not read_client: the RLS policy on `screens`
+        # only allows managers to SELECT their firm's rows — a paralegal's JWT sees 0 rows,
+        # silently opening the wall they're subject to. Screen enforcement is an internal
+        # server-side check, never a user-facing read; service-role is correct here.
+        q = self.client.table("screens").select("vault_id").eq(
             "user_id", uid
         ).is_("removed_at", "null")
         if firm_id:
@@ -1082,7 +1086,11 @@ class SupabaseManager:
         uid = user_id or self.user_id
         if not uid or not vault_id:
             return False
-        q = self.read_client.table("screens").select("id").eq(
+        # MUST use self.client (service-role) — same reason as screened_vault_ids: the RLS
+        # policy on `screens` only grants SELECT to managers; a screened paralegal's JWT
+        # would return 0 rows (no wall), silently opening the gate. Internal enforcement
+        # reads must bypass RLS; only user-facing data queries use read_client.
+        q = self.client.table("screens").select("id").eq(
             "user_id", uid
         ).eq("vault_id", vault_id).is_("removed_at", "null")
         if firm_id:

@@ -153,7 +153,9 @@ def survey_collection(
         filenames = list(filename_by_doc.values())
     if not filenames:
         return error_result(
-            "survey_collection has no documents in scope to survey",
+            "survey_collection has no documents in scope to survey. "
+            "Ensure the vault contains documents (search_vault will also return empty) "
+            "or pass filenames explicitly.",
             summary="survey_collection: empty vault scope",
         )
     if k_docs and k_docs > 0:

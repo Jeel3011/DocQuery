@@ -6,15 +6,94 @@ spans with source addressing + score. No new intelligence: the retriever ranks, 
 shape. Requires a live `RetrievalManager` (vector index), so its primary gate is a
 schema/shape unit with a stub manager — the live recall fixture set is a Phase-B item.
 
-Gate: `eval/test_tools.py` (envelope + never-raise with a stub manager); a small
-retrieval-recall fixture set is added later (§3.3 names it as the tool's eval gate).
+T1 (CRAG — Corrective Retrieval-Augmented Generation):
+  After retrieval, the score distribution is read to assign a deterministic
+  retrieval-quality grade (`strong | weak | empty`).  This is an EXTERNAL signal
+  (T7 rule): purely from the scores the retriever already returns, no LLM self-check.
+  On `weak` or `empty` the tool attempts ONE query expansion (flag-gated via
+  `_EXPAND_ON_WEAK`, default True): the query is broadened by trimming the longest
+  quoted/parenthetical clause, then re-retrieval runs and spans are merged.  The
+  envelope `data` carries a `retrieval_quality` sub-dict so the model knows to
+  refine or abstract, and the loop summary names the repair taken.  Flag off ⇒
+  byte-identical to before T1.
+
+  LIVE gate owed: `eval/routing_recall.py` must pass (weak queries flagged, strong
+  queries pass through); a live Pinecone fixture that deliberately feeds a
+  semantically-distant query and asserts grade==`weak`.
+
+Gate: `eval/test_tools.py` (envelope + never-raise + T1 grade fixtures).
 """
 
 from __future__ import annotations
 
+import re
 from typing import Any, Dict, List, Optional
 
 from ._envelope import error_result, ok_result, safe_tool, span_to_dict
+
+_ROUTER_DOC_THRESHOLD = 20  # >this many docs in scope → route first (§3b / CDB §7.3)
+
+# ── T1: retrieval quality grading (CRAG, external signal — T7 rule) ──────────────
+# Thresholds calibrated for text-embedding-3-small + Pinecone cosine scores (0–1).
+# STRONG_THRESHOLD: a span at or above this is a genuine hit (not noise).
+# GAP_THRESHOLD: top-vs-median gap that confirms the top result stands out.
+# Flag: when False, the grading block is skipped and the old path is byte-identical.
+_STRONG_THRESHOLD: float = 0.55   # cosine ≥ 0.55 = relevant hit for this embedding model
+_GAP_THRESHOLD: float = 0.10      # top score must be ≥ median + this to be "strong"
+_EXPAND_ON_WEAK: bool = True       # auto-expand query once on weak/empty (flag-gated)
+
+
+def _grade_spans(spans: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """Grade retrieval quality from the span score distribution.
+
+    Returns a dict with keys `grade` (strong|weak|empty), `top_score`, and
+    `above_threshold` — the loop/model can use this to decide whether to refine.
+    Purely structural: reads scores already in spans, no LLM, $0.
+    """
+    if not spans:
+        return {"grade": "empty", "top_score": None, "above_threshold": 0}
+
+    scores = [s.get("score") for s in spans if s.get("score") is not None]
+    if not scores:
+        # Scores missing (stub/table path) — treat as strong so we don't false-alarm.
+        return {"grade": "strong", "top_score": None, "above_threshold": len(spans)}
+
+    scores_sorted = sorted(scores, reverse=True)
+    top = scores_sorted[0]
+    above = sum(1 for sc in scores if sc >= _STRONG_THRESHOLD)
+
+    if top < _STRONG_THRESHOLD:
+        grade = "weak"
+    elif len(scores_sorted) == 1:
+        grade = "strong"
+    else:
+        median = scores_sorted[len(scores_sorted) // 2]
+        grade = "strong" if (top - median) >= _GAP_THRESHOLD else "weak"
+
+    return {"grade": grade, "top_score": round(top, 4), "above_threshold": above}
+
+
+def _expand_query(query: str) -> Optional[str]:
+    """Broaden a query by removing the most specific clause (parenthetical or trailing
+    prepositional phrase).  Returns None if no broadening is possible.
+
+    Examples:
+      "governing law (dispute resolution)" → "governing law"
+      "net sales in fiscal year 2023 Q2"   → "net sales"
+    """
+    # Strip trailing parenthetical.
+    expanded = re.sub(r"\s*\([^)]*\)\s*$", "", query).strip()
+    if expanded and expanded != query:
+        return expanded
+    # Strip the longest trailing prepositional phrase (in/for/of/during/at/under + rest).
+    expanded = re.sub(
+        r"\s+(in|for|of|during|at|under|within|between)\s+\S.*$", "", query,
+        flags=re.IGNORECASE,
+    ).strip()
+    if expanded and expanded != query:
+        return expanded
+    return None
+
 
 SCHEMA: Dict[str, Any] = {
     "name": "search_vault",
@@ -56,9 +135,6 @@ SCHEMA: Dict[str, Any] = {
     },
 }
 
-_ROUTER_DOC_THRESHOLD = 20  # >this many docs in scope → route first (§3b / CDB §7.3)
-
-
 @safe_tool
 def search_vault(
     query: str,
@@ -67,16 +143,30 @@ def search_vault(
     scope: Optional[Dict[str, Any]] = None,
     k: int = 8,
     kind: str = "both",
+    fidelity_by_doc: Optional[Dict[str, str]] = None,
 ) -> Dict[str, Any]:
     """Search the vault for `query`; return the §3.3 envelope with chunk spans.
 
     `retrieval_manager` is a live `RetrievalManager`. `scope` narrows the search
     (collection_id / doc_ids / filenames). `kind` selects text/table/both.
+
+    S-E: `fidelity_by_doc` is an optional {doc_id: fidelity_grade} dict (e.g.
+    {"uuid-1": "partial"}).  When a returned span's doc_id maps to a grade other
+    than "good", the span carries `fidelity_warning: true` so the agent (and
+    eventually the user) sees "this doc ingested poorly — results may be incomplete"
+    instead of silently abstaining on it.  Flag-off: pass None → byte-identical.
     """
     if not query:
-        return error_result("search_vault requires a non-empty 'query'")
+        return error_result(
+            "search_vault requires a non-empty 'query'. "
+            "Provide a specific phrase describing what you are looking for "
+            "(e.g. 'governing law clause', 'total revenue 2022')."
+        )
     if retrieval_manager is None:
-        return error_result("search_vault requires a retrieval_manager")
+        return error_result(
+            "search_vault requires a retrieval_manager (internal: the run context did not "
+            "inject one; this is a routing bug, not a model error — report it)."
+        )
 
     scope = scope or {}
     collection_id = scope.get("collection_id")
@@ -152,8 +242,86 @@ def search_vault(
         docs.extend(table_docs or [])
 
     spans = [span_to_dict(d) for d in docs][: max(k, 1) if kind != "both" else max(k * 2, 1)]
+
+    # ── S-E: stamp fidelity_warning on spans from low-fidelity docs ──────────────
+    # A doc that ingested with fidelity != "good" already has that flag in the DB.
+    # When fidelity_by_doc is provided, each span's doc_id is looked up: any grade
+    # other than "good" (e.g. "partial") stamps fidelity_warning=True on that span
+    # so the agent and the trust UI see "this doc ingested poorly — results may be
+    # incomplete" rather than silently abstaining. Flag off: fidelity_by_doc=None →
+    # no stamp, byte-identical to before S-E.
+    if fidelity_by_doc:
+        for sp in spans:
+            did = sp.get("doc_id")
+            if did and fidelity_by_doc.get(did, "good") != "good":
+                sp["fidelity_warning"] = True
+
+    # ── T1: grade the retrieval quality, optionally auto-expand on weak/empty ─────
+    rq = _grade_spans(spans)
+    repair: Optional[str] = None
+
+    if _EXPAND_ON_WEAK and rq["grade"] in ("weak", "empty"):
+        expanded_query = _expand_query(query)
+        if expanded_query:
+            # One expansion attempt: re-retrieve with the broader query and merge.
+            expand_docs: List[Any] = []
+            if kind in ("text", "both"):
+                expand_docs.extend(retrieval_manager.retrieve(
+                    expanded_query,
+                    doc_ids=doc_ids or None,
+                    filename_filters=(filenames if filenames and len(filenames) > 1 else None) if not doc_ids else None,
+                    filename_filter=(filenames[0] if filenames and len(filenames) == 1 else None) if not doc_ids else None,
+                    metadata_filter=metadata_filter,
+                    collection_id=(collection_id if not doc_ids and not filenames else None),
+                    top_k=k,
+                    apply_threshold=False,
+                    use_reranker=True,
+                ) or [])
+            if kind in ("table", "both"):
+                expand_docs.extend(retrieval_manager.retrieve_table_chunks(
+                    expanded_query,
+                    doc_ids=doc_ids if doc_ids else None,
+                    collection_id=(collection_id if not doc_ids and not filenames else None),
+                    filename_filters=(filenames or None),
+                    metadata_filter=metadata_filter,
+                    k=k,
+                ) or [])
+
+            if expand_docs:
+                # Merge: deduplicate by chunk_id (original spans take precedence).
+                seen_ids = {s.get("chunk_id") for s in spans if s.get("chunk_id")}
+                new_spans = [span_to_dict(d) for d in expand_docs
+                             if span_to_dict(d).get("chunk_id") not in seen_ids]
+                # S-E: stamp fidelity_warning on the newly-expanded spans too.
+                if fidelity_by_doc:
+                    for sp in new_spans:
+                        did = sp.get("doc_id")
+                        if did and fidelity_by_doc.get(did, "good") != "good":
+                            sp["fidelity_warning"] = True
+                merged = (spans + new_spans)[: max(k, 1) if kind != "both" else max(k * 2, 1)]
+                rq_after = _grade_spans(merged)
+                repair = (
+                    f"query expanded to {expanded_query!r}; "
+                    f"grade {rq['grade']}→{rq_after['grade']} "
+                    f"({len(spans)}→{len(merged)} spans)"
+                )
+                spans = merged
+                rq = rq_after
+            else:
+                repair = f"query expanded to {expanded_query!r} but yielded no additional chunks"
+
+    rq_payload: Dict[str, Any] = {"grade": rq["grade"], "top_score": rq["top_score"]}
+    if rq["grade"] != "strong":
+        rq_payload["repair"] = repair or (
+            f"retrieval grade={rq['grade']}; consider refining the query or reading the document directly"
+        )
+
+    summary = f"search_vault {query!r} ({kind}): {len(spans)} chunk(s) [{rq['grade']}]"
+    if repair:
+        summary += f"; {repair}"
+
     return ok_result(
-        summary=f"search_vault {query!r} ({kind}): {len(spans)} chunk(s)",
-        data={"chunks": spans},
+        summary=summary,
+        data={"chunks": spans, "retrieval_quality": rq_payload},
         provenance=spans,
     )

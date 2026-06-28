@@ -123,6 +123,9 @@ interface LocalMessage {
   thinkingSteps?: ThinkingStep[];
   thinkingTotalMs?: number;
   answerMeta?: AnswerMeta;
+  // F-E: populated when the output gate withholds something (abstain path). Passed to
+  // ChatMessage so OverrideAffordance renders for a partner holding override_abstain.
+  gateObjection?: string;
 }
 
 // Props let this page be RE-HOMED under /app/vault/[id]/ask/[cid] (G2 Step D) without
@@ -480,12 +483,32 @@ function ChatPageInner({ scopedCollectionId, conversationId, analysisMode = "sta
                 detail: detail || undefined,
                 status: pass ? "done" : "failed",
               });
+              // F-E: capture the gate's objection on the first failing gate so the
+              // OverrideAffordance can surface it in the partner's confirmation dialog.
+              if (!pass && detail) {
+                setMessages((prev) =>
+                  prev.map((m) =>
+                    m.id === assistantMsgId && !m.gateObjection
+                      ? { ...m, gateObjection: detail }
+                      : m
+                  )
+                );
+              }
             },
             onAgentMeta: ({ abstained, degrade }) => {
               const level: ConfidenceLevel = abstained || degrade ? "low" : "high";
               const meta: AnswerMeta = { confidence: level, claimTypes: ["fact"] };
               setMessages((prev) =>
-                prev.map((m) => (m.id === assistantMsgId ? { ...m, answerMeta: meta } : m))
+                prev.map((m) => {
+                  if (m.id !== assistantMsgId) return m;
+                  const patch: Partial<LocalMessage> = { answerMeta: meta };
+                  // F-E: if the agent abstained and no gate detail was emitted, set a
+                  // fallback objection so the override affordance still renders.
+                  if ((abstained || degrade) && !m.gateObjection) {
+                    patch.gateObjection = "The agent could not fully ground this answer and abstained.";
+                  }
+                  return { ...m, ...patch };
+                })
               );
             },
           },
@@ -1084,6 +1107,7 @@ function ChatPageInner({ scopedCollectionId, conversationId, analysisMode = "sta
                     answerMeta={msg.answerMeta ?? MOCK_ANSWER_META}
                     vaultId={activeCollectionId}
                     messageId={msg.id}
+                    gateObjection={msg.gateObjection}
                   />
                 </div>
               ))}

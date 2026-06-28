@@ -325,6 +325,83 @@ def main() -> int:
          and "prompt_overlay" not in card,
          "template_card exposes id/params for the gallery form, not the internal overlay")
 
+    # ── S-C: tool-subset validation + per-step failure reporting ─────────────
+    print("\n── S-C: tool-subset validation + per-step failure reporting ──────")
+    from src.components.agent_core.workflows import (
+        validate_tool_subset, _step_failure_detail,
+    )
+
+    # S-C.1: a valid subset → ok=True.
+    v = validate_tool_subset(["search_vault", "read_document"])
+    c.ok(v["ok"] is True, "S-C validate_tool_subset: valid subset → ok=True")
+    c.ok(v.get("tool_subset") == ["search_vault", "read_document"],
+         "S-C validate_tool_subset: valid subset echoed back in result")
+
+    # S-C.2: an unknown tool name → ok=False, unknown listed, repair message present.
+    v_bad = validate_tool_subset(["search_vault", "NOT_A_REAL_TOOL"])
+    c.ok(v_bad["ok"] is False,
+         "S-C validate_tool_subset: unknown tool name → ok=False")
+    c.ok("NOT_A_REAL_TOOL" in v_bad.get("unknown", []),
+         "S-C validate_tool_subset: unknown name is listed in 'unknown'")
+    c.ok("repair" in v_bad and "NOT_A_REAL_TOOL" in v_bad["repair"],
+         "S-C validate_tool_subset: repair message names the unknown tool")
+    c.ok("Valid tools:" in v_bad.get("repair", ""),
+         "S-C validate_tool_subset: repair message lists the valid tool set")
+
+    # S-C.3: a completely bogus subset → ok=False.
+    v_all_bad = validate_tool_subset(["bogus_a", "bogus_b"])
+    c.ok(v_all_bad["ok"] is False and len(v_all_bad["unknown"]) == 2,
+         "S-C validate_tool_subset: all-bogus subset → ok=False, 2 unknowns")
+
+    # S-C.4: empty subset → ok=True (a workflow may legitimately expose no tools,
+    # e.g. a pure-overlay output that drives from the system prompt alone).
+    c.ok(validate_tool_subset([])["ok"] is True,
+         "S-C validate_tool_subset: empty subset is valid (no unknown names)")
+
+    # S-C.5: all shipped templates have valid subsets.
+    bad_templates = []
+    for t in list_templates():
+        v_t = validate_tool_subset(t.tool_subset)
+        if not v_t["ok"]:
+            bad_templates.append((t.id, v_t["unknown"]))
+    c.ok(not bad_templates,
+         f"S-C: all shipped templates have valid tool_subsets (offenders: {bad_templates})")
+
+    # S-C.6: _step_failure_detail returns a structured dict with step_index, step_label, reason.
+    sf = _step_failure_detail("doc:contract.pdf / col:governing_law",
+                              "no grounded span found for the clause", 3)
+    c.ok(sf["step_index"] == 3, "S-C _step_failure_detail: step_index correct")
+    c.ok("governing_law" in sf["step_label"],
+         "S-C _step_failure_detail: step_label names the column")
+    c.ok("no grounded span" in sf["reason"],
+         "S-C _step_failure_detail: reason carries the abstain message")
+
+    # S-C.7: resolve_run on a valid template does not crash (S-C validation is a warn,
+    # not a raise — valid templates must still resolve).
+    rc_valid = resolve_run(sweep, {})
+    c.ok(rc_valid.shape == "grid",
+         "S-C resolve_run: valid template resolves cleanly despite S-C validation pass")
+
+    # S-C.8: a synthetic template with an unknown tool subset logs but still resolves
+    # (the route's validate call is additive — existing valid templates are unchanged).
+    synthetic = WorkflowTemplate(
+        id="synthetic-bad-subset", title="T", practice_area="Litigation",
+        description="d", shape="output", output_type="Output",
+        base_mode="standard", tool_subset=["search_vault", "BOGUS_TOOL"],
+        params_schema=[],
+    )
+    import logging as _logging
+    import io as _io
+    _buf = _io.StringIO()
+    _h = _logging.StreamHandler(_buf)
+    _logging.getLogger("src.components.agent_core.workflows").addHandler(_h)
+    rc_syn = resolve_run(synthetic, {})
+    _logging.getLogger("src.components.agent_core.workflows").removeHandler(_h)
+    c.ok(rc_syn.shape == "output",
+         "S-C resolve_run: bad-subset template still resolves (validation is non-fatal)")
+    c.ok("BOGUS_TOOL" in _buf.getvalue(),
+         "S-C resolve_run: bad subset is LOGGED (caller can see it without crashing)")
+
     # ── summary ────────────────────────────────────────────────────────────────
     print(f"\n{'='*60}")
     print(f"  RESULT: {c.passed} passed, {c.failed} failed")

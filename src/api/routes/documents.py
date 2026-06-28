@@ -199,6 +199,7 @@ async def upload_document(
 
     # 3. Dispatch to Celery worker — route to priority queue based on file size
     from src.worker.tasks import process_document_task
+    from src.api.dependencies import resolve_membership
 
     if file_size < 500_000:           # < 500 KB → fast queue (txt, tiny PDFs)
         celery_queue = "documents.fast"
@@ -206,6 +207,17 @@ async def upload_document(
         celery_queue = "documents.normal"
     else:                             # ≥ 5 MB  → heavy queue (large PDFs)
         celery_queue = "documents.heavy"
+
+    # F-B: snapshot the uploader's ethical-wall state at enqueue time so the worker can
+    # re-check it inside the task (the worker is otherwise authz-blind — service-role,
+    # user_id only). resolve_membership is memoized per-request so this is a cached read.
+    try:
+        _membership = resolve_membership(sb)
+        _enqueue_firm_id = _membership.firm_id or None
+        _enqueue_screened = list(_membership.screened_vault_ids)
+    except Exception:  # noqa: BLE001 — a lookup failure must not block the upload
+        _enqueue_firm_id = None
+        _enqueue_screened = []
 
     process_document_task.apply_async(
         kwargs=dict(
@@ -217,6 +229,10 @@ async def upload_document(
             user_id=owner_id,
             pinecone_namespace=owner_namespace,
             local_path=spool_path,  # worker reads bytes from here; uploads to storage itself
+            collection_id=collection_id or None,
+            # F-B: ethical-wall snapshot (firm + screened vaults at enqueue time).
+            firm_id=_enqueue_firm_id,
+            screened_vault_ids=_enqueue_screened,
         ),
         queue=celery_queue,
     )

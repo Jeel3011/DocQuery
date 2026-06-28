@@ -69,7 +69,12 @@ def table_lookup(
     from src.components.brain.perception.grounding import MetricIntent, ground_metric
 
     if not metric or not period:
-        return error_result("table_lookup requires both 'metric' and 'period'")
+        missing = [f for f, v in [("metric", metric), ("period", period)] if not v]
+        return error_result(
+            f"table_lookup requires both 'metric' and 'period'; missing: {', '.join(missing)}. "
+            "Use list_metrics(doc_id) to discover the exact label, and read_document(doc_id) "
+            "to confirm which periods are available."
+        )
 
     intent = MetricIntent(
         metric=metric,

@@ -153,4 +153,7 @@ def span_to_dict(doc: Any) -> Dict[str, Any]:
         # provable downstream (the F3 ledger / trust UI can show which vault each cited
         # chunk came from — and a leak is a span whose collection_id != the active vault).
         "collection_id": md.get("collection_id"),
+        # S-E: carry the doc_id so the fidelity_warning stamp (search_vault) can look up
+        # per-doc fidelity without a second round-trip.  None when not stamped by ingest.
+        "doc_id": md.get("doc_id"),
     }

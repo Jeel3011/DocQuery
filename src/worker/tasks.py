@@ -51,6 +51,12 @@ def process_document_task(
     pinecone_namespace: str,
     collection_id: str | None = None,
     local_path: str | None = None,
+    # F-B: ethical-wall snapshot from the API at enqueue time.
+    # `screened_vault_ids` is the set of vault IDs the uploading user was actively
+    # screened off when the task was dispatched. `firm_id` is their resolved firm.
+    # Defaults to None/[] so old tasks in the queue (pre-F-B) run unchanged.
+    firm_id: str | None = None,
+    screened_vault_ids: list | None = None,
 ):
     """
     Celery task: ingest -> chunk -> embed -> save chunks.
@@ -71,6 +77,43 @@ def process_document_task(
     # Build a service-role Supabase client scoped to this user
     sb = SupabaseManager(use_service_role=True)
     sb._user = type("User", (), {"id": user_id})()
+
+    # F-B: ethical-wall re-check inside the task (the worker is otherwise authz-blind).
+    # The API already refused a screened user at enqueue (assert_vault_not_screened), but
+    # a screen can be added AFTER enqueue — the wall must hold in the worker too.
+    # We use the ENQUEUE-TIME snapshot (screened_vault_ids) as a lightweight first gate
+    # (no live DB call needed for the common case), then do a LIVE re-check via the real
+    # DB to catch screens that were added between enqueue and execution.
+    # On any screen hit: mark the doc failed, log the block, return — NEVER ingest.
+    _screened_set = set(screened_vault_ids or [])
+    if collection_id:
+        # Fast path: the snapshot already has it screened.
+        _snapshot_hit = str(collection_id) in _screened_set
+        # Live path: always re-check so a screen added after enqueue also blocks.
+        _live_hit = False
+        try:
+            _live_hit = sb.is_vault_screened(str(collection_id), user_id=user_id,
+                                             firm_id=firm_id or None)
+        except Exception as _screen_exc:
+            # is_vault_screened fails CLOSED (re-raises non-missing-table errors); but the
+            # worker must not crash the whole task on a transient DB blip — instead treat a
+            # lookup fault as SCREENED (fail closed) so the wall is never silently bypassed.
+            logger.error("[%s] F-B: screen check raised — treating as screened (fail closed): %s",
+                         doc_id, _screen_exc)
+            _live_hit = True
+        if _snapshot_hit or _live_hit:
+            reason = "enqueue-snapshot" if _snapshot_hit else "live-recheck"
+            logger.error(
+                "[%s] F-B WORKER BLOCK: user=%s is screened off vault=%s (firm=%s, reason=%s). "
+                "Refusing to ingest. Marking document failed.",
+                doc_id, user_id, collection_id, firm_id, reason,
+            )
+            try:
+                sb.update_document_status(doc_id, "failed")
+            except Exception:  # noqa: BLE001 — best-effort status update
+                pass
+            uploads_total.labels(status="failed").inc()
+            return {"status": "failed", "reason": f"ethical wall: user screened off vault ({reason})"}
 
     config = Config()
     config.PINECONE_NAMESPACE = pinecone_namespace

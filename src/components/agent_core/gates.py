@@ -3,16 +3,21 @@
 The model can talk its way past a prompt; it CANNOT talk its way past code. Every draft
 the loop produces is bound to the evidence ledger here before it ships:
 
-  1. verify_numbers   — every substantive figure must trace to a ledger cell (or a
-                        scaled/round restatement of one). Wraps the promoted spine
-                        invariant `figure_traces_to_cells` (already scaling-aware).
-  2. verify_citations — every factual sentence must carry a citation marker resolvable
-                        to a ledger span/cell. Optional: sample-verify claim↔span
-                        entailment with `verifier.verify_claims` (cheap LLM) when one is
-                        injected — off in the offline gate so it stays $0.
-  3. repair → redact  — ONE feedback turn; a second failure REDACTS the ungated claims
-                        (replaces them with an explicit withhold line) and ships the rest.
-                        This is C4's binary-withhold, generalized to every answer.
+  1. verify_numbers    — every substantive figure must trace to a ledger cell (or a
+                         scaled/round restatement of one). Wraps the promoted spine
+                         invariant `figure_traces_to_cells` (already scaling-aware).
+  2. verify_citations  — every factual sentence must carry a citation marker resolvable
+                         to a ledger span/cell. Optional: sample-verify claim↔span
+                         entailment with `verifier.verify_claims` (cheap LLM) when one is
+                         injected — off in the offline gate so it stays $0.
+  3. verify_completeness — multi-entity questions must be addressed in full: each asked
+                         entity/sub-question must appear in the answer as a stated result
+                         OR an explicit abstain. A silently-dropped entity → ONE repair
+                         turn ("you did not address Z"), then the answer ships visibly
+                         incomplete. Single-entity questions are a no-op.
+  4. repair → redact   — ONE feedback turn; a second failure REDACTS the ungated claims
+                         (replaces them with an explicit withhold line) and ships the rest.
+                         This is C4's binary-withhold, generalized to every answer.
 
 The loop (loop.py) already implements the repair-once-then-redact CONTROL FLOW around
 `run_output_gates`; A3 provides the real `run_output_gates`. WRONG-rate stays the
@@ -145,6 +150,104 @@ def _is_factual(sentence: str) -> bool:
     return bool(re.search(r"\d", stripped)) or bool(_CONTENT_WORD.search(stripped))
 
 
+# ── T8: evidence-grounded support (re-root citation on the LEDGER, not on marker shape) ──
+#
+# The binding question (plans/tool_hard.md §0.2 / T8) is "does the ledger SUPPORT this sentence?",
+# NOT "does this sentence carry a `[doc p.N]` substring?". A grounded factual sentence whose marker
+# formatting drifted (or which summarizes the retrieved SET rather than one page) was being redacted
+# to "I could not verify…" — five reactive special-cases (scaffold, INPUT-NEEDED, qualitative-
+# exemption, citation-digit-strip, empty-ledger) each patched one shape of that bug. This is the
+# general escape: a NON-NUMERIC factual sentence is SUPPORTED if its salient content actually appears
+# in a ledger SPAN's text. Deterministic, $0, no LLM — an EXTERNAL evidence check (T7: never the model
+# grading itself; the optional `_sample_entailment` is the stronger lens when an llm is injected).
+#
+# The NUMERIC MOAT is deliberately untouched: a sentence stating a substantive figure ALWAYS needs a
+# marker AND must trace to a cell via verify_numbers — lexical span overlap can NEVER vouch for a
+# number (that is the unfixable-by-overlap class). So this only ever RELAXES the marker rule for
+# qualitative prose that is provably echoed by gathered evidence; it never loosens a figure.
+
+_STOPWORDS = frozenset(
+    "the a an of to in on at by for and or but with as is are was were be been being this that "
+    "these those it its their our your his her they them we i you he she which who whom whose "
+    "from into over under between each any all some no not nor so than then there here will shall "
+    "may might can could would should must have has had do does did a's per via".split()
+)
+_TOKEN_RE = re.compile(r"[A-Za-z][A-Za-z0-9&./'-]+")
+
+
+def _norm_token(t: str) -> str:
+    """Lower-case a token and strip leading/trailing word-joining punctuation so a sentence-final
+    `Delaware.` matches `delaware` in the span corpus (the `.`/`-`/`'` are kept INSIDE — U.S., R&D —
+    but not as trailing noise that would defeat an exact-substring match)."""
+    return t.lower().strip(".'-/&")
+
+
+def _content_tokens(text: str) -> set[str]:
+    """The lower-cased salient tokens of a sentence — content words + named entities, stopwords
+    and very short tokens dropped. These are what a span must echo for the sentence to be grounded."""
+    out: set[str] = set()
+    for raw in _TOKEN_RE.findall(text or ""):
+        t = _norm_token(raw)
+        if len(t) >= 3 and t not in _STOPWORDS:
+            out.add(t)
+    return out
+
+
+def _entity_tokens(text: str) -> set[str]:
+    """The CAPITALIZED, mid-sentence content tokens — a cheap named-entity proxy (Acme, Delaware,
+    Reliance). These are the load-bearing SUBJECTS of a claim; generic content words ('agreement',
+    'parties') are not. A claim is only grounded if its entities are echoed by the evidence — overlap
+    on generic words alone must NOT vouch for an invented entity. A leading-word capital (sentence
+    start) is excluded so 'The' / 'This' don't read as entities."""
+    ents: set[str] = set()
+    for m in _TOKEN_RE.finditer(text or ""):
+        tok = m.group(0)
+        if m.start() == 0:
+            continue                          # sentence-initial capital is not an entity signal
+        norm = _norm_token(tok)
+        if tok[0].isupper() and norm not in _STOPWORDS and len(norm) >= 3:
+            ents.add(norm)
+    return ents
+
+
+def _span_text(ledger: EvidenceLedger) -> str:
+    """All ledger SPAN text concatenated + lower-cased — the corpus a qualitative claim must echo.
+    Spans are the verbatim snippets search_vault gathered; cells/params are numeric and excluded
+    here (numbers go through verify_numbers, never this lexical path)."""
+    chunks: List[str] = []
+    for e in ledger.entries:
+        if e.kind == "span":
+            chunks.append(str(e.payload.get("snippet") or e.trace() or ""))
+    return " ".join(chunks).lower()
+
+
+def _claim_grounded_in_spans(sentence: str, ledger: EvidenceLedger,
+                             min_overlap: float = 0.6) -> bool:
+    """True if a NON-NUMERIC factual sentence is supported by the ledger's gathered spans.
+
+    Support = a strong majority of the sentence's salient content tokens appear verbatim in the
+    span corpus (default ≥60% — high enough that an unrelated invented claim fails, low enough that
+    paraphrase/word-order drift on a genuinely-grounded sentence still passes). Requires a minimum
+    of real content tokens so a near-empty sentence can't pass vacuously. This is the EXTERNAL signal
+    that lets a marker-less but evidence-backed sentence ship (T8) — fail-closed when no spans exist."""
+    corpus = _span_text(ledger)
+    if not corpus:
+        return False                          # no gathered evidence → cannot vouch (fail closed)
+    clean = _strip_citations(sentence)
+    toks = _content_tokens(clean)
+    if len(toks) < 3:
+        return False                          # too little signal to ground on — defer to the marker rule
+    # ENTITY GATE (the load-bearing check): every named entity the sentence asserts must appear in
+    # the evidence. This is what stops "Initech and Umbrella as the governed parties" from riding in
+    # on generic-word overlap ('agreement'/'parties'/'governed') while its actual SUBJECTS are
+    # invented — lexical overlap alone can't tell a real claim from one that swaps the entities.
+    entities = _entity_tokens(clean)
+    if entities and not all(e in corpus for e in entities):
+        return False
+    present = sum(1 for t in toks if t in corpus)
+    return (present / len(toks)) >= min_overlap
+
+
 def verify_citations(draft: str, ledger: EvidenceLedger, llm=None,
                      allow_qualitative: bool = False) -> Dict[str, Any]:
     """Fail if a factual sentence carries no citation marker.
@@ -177,18 +280,37 @@ def verify_citations(draft: str, ledger: EvidenceLedger, llm=None,
     def _has_citation(s: str) -> bool:
         return bool(_CITE_RE.search(re.sub(r"\[INPUT NEEDED:[^\]]*\]", "", s, flags=re.IGNORECASE)))
 
-    # The qualitative exemption only applies on the simple-answer path AND only when the
-    # agent actually gathered evidence (a non-empty ledger).
-    qualitative_ok = allow_qualitative and not ledger.is_empty()
-
     def _needs_marker(s: str) -> bool:
         """Does this factual sentence require an inline citation marker?
-        Numeric sentences always do (the moat). Non-numeric sentences are exempt only on the
-        simple-answer path when the ledger holds evidence — grounded in the retrieved set."""
+
+        Numeric sentences ALWAYS do (the moat — a stated figure must be cited + traced to a cell).
+        A NON-NUMERIC sentence is exempt from the marker rule when it is EVIDENCE-GROUNDED — i.e.
+        its salient content is actually echoed by a ledger span (T8: re-root on the ledger, not on
+        marker shape). This is the general form of the old qualitative exemption: instead of
+        blanket-exempting every non-numeric sentence on the simple path, we require the EXTERNAL
+        span-grounding signal — so it (a) applies on BOTH the simple AND the deep/draft path
+        (a grounded report sentence no longer redacts on marker drift — S-A), and (b) is STRICTER
+        on the simple path (a non-numeric sentence the ledger does NOT support still needs a marker,
+        closing the 'any non-numeric prose rides free' gap the blanket flag left open).
+
+        `allow_qualitative` is RETAINED as a wider fallback on the simple direct-answer path only:
+        a non-numeric sentence there passes if the ledger merely holds evidence even when this
+        sentence's specific tokens didn't cross the overlap bar (e.g. a one-line list answer whose
+        salient tokens ARE the entities — already covered — or a terse summary). It NEVER applies to
+        a figure and NEVER on an empty ledger."""
         traceable = _strip_citations(re.sub(r"\[INPUT NEEDED:[^\]]*\]", "", s, flags=re.IGNORECASE))
         if _has_substantive_figure(traceable):
             return True                       # a stated figure must always be cited + traced
-        return not qualitative_ok             # qualitative: exempt iff allowed AND evidence exists
+        # Evidence-grounded (span overlap) → no marker needed, on EITHER path (the T8 principle).
+        if _claim_grounded_in_spans(s, ledger):
+            return False
+        # Simple-answer fallback (BUG-2), NARROWED by T8: a non-numeric sentence on the simple path
+        # may pass below the overlap bar (a terse list/summary), BUT it still must not assert a named
+        # entity absent from the evidence — an invented-entity claim must never ride the fallback in.
+        if allow_qualitative and not ledger.is_empty():
+            unknown_entity = any(e not in _span_text(ledger) for e in _entity_tokens(_strip_citations(s)))
+            return unknown_entity             # exempt only if it introduces no unknown entity
+        return True
 
     uncited = [s.strip() for s in sentences
                if _is_factual(s) and _needs_marker(s) and not _has_citation(s)]
@@ -204,6 +326,135 @@ def verify_citations(draft: str, ledger: EvidenceLedger, llm=None,
         except Exception:  # noqa: BLE001 — the deterministic check already passed; never crash
             pass
     return {"name": "verify_citations", "pass": True, "detail": "all factual sentences cited"}
+
+
+# ── Gate 3: multi-entity completeness (T2) ──────────────────────────────────────
+#
+# A multi-part question ("compare AMZN, GOOG, MSFT" / "for each of the following…")
+# must be addressed in FULL: every asked entity must appear in the answer as a stated
+# result OR an explicit abstain. A silently-dropped entity → ONE repair turn, then the
+# answer ships visibly incomplete. Single-entity questions → no-op (never false-repair).
+#
+# Decomposition is DETERMINISTIC (no LLM, $0): pattern-matched for the common legal/
+# finance query forms. An unrecognized form → single-entity → no-op. This is the safe
+# direction: the two-sided risk is (a) silent under-answer (bad) vs (b) false-positive
+# repair on a well-formed answer (also bad). We accept the occasional missed multi-part
+# over a false repair.
+
+# Patterns that introduce a multi-entity set in the question.
+_COMPARE_RE = re.compile(
+    r"\b(?:compare|versus|vs\.?|difference between|contrast)\b",
+    re.IGNORECASE,
+)
+_FOR_EACH_RE = re.compile(
+    r"\bfor each (?:of (?:the )?)?(?:the (?:following\b)?)?",
+    re.IGNORECASE,
+)
+# A list item after "compare X, Y, Z" or "for each of X, Y, Z" — comma/and-separated
+# proper tokens (capitalized or ALL-CAPS abbreviations like AMZN).
+_LIST_SPLIT_RE = re.compile(r"\s*(?:,\s*(?:and\s+)?|(?:\s+and\s+))\s*")
+# What the answer says when it explicitly can't address something.
+_EXPLICIT_ABSTAIN_RE = re.compile(
+    r"\b(?:could not|couldn't|unable to|not available|not found|no data|"
+    r"insufficient evidence|cannot verify|not in the vault|not ingested)\b",
+    re.IGNORECASE,
+)
+
+
+def _extract_entities(question: str) -> List[str]:
+    """Return the multi-entity list from `question`, or [] for a single-entity question.
+
+    Handles the two commonest forms:
+      • "compare AMZN, GOOG, and MSFT revenue in FY2023"
+      • "for each of the following clauses: governing law, payment terms, liability"
+    Returns an empty list when the question doesn't match a recognized multi-entity
+    form — the gate then no-ops (safe-default: no false repair on an unrecognized form).
+    """
+    q = question.strip()
+
+    # Form 1 — "compare X, Y, Z …"
+    if _COMPARE_RE.search(q):
+        # grab the part after the compare keyword up to the first verb/stop word
+        m = _COMPARE_RE.search(q)
+        tail = q[m.end():].strip()
+        # clip at first sentence-ending keyword that signals the entities are done
+        tail = re.split(r"\b(?:in|for|from|during|between|with|and their|revenue|margin"
+                        r"|profit|sales|income|rate|growth|clause)\b", tail,
+                        maxsplit=1, flags=re.IGNORECASE)[0]
+        ents = [e.strip() for e in _LIST_SPLIT_RE.split(tail) if e.strip()]
+        if len(ents) >= 2:
+            return ents
+
+    # Form 2 — "for each of [the following] X, Y, Z"
+    m2 = _FOR_EACH_RE.search(q)
+    if m2:
+        tail2 = q[m2.end():].strip()
+        # strip a label prefix like "clauses:" / "following clauses:" / "items:" that
+        # precedes the actual list — one or two non-comma words followed by a colon.
+        tail2 = re.sub(r"^(?:\w+\s+)?\w+\s*:\s*", "", tail2)
+        # clip at sentence end or a stop phrase
+        tail2 = re.split(r"\s*[.?!]\s*|\b(?:provide|give|state|list|show|tell)\b",
+                         tail2, maxsplit=1, flags=re.IGNORECASE)[0]
+        ents2 = [e.strip() for e in _LIST_SPLIT_RE.split(tail2) if e.strip()]
+        if len(ents2) >= 2:
+            return ents2
+
+    return []
+
+
+def _entity_addressed(entity: str, answer: str) -> bool:
+    """True if `entity` appears in the answer as a stated result or an explicit abstain.
+
+    We check two things:
+      (a) the entity name (case-insensitive substring) appears in the answer, AND
+      (b) EITHER it is near a substantive result-word OR near an explicit abstain phrase.
+    A match on just the name without either signal means the entity was mentioned in
+    passing (e.g. the question was repeated back) but not answered — that still fails.
+    """
+    if not entity:
+        return True
+    low_ans = answer.lower()
+    low_ent = entity.lower()
+
+    # Find every occurrence of the entity name in the answer.
+    for m in re.finditer(re.escape(low_ent), low_ans):
+        # Look at a ±200-char window around the match.
+        start = max(0, m.start() - 200)
+        end = min(len(low_ans), m.end() + 200)
+        window = low_ans[start:end]
+        # Does the window contain a numeric result or a result-signal word?
+        has_result = bool(re.search(r"\d[\d,.]*", window)) or bool(re.search(
+            r"\b(?:is|was|were|are|has|have|had|totaled|reached|grew|declined|"
+            r"reported|recorded|found|agreed|states|provides|requires|governed|"
+            r"includes?|covers?|specifies?)\b", window, re.IGNORECASE))
+        if has_result:
+            return True
+        # OR does the window contain an explicit abstain phrase?
+        if _EXPLICIT_ABSTAIN_RE.search(window):
+            return True
+    return False
+
+
+def verify_completeness(question: str, draft: str) -> Dict[str, Any]:
+    """Fail if a multi-entity question has at least one entity silently omitted.
+
+    Returns a gate result dict with the same shape as verify_numbers/verify_citations.
+    `dropped` key lists the entity names that were omitted (used by the repair message).
+    Single-entity (or unrecognized-form) questions always pass (no-op path).
+    """
+    entities = _extract_entities(question)
+    if len(entities) < 2:
+        return {"name": "verify_completeness", "pass": True,
+                "detail": "single-entity question — completeness no-op"}
+
+    dropped = [e for e in entities if not _entity_addressed(e, draft or "")]
+    if dropped:
+        return {"name": "verify_completeness", "pass": False,
+                "detail": (f"answer silently omits: {dropped}; "
+                           f"state a result or explicitly abstain on each"),
+                "dropped": dropped}
+    return {"name": "verify_completeness", "pass": True,
+            "detail": f"all {len(entities)} entities addressed"}
 
 
 def _sample_entailment(sentences: List[str], ledger: EvidenceLedger, llm) -> None:
@@ -297,14 +548,15 @@ def _split_sections(draft: str) -> List[str]:
     return parts or ([draft] if (draft or "").strip() else [])
 
 
-def gate_sectioned(draft: str, ledger: EvidenceLedger, *, llm=None) -> GateOutcome:
+def gate_sectioned(draft: str, ledger: EvidenceLedger, *, llm=None,
+                   question: str = "") -> GateOutcome:
     """Deep-mode output gate: bind EACH section to the ledger independently (G5 §2.B2).
 
     Same verification intelligence as `run_output_gates` (verify_numbers +
-    verify_citations + the per-claim `_redact`), applied section-by-section so one
-    unsupported section is redacted to a VISIBLE withhold line while the grounded
-    sections ship intact with their citations. This is the moat for the riskiest surface:
-    a long report can abstain a section, never silently assert it.
+    verify_citations + verify_completeness + the per-claim `_redact`), applied
+    section-by-section so one unsupported section is redacted to a VISIBLE withhold line
+    while the grounded sections ship intact with their citations. This is the moat for
+    the riskiest surface: a long report can abstain a section, never silently assert it.
 
     Returns a GateOutcome whose `redacted_draft` is the REASSEMBLED report (every section,
     failing ones redacted). `passed` is True only if every section passed as-is.
@@ -312,7 +564,7 @@ def gate_sectioned(draft: str, ledger: EvidenceLedger, *, llm=None) -> GateOutco
     sections = _split_sections(draft)
     if len(sections) <= 1:
         # No real sectioning → identical to the whole-draft gate (don't special-case).
-        return run_output_gates(draft, ledger, llm=llm)
+        return run_output_gates(draft, ledger, llm=llm, question=question)
 
     rebuilt: List[str] = []
     all_failures: List[Dict[str, Any]] = []
@@ -341,7 +593,8 @@ def gate_sectioned(draft: str, ledger: EvidenceLedger, *, llm=None) -> GateOutco
         for result in (verify_numbers(body, ledger), verify_citations(body, ledger, llm=llm)):
             if not result.get("pass", False):
                 failures.append({"name": result["name"], "detail": result["detail"],
-                                 **({"uncited": result["uncited"]} if "uncited" in result else {})})
+                                 **({"uncited": result["uncited"]} if "uncited" in result else {}),
+                                 **({"dropped": result["dropped"]} if "dropped" in result else {})})
 
         if not failures:
             rebuilt.append(sec.rstrip())
@@ -356,6 +609,15 @@ def gate_sectioned(draft: str, ledger: EvidenceLedger, *, llm=None) -> GateOutco
         rebuilt.append(f"{header}\n\n{redacted_body}".rstrip() if header else redacted_body)
 
     report = "\n\n".join(rebuilt).strip()
+
+    # T2: completeness check on the WHOLE assembled report (not per-section — the question
+    # asks about multiple entities across the WHOLE answer; each section may cover one entity).
+    completeness = verify_completeness(question, report)
+    if not completeness.get("pass", True):
+        any_failed = True
+        all_failures.append({"name": completeness["name"], "detail": completeness["detail"],
+                              "dropped": completeness.get("dropped", [])})
+
     if not any_failed:
         return GateOutcome(passed=True, failures=[])
     return GateOutcome(
@@ -368,29 +630,50 @@ def gate_sectioned(draft: str, ledger: EvidenceLedger, *, llm=None) -> GateOutco
 
 # ── The entry point the loop calls ──────────────────────────────────────────────
 
-def run_output_gates(draft: str, ledger: EvidenceLedger, *, llm=None) -> GateOutcome:
+def run_output_gates(draft: str, ledger: EvidenceLedger, *, llm=None,
+                     question: str = "") -> GateOutcome:
     """Run all gates over `draft`. Returns a GateOutcome the loop acts on (§3.4).
 
     pass → ship as-is. fail (first time) → the loop feeds `failures` back for ONE repair.
     fail (after repair) → the loop ships `redacted_draft`. This function is pure/
     deterministic (modulo the optional llm sample) and never raises.
     """
+    # S-A (the latent moat hole tracked in tool_hard.md §T8): a single-section draft of the
+    # form `## Heading\n\n<claim>` would otherwise BYPASS gating entirely — `_SENT_SPLIT` splits
+    # on `.!?`, not `\n`, so the heading glues onto the first body sentence; the glued blob starts
+    # with `##`, `_SCAFFOLD_RE` matches, and `_is_factual` rejects the whole thing as scaffold →
+    # an ungrounded claim under a lone heading ships unchecked (verified live 2026-06-27). The
+    # per-section path (gate_sectioned) already strips the header before gating for exactly this
+    # reason; do the SAME here so the simple/standard path is not the soft underbelly. Strip a
+    # leading heading line, gate the body, re-attach the header to the (possibly redacted) body.
+    header, body = "", draft or ""
+    _stripped = (draft or "").lstrip()
+    if _SCAFFOLD_RE.match(_stripped) and _stripped[:1] == "#":
+        _h, _, _rest = _stripped.partition("\n")
+        # Only peel a markdown HEADING line (not the `_Insufficient evidence` withhold line,
+        # which carries no claim and must stay with the body it explains).
+        if _h.lstrip().startswith("#") and _rest.strip():
+            header, body = _h.strip(), _rest
+
     failures: List[Dict[str, Any]] = []
     # Simple direct-answer path: allow a non-numeric, evidence-grounded qualitative answer
     # (e.g. "what companies are in this vault?") through without a per-cell marker (BUG-2).
     # The numeric moat (verify_numbers + the figure-marker rule) is unaffected.
-    for result in (verify_numbers(draft, ledger),
-                   verify_citations(draft, ledger, llm=llm, allow_qualitative=True)):
+    for result in (verify_numbers(body, ledger),
+                   verify_citations(body, ledger, llm=llm, allow_qualitative=True),
+                   verify_completeness(question, body)):
         if not result.get("pass", False):
             failures.append({"name": result["name"], "detail": result["detail"],
-                             **({"uncited": result["uncited"]} if "uncited" in result else {})})
+                             **({"uncited": result["uncited"]} if "uncited" in result else {}),
+                             **({"dropped": result["dropped"]} if "dropped" in result else {})})
 
     if not failures:
         return GateOutcome(passed=True, failures=[])
 
+    redacted_body = _redact(body, ledger, failures)
     return GateOutcome(
         passed=False,
         failures=failures,
-        redacted_draft=_redact(draft, ledger, failures),
+        redacted_draft=(f"{header}\n\n{redacted_body}".rstrip() if header else redacted_body),
         abstained=True,
     )

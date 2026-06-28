@@ -236,6 +236,14 @@ Supabase (Postgres + Storage) + Pinecone, Next.js frontend (port 3000).
    AND finance+law. The answer is a small recombinable sub-goal BASIS + many
    SKILLS/MEMORY/KNOWLEDGE, NOT per-question handlers. See the cognitive-architecture
    rewrite in `plans/BRAIN_REASONING_PLAN.md` (10 organs).
+6. **No self-grading without an external signal; never special-case a gate by surface
+   pattern (T7, codified with T8 2026-06-27).** Any "let the model check itself" step must
+   instead be a gate, a kernel check, or a de-correlated second lens. And an output gate must
+   decide on EVIDENCE (does the ledger support this sentence?), never on shape (has-a-digit,
+   has-a-bracket, is-a-heading) — the five accreted `gates.py` patches were each a shape
+   special-case that redacted a correct answer. T8 re-rooted citation on ledger-span grounding;
+   don't add case #6. The numeric moat (`verify_numbers`: figure-traces-to-cell) is the one
+   thing never loosened.
 
 ---
 
@@ -250,3 +258,71 @@ Supabase (Postgres + Storage) + Pinecone, Next.js frontend (port 3000).
 - Richer running notes (the author's shorthand, lots of [[links]]): the agent memory
   at `~/.claude/projects/-Users-jeelthummar-Desktop-DocQuery/memory/` (NOT auto-loaded
   by Claude Code — read explicitly if you want the full backstory).
+
+---
+
+# Karpathy Coding Guidelines
+
+Behavioral guidelines to reduce common LLM coding mistakes. Merge with project-specific instructions as needed.
+
+**Tradeoff:** These guidelines bias toward caution over speed. For trivial tasks, use judgment.
+
+## 1. Think Before Coding
+
+**Don't assume. Don't hide confusion. Surface tradeoffs.**
+
+Before implementing:
+- State your assumptions explicitly. If uncertain, ask.
+- If multiple interpretations exist, present them - don't pick silently.
+- If a simpler approach exists, say so. Push back when warranted.
+- If something is unclear, stop. Name what's confusing. Ask.
+
+## 2. Simplicity First
+
+**Minimum code that solves the problem. Nothing speculative.**
+
+- No features beyond what was asked.
+- No abstractions for single-use code.
+- No "flexibility" or "configurability" that wasn't requested.
+- No error handling for impossible scenarios.
+- If you write 200 lines and it could be 50, rewrite it.
+
+Ask yourself: "Would a senior engineer say this is overcomplicated?" If yes, simplify.
+
+## 3. Surgical Changes
+
+**Touch only what you must. Clean up only your own mess.**
+
+When editing existing code:
+- Don't "improve" adjacent code, comments, or formatting.
+- Don't refactor things that aren't broken.
+- Match existing style, even if you'd do it differently.
+- If you notice unrelated dead code, mention it - don't delete it.
+
+When your changes create orphans:
+- Remove imports/variables/functions that YOUR changes made unused.
+- Don't remove pre-existing dead code unless asked.
+
+The test: Every changed line should trace directly to the user's request.
+
+## 4. Goal-Driven Execution
+
+**Define success criteria. Loop until verified.**
+
+Transform tasks into verifiable goals:
+- "Add validation" → "Write tests for invalid inputs, then make them pass"
+- "Fix the bug" → "Write a test that reproduces it, then make it pass"
+- "Refactor X" → "Ensure tests pass before and after"
+
+For multi-step tasks, state a brief plan:
+```
+1. [Step] → verify: [check]
+2. [Step] → verify: [check]
+3. [Step] → verify: [check]
+```
+
+Strong success criteria let you loop independently. Weak criteria ("make it work") require constant clarification.
+
+---
+
+**These guidelines are working if:** fewer unnecessary changes in diffs, fewer rewrites due to overcomplication, and clarifying questions come before implementation rather than after mistakes.

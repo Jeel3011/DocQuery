@@ -71,9 +71,15 @@ def list_metrics(
         _doc_match = None
 
     if not grids:
-        return error_result("list_metrics: no documents are loaded in this run's scope")
+        return error_result(
+            "list_metrics: no documents are loaded in this run's scope. "
+            "Call read_document(doc_id) first to load the document's grids."
+        )
     if not doc_id:
-        return error_result("list_metrics requires a 'doc_id'")
+        have = sorted({str(getattr(g, "doc", "")) for g in grids if getattr(g, "doc", None)})
+        return error_result(
+            f"list_metrics requires a 'doc_id'; loaded docs: {have}"
+        )
 
     def _match(gdoc: Any) -> bool:
         if _doc_match is not None:

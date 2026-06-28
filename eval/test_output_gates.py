@@ -23,7 +23,7 @@ sys.path.insert(0, ".")
 
 from src.components.agent_core.ledger import EvidenceLedger
 from src.components.agent_core.gates import (
-    run_output_gates, verify_numbers, verify_citations,
+    run_output_gates, verify_numbers, verify_citations, verify_completeness,
 )
 from src.components.agent_core.budgets import Budget
 from src.components.agent_core.loop import run_agent
@@ -125,34 +125,144 @@ def main() -> int:
     # then every sentence was redacted to "I could not verify…". The fix: a sentence with
     # NO substantive figure is exempt from the inline-marker rule WHEN the ledger holds
     # supporting evidence. The numeric moat stays intact.
-    print("\n── verify_citations (qualitative answer exemption — BUG-2) ───────")
+    print("\n── verify_citations (qualitative answer exemption — BUG-2, T8-hardened) ──")
+    # BUG-2's intent — a qualitative "what companies are in this vault?" answer ships — is preserved,
+    # but T8 re-roots it on EVIDENCE: the live repro gathered 38 spans NAMING those companies, so the
+    # fixture's ledger must actually CONTAIN them (the original fixture used an unrelated span and
+    # leaned on the blanket flag — exactly the shape-exemption T8 replaces). Grounded → passes.
+    led_q = EvidenceLedger()
+    led_q.record("search_vault", 1, [
+        {"kind": "span", "doc": "msa.pdf", "page": 1, "chunk_id": "c1",
+         "snippet": "This agreement names Reliance, Tata, and Infosys as the contracting parties "
+                    "and sets out the obligation of each party to the deal."},
+    ])
     # The exemption is opt-in (allow_qualitative) — ONLY the simple direct-answer path enables it.
     r = verify_citations(
-        "The agreement names Reliance, Tata, and Infosys as the contracting parties.", led,
+        "The agreement names Reliance, Tata, and Infosys as the contracting parties.", led_q,
         allow_qualitative=True)
-    c.ok(r["pass"], "a non-numeric list-the-companies sentence passes when evidence was gathered")
+    c.ok(r["pass"], "a non-numeric list-the-companies sentence passes when evidence NAMES them")
     r = verify_citations(
-        "This section of the agreement covers the obligation of each party to the deal.", led,
+        "This section of the agreement covers the obligation of each party to the deal.", led_q,
         allow_qualitative=True)
-    c.ok(r["pass"], "a qualitative 'what's in the vault' sentence passes with evidence")
-    # WITHOUT the flag (the deep/draft report path) the SAME sentence still REQUIRES a marker —
-    # a report section must cite its claims (the moat for the riskiest surface stays strict).
+    c.ok(r["pass"], "a qualitative 'what's in the vault' sentence passes with grounding evidence")
+    # T8: GROUNDED prose now passes on the strict path TOO (marker drift no longer redacts it) —
+    # because the evidence echoes it. (Pre-T8 this required a marker; T8 grounds it on the ledger.)
     r = verify_citations(
-        "The agreement names Reliance, Tata, and Infosys as the contracting parties.", led)
-    c.ok(not r["pass"], "the strict path (deep/draft) STILL flags an uncited qualitative claim")
+        "The agreement names Reliance, Tata, and Infosys as the contracting parties.", led_q)
+    c.ok(r["pass"], "T8: the strict path SHIPS a span-grounded qualitative claim (no marker needed)")
+    # …but a claim whose ENTITIES are absent from the evidence still fails on the strict path.
+    r = verify_citations(
+        "The agreement names Wipro and HCL as the contracting parties.", led_q)
+    c.ok(not r["pass"], "the strict path STILL flags an UNGROUNDED qualitative claim (entities absent)")
     # …and the SAME qualitative sentence with NO evidence gathered still fails (ungrounded).
     r = verify_citations(
         "The agreement binds Reliance and Tata as the contracting party.",
         EvidenceLedger(), allow_qualitative=True)
     c.ok(not r["pass"], "a qualitative claim with an EMPTY ledger still fails (fail closed)")
     # …and a NUMERIC claim is NEVER exempted, evidence or not (the moat).
-    r = verify_citations("Reliance reported total revenue of 875,000 last year.", led,
+    r = verify_citations("Reliance reported total revenue of 875,000 last year.", led_q,
                          allow_qualitative=True)
     c.ok(not r["pass"], "a numeric sentence still REQUIRES a marker even with evidence (moat intact)")
     # End-to-end on the SIMPLE answer path: run_output_gates ships the qualitative answer whole.
     out = run_output_gates(
-        "The agreement names Reliance, Tata, and Infosys as the contracting parties.", led)
+        "The agreement names Reliance, Tata, and Infosys as the contracting parties.", led_q)
     c.ok(out.passed, "run_output_gates ships an evidence-backed qualitative answer (BUG-2 live path)")
+
+    # ── T8 corpus: re-root citation on the LEDGER, not on marker shape ───────────────
+    # The principle (tool_hard.md §0.2/T8): a factual sentence is SUPPORTED if the ledger backs it —
+    # NOT only if it carries a `[p.N]` substring. These fixtures encode the CLASS of live over-
+    # redaction the plan documents (marker-drift on a grounded sentence) and pin that:
+    #   (a) a grounded, marker-LESS sentence now passes on BOTH paths (the over-redaction fix + S-A);
+    #   (b) the numeric moat is byte-identical; (c) the overlap bar rejects ungrounded/invented prose.
+    print("\n── T8: evidence-grounded citation (marker-drift no longer redacts) ──")
+    # A ledger whose SPANS verbatim contain the qualitative claim's salient content.
+    led_g = EvidenceLedger()
+    led_g.record("search_vault", 1, [
+        {"kind": "span", "doc": "msa.pdf", "page": 2, "chunk_id": "c1",
+         "snippet": "This Master Services Agreement is entered into between Acme Corporation "
+                    "and Globex Industries as the contracting parties."},
+        {"kind": "span", "doc": "msa.pdf", "page": 5, "chunk_id": "c2",
+         "snippet": "The Agreement shall be governed by the laws of the State of Delaware and "
+                    "disputes resolved by binding arbitration in Wilmington."},
+    ])
+    # (a) marker-DRIFT: a grounded sentence with NO [p.N] marker — was redacted to "I could not
+    #     verify…"; T8 ships it because the spans echo it. STRICT path (no allow_qualitative).
+    r = verify_citations(
+        "The Agreement is between Acme Corporation and Globex Industries as the contracting parties.",
+        led_g)
+    c.ok(r["pass"], "T8: a span-GROUNDED sentence passes WITHOUT a marker, even on the strict path")
+    r = verify_citations(
+        "The Agreement is governed by the laws of the State of Delaware with disputes by arbitration.",
+        led_g)
+    c.ok(r["pass"], "T8: a second grounded clause (governing law) passes marker-less (span overlap)")
+    # (a') run_output_gates ships such an answer whole — the live 'abstains every time' fix.
+    out = run_output_gates(
+        "The Agreement is between Acme Corporation and Globex Industries as the contracting parties.",
+        led_g)
+    c.ok(out.passed, "T8: run_output_gates SHIPS a grounded marker-less answer (no over-redaction)")
+    # (b) MOAT intact: a NUMERIC claim is never grounded by span overlap — it still needs a marker
+    #     AND a traced cell. Even though 'Acme'/'revenue' words appear, the figure has no cell.
+    r = verify_citations("Acme Corporation reported revenue of 4,200,000 last fiscal year.", led_g)
+    c.ok(not r["pass"], "T8: a numeric sentence still needs a marker (span overlap can't vouch a figure)")
+    # (c) the overlap bar DISCRIMINATES: an invented claim whose entities are NOT in any span fails,
+    #     even sharing generic content words ('agreement', 'parties', 'governed').
+    r = verify_citations(
+        "The Agreement is between Initech and Umbrella Corporation as the governed parties.", led_g)
+    c.ok(not r["pass"], "T8: an UNGROUNDED claim (entities absent from spans) still fails (moat)")
+    # (c') fail-closed on an EMPTY ledger — no spans means nothing can be grounded.
+    r = verify_citations(
+        "The Agreement is between Acme Corporation and Globex Industries.", EvidenceLedger())
+    c.ok(not r["pass"], "T8: empty ledger → grounding impossible → still fails (fail closed)")
+    # (d) gate_sectioned (deep/draft path) inherits the same evidence-grounding — a grounded report
+    #     section ships marker-less (S-A), but an ungrounded one is still redacted.
+    from src.components.agent_core.gates import gate_sectioned
+    report_ok = ("## Parties\n\nThe Agreement is between Acme Corporation and Globex Industries "
+                 "as the contracting parties.\n\n"
+                 "## Governing law\n\nThe Agreement is governed by the laws of the State of Delaware.")
+    out = gate_sectioned(report_ok, led_g)
+    c.ok(out.passed, "T8/S-A: a grounded report ships marker-less per section (no marker-drift redaction)")
+    report_bad = ("## Parties\n\nThe Agreement is between Acme Corporation and Globex Industries "
+                  "as the contracting parties.\n\n"
+                  "## Other parties\n\nThe Agreement also binds Initech and Umbrella Corporation "
+                  "as additional contracting parties.")
+    out = gate_sectioned(report_bad, led_g)
+    c.ok(not out.passed and out.abstained,
+         "T8/S-A: an UNGROUNDED report section is STILL redacted (deep-path moat intact)")
+    c.ok("Initech" not in (out.redacted_draft or "") and "Acme" in (out.redacted_draft or ""),
+         "T8/S-A: redaction drops the ungrounded section, keeps the grounded one")
+
+    # ── S-A: single-section heading bypass (the latent moat hole tracked in §T8) ────────
+    # A `## Heading\n\n<claim>` draft is ONE section, so gate_sectioned delegates to
+    # run_output_gates. Before the fix, _SENT_SPLIT glued the heading onto the body sentence
+    # and _is_factual rejected the blob as scaffold → an ungrounded claim under a lone heading
+    # shipped UNCHECKED (verified live 2026-06-27). The fix strips the leading heading before
+    # gating (mirroring the per-section path). These fixtures pin the hole closed.
+    print("\n── S-A: single-section heading bypass (must not ship ungrounded) ──")
+    out = run_output_gates(
+        "## Governing Law\n\nThe agreement is governed by the laws of the planet Mars exclusively.",
+        EvidenceLedger(), question="What is the governing law?")
+    c.ok(not out.passed and out.abstained,
+         "S-A: an ungrounded claim under a lone `## heading` is REDACTED, not shipped")
+    out = run_output_gates(
+        "## Parties\n\nThe agreement binds Initech and Umbrella Corporation as the sole "
+        "contracting parties.", led_g, question="Who are the parties?")
+    c.ok(not out.passed,
+         "S-A: the entity gate fires THROUGH a lone heading (invented entities absent from spans)")
+    # A GROUNDED claim under a heading still ships (no over-redaction regression), heading kept.
+    out = run_output_gates(
+        "## Parties\n\nThe Agreement is between Acme Corporation and Globex Industries as the "
+        "contracting parties.", led_g, question="Who are the parties?")
+    c.ok(out.passed, "S-A: a span-grounded claim under a heading still SHIPS (no false redaction)")
+    # The honest withhold line under a heading is scaffold — it must still pass (not peeled).
+    out = run_output_gates(
+        "## Governing Law\n\n_Insufficient evidence in the vault to answer this._",
+        EvidenceLedger(), question="What is the governing law?")
+    c.ok(out.passed, "S-A: a heading + honest withhold line still passes (scaffold, no claim)")
+    # The numeric moat still fires through a heading: a figure with no marker is redacted.
+    out = run_output_gates(
+        "## Revenue\n\nAcme reported revenue of 4,200,000 last fiscal year.", led_g,
+        question="What was revenue?")
+    c.ok(not out.passed, "S-A: numeric moat intact through a heading (untraced figure redacted)")
 
     print("\n── run_output_gates (combined + redaction) ──────────────────────")
     out = run_output_gates("Net sales were 513,983 [amzn-2022 p.41].", led)
@@ -226,6 +336,134 @@ def main() -> int:
     meta = next(e for e in events if e["type"] == "meta")
     c.ok("11,111" not in token, "persistent bad draft → untraced figure redacted out")
     c.ok(meta["abstained"] is True, "redacted run flagged abstained")
+
+    # ── T2: verify_completeness (multi-entity coverage gate) ──────────────────────
+    print("\n── T2: verify_completeness (decompositional multi-entity gate) ──")
+
+    # Single-entity question → no-op (never a false repair).
+    r = verify_completeness("What was Amazon revenue in FY2022?",
+                            "Amazon revenue in FY2022 was 513,983 [amzn-2022 p.41].")
+    c.ok(r["pass"], "T2: single-entity question → always passes (no-op)")
+
+    # Multi-entity "compare X, Y, Z" — all addressed → passes.
+    answer_all = (
+        "Amazon revenue in FY2022 was 513,983 [amzn-2022 p.41]. "
+        "Google revenue was 282,836 [goog-2022 p.55]. "
+        "Microsoft revenue was 198,270 [msft-fy22 p.95]."
+    )
+    r = verify_completeness("Compare Amazon, Google, and Microsoft revenue in FY2022.", answer_all)
+    c.ok(r["pass"], "T2: compare question with all entities addressed → passes")
+
+    # Multi-entity "compare X, Y, Z" — one entity silently dropped → fails.
+    answer_drop_one = (
+        "Amazon revenue in FY2022 was 513,983 [amzn-2022 p.41]. "
+        "Google revenue was 282,836 [goog-2022 p.55]."
+        # Microsoft silently omitted
+    )
+    r = verify_completeness("Compare Amazon, Google, and Microsoft revenue in FY2022.",
+                            answer_drop_one)
+    c.ok(not r["pass"], "T2: compare question with a silently-dropped entity → fails")
+    c.ok("Microsoft" in str(r.get("dropped", [])),
+         "T2: the dropped entity is named in the gate result")
+
+    # Explicit abstain on one entity → passes (honest partial is correct).
+    answer_explicit_abstain = (
+        "Amazon revenue in FY2022 was 513,983 [amzn-2022 p.41]. "
+        "Google revenue was 282,836 [goog-2022 p.55]. "
+        "Microsoft data could not be verified from the vault."
+    )
+    r = verify_completeness("Compare Amazon, Google, and Microsoft revenue in FY2022.",
+                            answer_explicit_abstain)
+    c.ok(r["pass"],
+         "T2: one entity explicitly abstained ('could not be verified') → passes (honest partial)")
+
+    # "for each of … X, Y, Z" form — all addressed → passes.
+    answer_clauses = (
+        "Governing law: the agreement is governed by Delaware law. "
+        "Payment terms: net-30 as stated in clause 5. "
+        "Liability: capped at total fees paid in the prior 12 months."
+    )
+    r = verify_completeness(
+        "For each of the following clauses: governing law, payment terms, liability.",
+        answer_clauses)
+    c.ok(r["pass"], "T2: 'for each of…' form with all clauses addressed → passes")
+
+    # "for each of …" — one clause silently dropped → fails.
+    answer_missing_clause = (
+        "Governing law: the agreement is governed by Delaware law. "
+        "Payment terms: net-30 as stated in clause 5."
+        # liability silently dropped
+    )
+    r = verify_completeness(
+        "For each of the following clauses: governing law, payment terms, liability.",
+        answer_missing_clause)
+    c.ok(not r["pass"],
+         "T2: 'for each of…' with a silently-dropped clause → fails")
+    c.ok("liability" in str(r.get("dropped", [])).lower(),
+         "T2: the dropped clause is named in the gate result")
+
+    # run_output_gates wires completeness — a dropped entity surfaces as a gate failure.
+    out = run_output_gates(
+        answer_drop_one, led,
+        question="Compare Amazon, Google, and Microsoft revenue in FY2022.")
+    comp_fail = any(f.get("name") == "verify_completeness" for f in (out.failures or []))
+    c.ok(not out.passed and comp_fail,
+         "T2: run_output_gates fails when a multi-entity answer drops an entity")
+
+    # run_output_gates passes when all entities are addressed.
+    out = run_output_gates(
+        answer_all, led,
+        question="Compare Amazon, Google, and Microsoft revenue in FY2022.")
+    # NOTE: answer_all has no ledger-traced figures but no numeric claims on the simple
+    # path would cause issues — the verify_numbers gate may fail on untraced figures here.
+    # Focus the T2 test: completeness itself should NOT be the failure reason.
+    comp_fail2 = any(f.get("name") == "verify_completeness" for f in (out.failures or []))
+    c.ok(not comp_fail2,
+         "T2: run_output_gates completeness gate passes when all entities are addressed")
+
+    # Unrecognized question form → single-entity no-op → never a false repair.
+    r = verify_completeness("What is the net revenue trend?", "Revenue has been growing steadily.")
+    c.ok(r["pass"], "T2: unrecognized question form → no-op (safe default, no false repair)")
+
+    # ── T2 on the DEEP/DRAFT/REPORT path: make_question_gate threads the question ──────
+    # The deep/draft/report routes inject a CUSTOM gate_fn, so they bypass the loop's own
+    # _make_gate(question) default. `make_question_gate(q, sectioned=True)` is what threads the
+    # question into gate_sectioned — without it the per-section gate runs with question="" and
+    # verify_completeness silently no-ops on exactly the multi-entity reports that need it.
+    print("\n── T2: question threaded into the deep/draft gate (make_question_gate) ──")
+    from src.components.agent_core.loop import make_question_gate
+    led_ms = EvidenceLedger()
+    led_ms.record("search_vault", 1, [
+        {"kind": "span", "doc": "amzn.pdf", "page": 41, "chunk_id": "a",
+         "snippet": "Amazon net sales were 513,983 in fiscal 2022."},
+        {"kind": "span", "doc": "goog.pdf", "page": 55, "chunk_id": "g",
+         "snippet": "Google revenue was 282,836 in fiscal 2022."},
+    ])
+    q_ms = "Compare Amazon, Google, and Microsoft revenue in FY2022."
+    report_drop_ms = ("## Amazon\n\nAmazon revenue in FY2022 was 513,983 [amzn p.41].\n\n"
+                      "## Google\n\nGoogle revenue was 282,836 [goog p.55].")  # Microsoft dropped
+    # sectioned=True (deep/draft/report): the gate is callable as gate_fn(draft, ledger) and
+    # MUST now flag the silently-dropped entity (this was a no-op before the question was threaded).
+    g_deep = make_question_gate(q_ms, sectioned=True)
+    out = g_deep(report_drop_ms, led_ms)
+    comp_deep = any(f.get("name") == "verify_completeness" for f in (out.failures or []))
+    c.ok(not out.passed and comp_deep,
+         "T2/deep: make_question_gate(sectioned=True) fires completeness on a dropped entity")
+    c.ok("Microsoft" in str([f.get("dropped") for f in (out.failures or [])
+                             if f.get("name") == "verify_completeness"]),
+         "T2/deep: the dropped entity is named in the sectioned gate result")
+    # The whole-answer variant (sectioned=False) threads the question too — parity check.
+    g_std = make_question_gate(q_ms, sectioned=False)
+    out = g_std("Amazon was 513,983 [amzn p.41]. Google was 282,836 [goog p.55].", led_ms)
+    c.ok(any(f.get("name") == "verify_completeness" for f in (out.failures or [])),
+         "T2/std: make_question_gate(sectioned=False) also threads the question")
+    # A complete report (all three addressed, one explicitly abstained) → completeness PASSES.
+    report_ok_ms = ("## Amazon\n\nAmazon revenue in FY2022 was 513,983 [amzn p.41].\n\n"
+                    "## Google\n\nGoogle revenue was 282,836 [goog p.55].\n\n"
+                    "## Microsoft\n\nMicrosoft revenue could not be verified from the vault.")
+    out = g_deep(report_ok_ms, led_ms)
+    c.ok(not any(f.get("name") == "verify_completeness" for f in (out.failures or [])),
+         "T2/deep: a report addressing all entities (one explicit abstain) passes completeness")
 
     print("\n── never raises on odd input ────────────────────────────────────")
     for bad_in in ("", None, "12,345 67,890 no cells"):

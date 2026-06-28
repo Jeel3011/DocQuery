@@ -30,6 +30,7 @@ from src.api.dependencies import (
     get_retrieval_mgr,
     get_generator,
     limiter,
+    require_cap,
 )
 from src.components.config import Config
 from src.components.metrics import queries_total, retrieval_docs, cache_hits, cache_misses, cache_latency
@@ -304,6 +305,7 @@ async def query(
     user_config: Config = Depends(get_user_config),
     retrieval_mgr=Depends(get_retrieval_mgr),
     generator=Depends(get_generator),
+    _cap=Depends(require_cap("ask")),   # F-A: answering over a vault = the `ask` verb
 ):
     """
     Query documents and get an answer.
@@ -441,6 +443,7 @@ async def query_stream(
     user_config: Config = Depends(get_user_config),
     retrieval_mgr=Depends(get_retrieval_mgr),
     generator=Depends(get_generator),
+    _cap=Depends(require_cap("ask")),   # F-A: answering over a vault = the `ask` verb
 ):
     """
     Query documents with SSE streaming.
@@ -647,6 +650,7 @@ async def query_agent(
     user_config: Config = Depends(get_user_config),
     retrieval_mgr=Depends(get_retrieval_mgr),
     generator=Depends(get_generator),
+    _cap=Depends(require_cap("ask")),   # F-A: answering over a vault = the `ask` verb
 ):
     """
     ⚠️ DEPRECATED (A6, 2026-06-12). The agent core (`POST /query/agentcore/stream`,
@@ -770,6 +774,7 @@ async def agent_query_stream(
     user_config: Config = Depends(get_user_config),
     retrieval_mgr=Depends(get_retrieval_mgr),
     generator=Depends(get_generator),
+    _cap=Depends(require_cap("ask")),   # F-A: answering over a vault = the `ask` verb
 ):
     """
     ⚠️ DEPRECATED (A6, 2026-06-12) — superseded by `POST /query/agentcore/stream`
@@ -875,7 +880,13 @@ async def create_conversation(
     body: CreateConversationRequest,
     sb=Depends(get_current_user),
 ):
-    """Create a new conversation thread."""
+    """Create a new conversation thread.
+
+    F-A allow-list: conversations are PERSONAL, per-user chat threads (user_id-scoped,
+    never firm- or vault-stamped — see [[f2f-rls-backstop-live-schema]]). They carry no
+    cross-user/cross-firm data, so they take no firm capability — only authentication. The
+    route's own `.eq("user_id")` + RLS is the isolation. Listed on the coverage gate's
+    allow-list so this stays a deliberate decision, not a forgotten cap."""
     conv = sb.create_conversation(body.title)
     if not conv:
         raise HTTPException(status_code=500, detail="Failed to create conversation")
@@ -982,6 +993,7 @@ async def send_message(
     user_config: Config = Depends(get_user_config),
     retrieval_mgr=Depends(get_retrieval_mgr),
     generator=Depends(get_generator),
+    _cap=Depends(require_cap("ask")),   # F-A: a message runs the RAG answer path = the `ask` verb
 ):
     """
     Send a message in a conversation:
@@ -1107,6 +1119,7 @@ async def brain_query_stream(
     user_config: Config = Depends(get_user_config),
     retrieval_mgr=Depends(get_retrieval_mgr),
     generator=Depends(get_generator),
+    _cap=Depends(require_cap("ask")),   # F-A: answering over a vault = the `ask` verb
 ):
     """Stage-2 Brain: map-reduce synthesis over a collection with SSE step streaming.
 

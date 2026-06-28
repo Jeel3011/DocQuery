@@ -131,6 +131,56 @@ def _vouchable_on(span_md: Dict[str, Any], as_of: Optional[str]) -> bool:
     return True
 
 
+# ── S-D: KB retrieval quality grading (T1 pattern, external signal — T7 rule) ──
+# Applied to the KB's score distribution exactly as _grade_spans does for search_vault.
+# A "weak" statute match must signal weak in the envelope, not pass as authority.
+# Import is deferred to avoid a circular dependency at module load time.
+
+def _grade_kb_spans(spans: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """Grade KB retrieval quality from the span score distribution.
+
+    Mirrors search.py's _grade_spans: reads scores already in the KB spans — $0, no LLM.
+    Returns {"grade": strong|weak|empty, "top_score": float|None}.
+    """
+    if not spans:
+        return {"grade": "empty", "top_score": None}
+    scores = [s.get("score") for s in spans if s.get("score") is not None]
+    if not scores:
+        return {"grade": "strong", "top_score": None}  # no scores → treat as strong (no alarm)
+    _STRONG = 0.55
+    _GAP = 0.10
+    scores_sorted = sorted(scores, reverse=True)
+    top = scores_sorted[0]
+    if top < _STRONG:
+        return {"grade": "weak", "top_score": round(top, 4)}
+    if len(scores_sorted) == 1:
+        return {"grade": "strong", "top_score": round(top, 4)}
+    median = scores_sorted[len(scores_sorted) // 2]
+    grade = "strong" if (top - median) >= _GAP else "weak"
+    return {"grade": grade, "top_score": round(top, 4)}
+
+
+def _section_exists_in_span(span: Dict[str, Any]) -> bool:
+    """S-D: verify the cited §/article actually appears in the retrieved text.
+
+    The citation field encodes the reference (e.g. "Companies Act 2013 s.149" or
+    "Constitution Art.21"). We check that the section/article identifier embedded in
+    `section_or_article_id` (e.g. "149" or "21") is present in either the citation
+    string or the snippet — a basic hallucination guard: if the retriever returned
+    the wrong chunk, the cited provision number will be absent.
+
+    Returns True when the check passes (or cannot be applied — we don't false-alarm
+    when section_or_article_id is absent).
+    """
+    sec_id = span.get("section_or_article_id")
+    if not sec_id:
+        return True  # no id to check → pass (can't verify, don't block)
+    sec_str = str(sec_id).strip()
+    citation = str(span.get("citation") or "")
+    snippet = str(span.get("snippet") or "")
+    return sec_str in citation or sec_str in snippet
+
+
 @safe_tool
 def search_knowledge(
     query: str,
@@ -149,11 +199,23 @@ def search_knowledge(
     (built from a KB Config). The metadata filters (`source`/`instrument_type`/
     `jurisdiction`) narrow conjunctively; `as_of` post-filters the retrieved spans to
     those vouchably in force. Returns EVIDENCE — never a conclusion.
+
+    S-D: the envelope now carries a `kb_retrieval_quality` grade (strong|weak|empty)
+    mirroring T1's signal for search_vault — a weak statute match signals weak, not
+    authority.  Spans whose cited §/article id is absent from the snippet are flagged
+    with `section_verified: false` (a hallucinated-cite guard).
     """
     if not query:
-        return error_result("search_knowledge requires a non-empty 'query'")
+        return error_result(
+            "search_knowledge requires a non-empty 'query'. "
+            "Provide a specific legal topic or question "
+            "(e.g. 'right to privacy under Article 21', 'director duties Companies Act 2013')."
+        )
     if kb_retrieval_manager is None:
-        return error_result("search_knowledge requires a kb_retrieval_manager")
+        return error_result(
+            "search_knowledge requires a kb_retrieval_manager (internal: USE_KNOWLEDGE may be "
+            "off or the KB namespace was not threaded into this run — routing bug, not a model error)."
+        )
 
     # G8.7 source-chip allow-list (server-side gate): if the run restricts which instrument
     # types are allowed, a model-requested type OUTSIDE the allow-list is dropped to "no
@@ -213,11 +275,31 @@ def search_knowledge(
             withheld += 1
     spans = spans[: max(k, 1)]
 
-    note = f" ({withheld} withheld as not-in-force on {as_of})" if (as_of and withheld) else ""
+    # S-D: verify the cited section/article id is present in each span's snippet.
+    # A span that fails this check carries section_verified=False — the agent sees it
+    # and knows the citation may not match the retrieved text (hallucinated-cite signal).
+    for sp in spans:
+        sp["section_verified"] = _section_exists_in_span(sp)
+
+    # S-D: grade the KB retrieval quality (T1 pattern, external signal — T7 rule).
+    # A weak grade (low scores, clustered, or empty) signals the result is uncertain;
+    # the agent must not treat a weak KB match as authoritative.
+    kb_rq = _grade_kb_spans(spans)
+    rq_payload: Dict[str, Any] = {"grade": kb_rq["grade"], "top_score": kb_rq["top_score"]}
+    if kb_rq["grade"] != "strong":
+        rq_payload["repair"] = (
+            f"KB retrieval grade={kb_rq['grade']}; consider broadening the query, "
+            "specifying a different source, or checking whether the KB contains this provision."
+        )
+
+    note = f" [{kb_rq['grade']}]"
+    if as_of and withheld:
+        note += f" ({withheld} withheld as not-in-force on {as_of})"
     if blocked:
         note += f" ({blocked} hidden by source filter)"
     return ok_result(
         summary=f"search_knowledge {query!r}: {len(spans)} cited passage(s){note}",
-        data={"passages": spans, "as_of": as_of, "withheld": withheld, "blocked": blocked},
+        data={"passages": spans, "as_of": as_of, "withheld": withheld, "blocked": blocked,
+              "kb_retrieval_quality": rq_payload},
         provenance=spans,
     )

@@ -20,7 +20,7 @@ from pathlib import Path
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 
-from src.api.dependencies import get_current_user, get_user_config, limiter
+from src.api.dependencies import get_current_user, get_user_config, limiter, require_cap
 from src.api.routes.audit import log_audit
 from src.components.config import Config
 
@@ -36,7 +36,8 @@ def _require_connectors_enabled(config: Config) -> None:
         raise HTTPException(status_code=404, detail="Connectors are not enabled.")
 
 
-def _spool_and_dispatch(file_bytes: bytes, filename: str, sb, user_config: Config) -> str:
+def _spool_and_dispatch(file_bytes: bytes, filename: str, sb, user_config: Config,
+                        collection_id: str | None = None) -> str:
     """Spool one in-memory file to the worker's spool dir and dispatch the SAME Celery
     ingestion task a manual upload uses. Returns the new vault doc_id.
 
@@ -64,6 +65,18 @@ def _spool_and_dispatch(file_bytes: bytes, filename: str, sb, user_config: Confi
     doc_id = doc_record.get("id")
 
     from src.worker.tasks import process_document_task
+    from src.api.dependencies import resolve_membership
+
+    # F-B: snapshot the uploader's ethical-wall state at enqueue time so the worker can
+    # re-check inside the task (worker is otherwise authz-blind — service-role, user_id only).
+    try:
+        _membership = resolve_membership(sb)
+        _enqueue_firm_id = _membership.firm_id or None
+        _enqueue_screened = list(_membership.screened_vault_ids)
+    except Exception:  # noqa: BLE001 — lookup failure must not block the connector import
+        _enqueue_firm_id = None
+        _enqueue_screened = []
+
     size = len(file_bytes)
     queue = ("documents.fast" if size < 500_000
              else "documents.normal" if size < 5_000_000
@@ -76,6 +89,10 @@ def _spool_and_dispatch(file_bytes: bytes, filename: str, sb, user_config: Confi
             user_id=sb.user_id,
             pinecone_namespace=user_config.PINECONE_NAMESPACE,
             local_path=spool_path,
+            collection_id=collection_id or None,
+            # F-B: ethical-wall snapshot.
+            firm_id=_enqueue_firm_id,
+            screened_vault_ids=_enqueue_screened,
         ),
         queue=queue,
     )
@@ -183,6 +200,7 @@ def import_google_drive_folder(
     body: DriveImportRequest,
     sb=Depends(get_current_user),
     user_config: Config = Depends(get_user_config),
+    _cap=Depends(require_cap("ingest")),   # F-A: a connector import ingests docs into the vault
 ):
     """Import every supported file directly under a Google Drive folder into the vault.
 
@@ -218,6 +236,7 @@ def import_email_attachments(
     body: EmailImportRequest,
     sb=Depends(get_current_user),
     user_config: Config = Depends(get_user_config),
+    _cap=Depends(require_cap("ingest")),   # F-A: a connector import ingests docs into the vault
 ):
     """Import supported ATTACHMENTS from a mailbox into the vault (G8.6 second connector).
 

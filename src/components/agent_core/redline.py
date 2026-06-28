@@ -48,6 +48,12 @@ class RedlineFinding:
     rationale: Optional[str]        # why: cites the playbook rule
     playbook_standard: str          # the firm's standard position (for the .docx diff)
     grounded: bool = False          # True only when target_quote is ledger-traced
+    # S-B: machine-readable source reference — which clause topic + playbook rule
+    # the suggested edit is grounded in.  None when the edit is ungrounded (status
+    # will be "abstain" in that case — the two fields always agree).
+    source_ref: Optional[str] = None
+    # S-B: explicit ungrounded flag so callers don't have to re-derive it.
+    ungrounded_edit: bool = False
 
 
 @dataclass
@@ -176,15 +182,25 @@ def build_redline_cell(
 
     # BIND-OR-FLAG: a deviation finding without both target_quote AND rationale is demoted.
     grounded = bool(target_quote)
+    ungrounded_edit = False
     if status == "deviation" and (not target_quote or not rationale):
         status = "abstain"
         rationale = "Bind-or-flag: deviation finding lacked a quoted clause or a rule citation."
+        ungrounded_edit = True
+
+    # S-B: source_ref — the machine-readable grounding trace for the suggested edit.
+    # A grounded deviation carries "clause_topic → playbook rule" so the caller can
+    # verify provenance without re-parsing the rationale string.  Ungrounded = None.
+    source_ref: Optional[str] = None
+    if not ungrounded_edit and suggested_edit and rationale:
+        source_ref = f"{clause_topic} → {standard_position[:120]}"
 
     return RedlineFinding(
         clause_topic=clause_topic, status=status,
         target_quote=target_quote, deviation=deviation,
         suggested_edit=suggested_edit, rationale=rationale,
         playbook_standard=standard_position, grounded=grounded,
+        source_ref=source_ref, ungrounded_edit=ungrounded_edit,
     )
 
 

@@ -258,13 +258,168 @@ def main() -> int:
     c.ok(len(only_user) == 1 and "net sales" in (only_user[0].get("content") or "").lower(),
          "memory: no history → only the current question (additive, not required)")
 
+    # ── 10. T3: anti-loop circuit-breaker ────────────────────────────────────────
+    print("\n── T3: anti-loop circuit-breaker ───────────────────────────────────")
+
+    def _failing_compute_tc(idx=0):
+        """A compute call that returns ok=False (unsupported op). Each idx gets a unique id."""
+        return ToolCall(id=f"bad{idx}", name="compute",
+                        args={"op": "definitely_not_an_op", "row": {"label": "x"}})
+
+    # A model that repeats the SAME failing compute 3 times then delivers.
+    # _REPEAT_CAP=2: after 2 failures the 3rd attempt is BLOCKED (redirect injected).
+    t3_script = [
+        # attempt 1: failing compute (count → 1)
+        ModelResponse(text="try1", tool_calls=[_failing_compute_tc(1)]),
+        # attempt 2: same call (count → 2, soft hint injected + REPEAT_CAP reached)
+        ModelResponse(text="try2", tool_calls=[_failing_compute_tc(1)]),
+        # attempt 3: same call → BLOCKED before execution, redirect injected
+        ModelResponse(text="try3", tool_calls=[_failing_compute_tc(1)]),
+        # after redirect: deliver without numbers (no tracing needed)
+        ModelResponse(text="I could not verify the figure. The data was not available.",
+                      tool_calls=[]),
+    ]
+    t3_events = collect(run_agent("bad op loop", model=ScriptedModel(t3_script),
+                                  scope=scope, budget=std_budget()))
+    t3_gate_names = [e.get("name") for e in t3_events if e["type"] == "gate"]
+    c.ok("t3_circuit_breaker" in t3_gate_names,
+         "T3: t3_circuit_breaker gate fires when identical failing call hits the repeat cap")
+    t3_tokens = [e for e in t3_events if e["type"] == "token"]
+    c.ok(len(t3_tokens) == 1,
+         "T3: run completes with a final answer after the redirect (no hang)")
+    c.ok("not available" in t3_tokens[0]["text"],
+         "T3: final answer is the model's redirect-response (not empty abstain)")
+
+    # Two DIFFERENT failing calls (different sigs) must NOT trip the breaker.
+    diff_script = [
+        ModelResponse(text="t1", tool_calls=[
+            ToolCall(id="d1", name="compute",
+                     args={"op": "definitely_not_an_op", "row": {"label": "x"}})]),
+        ModelResponse(text="t2", tool_calls=[
+            ToolCall(id="d2", name="compute",
+                     args={"op": "another_bad_op", "row": {"label": "y"}})]),
+        ModelResponse(text="No data found.", tool_calls=[]),
+    ]
+    diff_events = collect(run_agent("diff sig test", model=ScriptedModel(diff_script),
+                                    scope=scope, budget=std_budget()))
+    diff_gates = [e.get("name") for e in diff_events if e["type"] == "gate"]
+    c.ok("t3_circuit_breaker" not in diff_gates,
+         "T3: different-sig failing calls do NOT trigger the breaker (sig-specific)")
+
+    # A model that calls a failing tool TWICE, then changes to a good call — no block.
+    # count=2 triggers the soft hint; on the 3rd call the model uses the good op.
+    soft_script = [
+        ModelResponse(text="t1", tool_calls=[_failing_compute_tc(2)]),
+        ModelResponse(text="t2", tool_calls=[_failing_compute_tc(2)]),
+        # Soft hint received — switches to a working call
+        ModelResponse(text="t3", tool_calls=[
+            ToolCall(id="g1", name="compute",
+                     args={"op": "value", "row": {"label": "Total net sales"}, "period": "2022"})]),
+        ModelResponse(text="Net sales were 513,983 [amzn-2022 p.41].", tool_calls=[]),
+    ]
+    soft_events = collect(run_agent("soft hint", model=ScriptedModel(soft_script),
+                                    scope=scope, budget=std_budget()))
+    soft_gates = [e.get("name") for e in soft_events if e["type"] == "gate"]
+    c.ok("t3_circuit_breaker" not in soft_gates,
+         "T3: 2 repeats (soft hint) + change does NOT trigger the hard block")
+    soft_tokens = [e for e in soft_events if e["type"] == "token"]
+    c.ok(soft_tokens and "513,983" in soft_tokens[0]["text"],
+         "T3: run delivers correctly after soft-hint + model change (no over-block)")
+
+    # ── 11. T5(a): empty-scope notice ─────────────────────────────────────────────
+    print("\n── T5(a): empty-scope notice ───────────────────────────────────────")
+
+    # search_vault with a stub retrieval_manager that returns [] → ok=True, 0 spans → T5(a).
+    class _EmptyRM:
+        def retrieve(self, *a, **kw): return []
+        def retrieve_table_chunks(self, *a, **kw): return []
+
+    t5a_scope = RunScope(
+        grids=GRIDS,
+        collection_id="vault-1",
+        retrieval_manager=_EmptyRM(),
+    )
+    t5a_script = [
+        # search_vault returns ok+0-prov → T5(a) fires (empty-scope notice injected)
+        ModelResponse(text="searching", tool_calls=[
+            ToolCall(id="sv1", name="search_vault",
+                     args={"query": "net sales", "scope": {"collection_id": "vault-1"}})]),
+        ModelResponse(text="No results found in this vault.", tool_calls=[]),
+    ]
+    t5a_events = collect(run_agent("empty vault search", model=ScriptedModel(t5a_script),
+                                   scope=t5a_scope, budget=std_budget()))
+    t5a_sv_results = [e for e in t5a_events if e["type"] == "tool_result"
+                      and e["name"] == "search_vault"]
+    c.ok(t5a_sv_results and t5a_sv_results[0]["ok"] is True
+         and t5a_sv_results[0]["n_provenance"] == 0,
+         "T5(a): search_vault with empty RM → ok=True, n_prov=0 (triggers empty-scope path)")
+    c.ok(any(e["type"] == "token" for e in t5a_events),
+         "T5(a): loop still completes after empty-scope notice (no crash)")
+
+    # Second search for the SAME scope key must NOT inject a second notice (dedup).
+    t5a_dedup_script = [
+        ModelResponse(text="s1", tool_calls=[
+            ToolCall(id="sv2", name="search_vault",
+                     args={"query": "governing law", "scope": {"collection_id": "vault-1"}})]),
+        ModelResponse(text="s2", tool_calls=[
+            ToolCall(id="sv3", name="search_vault",
+                     args={"query": "governing law", "scope": {"collection_id": "vault-1"}})]),
+        ModelResponse(text="Done.", tool_calls=[]),
+    ]
+    t5a_dedup_events = collect(run_agent("dedup", model=ScriptedModel(t5a_dedup_script),
+                                          scope=t5a_scope, budget=std_budget()))
+    c.ok(any(e["type"] == "token" for e in t5a_dedup_events),
+         "T5(a): dedup — run completes without crash on repeated empty scope")
+
+    # ── 12. T5(b): model error → named early-degrade gate ────────────────────────
+    print("\n── T5(b): model error → named t5_early_degrade gate ────────────────")
+
+    # A model whose stream AND invoke both raise → outer except fires → t5_early_degrade.
+    class _AlwaysErrors:
+        """Raises on every stream/invoke call."""
+        def stream(self, messages, schemas):
+            raise RuntimeError("simulated API error")
+        def invoke(self, messages, schemas):
+            raise RuntimeError("simulated API error — retry also fails")
+
+    t5b_events = list(run_agent("t5b test", model=_AlwaysErrors(),
+                                scope=scope, budget=std_budget()))
+    t5b_gates = [e.get("name") for e in t5b_events if e["type"] == "gate"]
+    t5b_meta = [e for e in t5b_events if e["type"] == "meta"]
+    c.ok("t5_early_degrade" in t5b_gates,
+         "T5(b): t5_early_degrade gate fires on an unrecoverable model error")
+    c.ok(t5b_meta and any(e.get("degrade") for e in t5b_meta),
+         "T5(b): meta carries degrade=True (A4 falls back to Brain)")
+    c.ok(t5b_meta and any(e.get("abstained") for e in t5b_meta),
+         "T5(b): meta carries abstained=True (run did not produce an answer)")
+
+    # A transient error followed by a successful retry must NOT emit t5_early_degrade.
+    # stream() raises → invoke() succeeds (the retry path).
+    class _TransientThenOk:
+        def __init__(self): self._stream_called = 0
+        def stream(self, messages, schemas):
+            self._stream_called += 1
+            if self._stream_called == 1:
+                raise RuntimeError("transient stream failure")
+            # Second stream call succeeds.
+            yield ("done", ModelResponse(text="Net sales 513,983 [amzn-2022 p.41].", tool_calls=[]))
+        def invoke(self, messages, schemas):
+            # invoke is the retry after stream failure — must succeed.
+            return ModelResponse(text="Net sales 513,983 [amzn-2022 p.41].", tool_calls=[])
+
+    trans_events = list(run_agent("transient", model=_TransientThenOk(),
+                                  scope=scope, budget=std_budget()))
+    trans_gates = [e.get("name") for e in trans_events if e["type"] == "gate"]
+    c.ok("t5_early_degrade" not in trans_gates,
+         "T5(b): stream-error-then-invoke-success (one retry) does NOT emit t5_early_degrade")
+
     print("\n" + "=" * 64)
     print(f"  PASS: {c.passed}   FAIL: {c.failed}")
     print("=" * 64)
     if c.failed == 0:
-        print("  ✓ A2 loop gate GREEN (bridge · budget · tool-error · degrade · stream · memory)")
+        print("  ✓ A2+T3+T5 loop gate GREEN (bridge · budget · tool-error · degrade · stream · memory · circuit-breaker · self-heal)")
         return 0
-    print("  ✗ A2 gate FAILED")
+    print("  ✗ A2+T3+T5 gate FAILED")
     return 1
 
 

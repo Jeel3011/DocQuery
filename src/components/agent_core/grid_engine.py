@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from typing import Any, Callable, Dict, List, Optional
 
 from .budgets import Budget
@@ -42,6 +43,9 @@ logger = logging.getLogger(__name__)
 _GRID_CELL_MAX_STEPS = 6
 _GRID_CELL_WALL_S = 90.0
 _GRID_CELL_TOKEN_BUDGET = 30_000   # hard per-cell token ceiling (cost guard × N×M cells)
+
+# T4 — de-correlated second verify: off = byte-identical to pre-T4.
+_SECOND_VERIFY = os.environ.get("GRID_SECOND_VERIFY", "1") != "0"
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -349,6 +353,68 @@ def _cell_from_run(
 
 
 # ──────────────────────────────────────────────────────────────────────────────
+# T4 — de-correlated second verify pass on FOUND clause cells.
+# ──────────────────────────────────────────────────────────────────────────────
+
+_SECOND_VERIFY_SYSTEM = (
+    "You are a strict contract auditor. "
+    "Your ONLY job: decide whether an exact quoted passage actually supports the stated extracted value. "
+    "Respond with ONE word: 'yes' or 'no', followed by a single short reason (one clause, max 20 words). "
+    "Nothing else. No JSON. No explanation. Example: 'yes – the quoted passage explicitly states the governing law is Minnesota.'"
+)
+
+_SECOND_VERIFY_USER = (
+    "Extracted value: {value}\n"
+    "Exact quote from document: {quote}\n\n"
+    "Does this exact quote actually support this value? Answer yes or no with one reason."
+)
+
+
+def _second_verify_cell(cell: GridCell, model_factory: Callable[[], Any]) -> GridCell:
+    """T4: run a de-correlated second-verify pass on a FOUND clause cell.
+
+    Calls a FRESH model (from model_factory) with a different lens prompt:
+    "Does this exact quote actually support this value? yes/no."
+    If the answer is 'no' → downgrade to ABSTAIN with abstain_reason="verify_disagree".
+    A failing/erroring call leaves the original FOUND cell unchanged (degrade gracefully).
+    """
+    if not cell.quote or not cell.value:
+        # Without a concrete quote+value pair to compare there is nothing to verify.
+        return cell
+
+    prompt = _SECOND_VERIFY_USER.format(value=cell.value, quote=cell.quote)
+    try:
+        model = model_factory()
+        # A plain chat turn: system + user — no tools needed.
+        messages = [
+            {"role": "user", "content": [{"type": "text", "text": prompt}]},
+        ]
+        resp = model.invoke(messages, [])
+        raw = (resp.text or "").strip().lower()
+    except Exception as exc:  # noqa: BLE001 — second-verify failure must never crash the grid
+        logger.warning("[grid] T4 second-verify raised for cell (%s × %s): %s",
+                       cell.doc_name, cell.column_key, exc)
+        return cell  # degrade: original FOUND cell preserved
+
+    # "no" anywhere in the first word → disagreement. Accept "no –", "no.", "no reason..."
+    first_word = raw.split()[0] if raw.split() else ""
+    if first_word.rstrip(".,;:–—-") == "no":
+        return GridCell(
+            doc_id=cell.doc_id,
+            column_key=cell.column_key,
+            doc_name=cell.doc_name,
+            status=CellStatus.ABSTAIN,
+            value=None,
+            quote=cell.quote,
+            risk=cell.risk,
+            provenance=[],
+            note=(cell.note + " | " if cell.note else "") + "T4 second-verify disagrees: " + (resp.text or "no").strip()[:120],
+            abstain_reason="verify_disagree",
+        )
+    return cell  # "yes" (or unrecognised) → original FOUND cell passes
+
+
+# ──────────────────────────────────────────────────────────────────────────────
 # Cell + grid drivers.
 # ──────────────────────────────────────────────────────────────────────────────
 
@@ -363,6 +429,7 @@ def build_cell(
     retrieval_manager: Any = None,
     db_client: Any = None,
     model_id: str = "",
+    model_factory: Optional[Callable[[], Any]] = None,
 ) -> GridCell:
     """Run ONE bounded agent for a single (doc, column) and return its GridCell.
 
@@ -409,7 +476,20 @@ def build_cell(
         return GridCell(doc_id=doc_id, column_key=column.key, doc_name=doc_name,
                         status=CellStatus.ERROR, note=f"cell error: {exc}")
 
-    return _cell_from_run(doc_id, doc_name, column, events)
+    cell = _cell_from_run(doc_id, doc_name, column, events)
+
+    # T4: de-correlated second-verify pass on FOUND clause cells only.
+    # Numeric cells are exempt — the kernel already verifies those deterministically.
+    # Only runs when: flag on, model_factory provided, cell is FOUND, column is CLAUSE.
+    if (
+        _SECOND_VERIFY
+        and model_factory is not None
+        and cell.status == CellStatus.FOUND
+        and column.kind != ColumnKind.NUMERIC
+    ):
+        cell = _second_verify_cell(cell, model_factory)
+
+    return cell
 
 
 def build_grid(
@@ -438,6 +518,7 @@ def build_grid(
                 filename_by_doc=filename_by_doc,
                 grids_by_doc=grids_by_doc,
                 model_id=model_id,
+                model_factory=model_factory,
             )
             cells.append(cell)
             if on_cell is not None:

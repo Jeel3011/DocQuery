@@ -61,6 +61,43 @@ class EvidenceLedger:
     def is_empty(self) -> bool:
         return not self.entries
 
+    def foreign_spans(self, active_collection_id: Optional[str]) -> List[LedgerEntry]:
+        """F-F (tool_hard.md): the cross-vault-leak invariant. Return every span entry whose
+        `collection_id` is set AND differs from the active vault's — a chunk that leaked in
+        from another vault/firm. The active vault is the run's `scope.collection_id`; vault→
+        firm isolation is enforced upstream (F1/F2), so a foreign collection_id IS the leak
+        signal at span granularity.
+
+        Spans carry `collection_id` from ingest via `_envelope.span_to_dict` (F1b — no
+        re-ingest needed). A span with NO collection_id is NOT counted as a leak (it predates
+        the F1b stamping or is a non-vault source like the KB); only a span stamped with a
+        DIFFERENT vault is a leak. Cells/params (kernel/grounding outputs) have no vault id and
+        are never leaks. Pure read; never raises.
+
+        A non-empty result is a HARD invariant violation: the answer path must NEVER cite a
+        chunk from outside the active vault. The loop drops these before rendering `sources`
+        and flags the run, so a leak can neither be shown nor silently cited."""
+        if not active_collection_id:
+            return []   # no active vault to compare against → nothing provably foreign
+        out: List[LedgerEntry] = []
+        for e in self.entries:
+            if e.kind != "span":
+                continue
+            cid = (e.payload or {}).get("collection_id")
+            if cid is not None and str(cid) != str(active_collection_id):
+                out.append(e)
+        return out
+
+    def drop_foreign_spans(self, active_collection_id: Optional[str]) -> int:
+        """Remove any cross-vault-leaked span (see `foreign_spans`) from the ledger so it can
+        be neither rendered in `sources` nor used as gate evidence. Returns the count dropped."""
+        foreign = self.foreign_spans(active_collection_id)
+        if not foreign:
+            return 0
+        foreign_ids = {id(e) for e in foreign}
+        self.entries = [e for e in self.entries if id(e) not in foreign_ids]
+        return len(foreign)
+
     def partial_answer(self) -> str:
         """Render the verified figures gathered so far into a readable, CITED answer.
 

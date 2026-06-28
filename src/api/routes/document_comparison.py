@@ -9,7 +9,9 @@ from typing import Optional
 from fastapi import APIRouter, HTTPException, Depends
 from pydantic import BaseModel
 
-from src.api.dependencies import get_current_user, get_user_config, get_retrieval_mgr, get_generator
+from src.api.dependencies import (
+    get_current_user, get_user_config, get_retrieval_mgr, get_generator, require_cap,
+)
 from src.components.config import Config
 from src.logger import get_logger
 
@@ -39,6 +41,7 @@ async def compare_documents(
     user_config: Config = Depends(get_user_config),
     retrieval_mgr=Depends(get_retrieval_mgr),
     generator=Depends(get_generator),
+    _cap=Depends(require_cap("ask")),   # F-A: comparison reads + LLM-analyzes vault docs = `ask`
 ):
     """Compare two documents to identify similarities and differences.
 

@@ -280,6 +280,62 @@ def test_doc_type_to_playbook_rows():
           playbook_rows_for_doc_type(recital_only) == [])
 
 
+# ── S-B Test 7: source_ref present on a grounded deviation ───────────────────
+
+def test_sb_source_ref_grounded():
+    print("\nTest 7 (S-B) — grounded deviation carries source_ref, ungrounded_edit=False")
+    from src.components.agent_core.redline import build_redline_cell
+
+    response = {
+        "status": "deviation",
+        "target_quote": "Governed by the laws of Delaware.",
+        "deviation": "Should be Indian law.",
+        "suggested_edit": "Governed by the laws of India.",
+        "rationale": "Firm standard position requires Indian governing law.",
+    }
+
+    def factory(system=""): return _ScriptedModel(response, system)
+
+    finding = build_redline_cell(
+        "Governing Law", "Laws of India.", None, factory, _make_scope(), "contract.pdf"
+    )
+    check("status is deviation (grounded)", finding.status == "deviation", finding.status)
+    check("source_ref is not None (grounded finding)", finding.source_ref is not None,
+          str(finding.source_ref))
+    check("source_ref references the clause topic",
+          "Governing Law" in (finding.source_ref or ""), finding.source_ref)
+    check("source_ref references the playbook standard",
+          "India" in (finding.source_ref or ""), finding.source_ref)
+    check("ungrounded_edit is False (properly grounded)", finding.ungrounded_edit is False)
+
+
+# ── S-B Test 8: source_ref absent + ungrounded_edit=True on ungrounded edit ──
+
+def test_sb_ungrounded_edit_flagged():
+    print("\nTest 8 (S-B) — ungrounded edit: source_ref=None, ungrounded_edit=True, demoted")
+    from src.components.agent_core.redline import build_redline_cell
+
+    # A suggested_edit with NO target_quote and NO rationale — the classic ungrounded case.
+    response = {
+        "status": "deviation",
+        "target_quote": None,
+        "deviation": "Something deviates.",
+        "suggested_edit": "Use Indian law.",
+        "rationale": None,
+    }
+
+    def factory(system=""): return _ScriptedModel(response, system)
+
+    finding = build_redline_cell(
+        "Governing Law", "Laws of India.", None, factory, _make_scope(), "contract.pdf"
+    )
+    check("demoted to abstain (ungrounded edit)", finding.status == "abstain", finding.status)
+    check("source_ref is None (no grounding trace)", finding.source_ref is None,
+          str(finding.source_ref))
+    check("ungrounded_edit is True (explicit flag)", finding.ungrounded_edit is True)
+    check("rationale explains bind-or-flag", "bind-or-flag" in (finding.rationale or "").lower())
+
+
 if __name__ == "__main__":
     print("=" * 64)
     print("G6.3 REDLINE GATE — bind-or-flag + .docx round-trip ($0)")
@@ -290,6 +346,8 @@ if __name__ == "__main__":
     test_bind_or_flag_demotion()
     test_redline_docx_roundtrip()
     test_doc_type_to_playbook_rows()
+    test_sb_source_ref_grounded()
+    test_sb_ungrounded_edit_flagged()
     print("\n" + "=" * 64)
     if _failures:
         print(f"{FAIL}: {len(_failures)} check(s) failed: {_failures}")

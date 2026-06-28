@@ -319,6 +319,166 @@ def main() -> int:
     r = search_vault("x", _BoomRM(), kind="both")
     c.ok(is_envelope(r), "search_vault: raising manager → envelope (no raise escapes)")
 
+    print("\n── T1: retrieval quality grading (CRAG — external signal) ─────────")
+    # Grade helpers are pure functions; test them directly first, then via the tool.
+    from src.components.agent_core.tools.search import _grade_spans, _expand_query
+
+    # _grade_spans: empty → grade=empty
+    c.ok(_grade_spans([])["grade"] == "empty",
+         "T1 _grade_spans: empty span list → grade=empty")
+    # _grade_spans: all below threshold → weak
+    low_spans = [{"score": 0.30}, {"score": 0.25}]
+    c.ok(_grade_spans(low_spans)["grade"] == "weak",
+         "T1 _grade_spans: all scores below threshold → grade=weak")
+    # _grade_spans: top high but no gap vs median → weak (clustered, low signal)
+    clustered = [{"score": 0.60}, {"score": 0.58}, {"score": 0.57}]
+    c.ok(_grade_spans(clustered)["grade"] == "weak",
+         "T1 _grade_spans: high top but clustered (gap<0.10) → grade=weak")
+    # _grade_spans: single high-score span → strong (no median to compare)
+    c.ok(_grade_spans([{"score": 0.90}])["grade"] == "strong",
+         "T1 _grade_spans: single span above threshold → grade=strong")
+    # _grade_spans: top high WITH gap ≥ 0.10 → strong
+    clear = [{"score": 0.85}, {"score": 0.70}, {"score": 0.40}]
+    c.ok(_grade_spans(clear)["grade"] == "strong",
+         "T1 _grade_spans: top with clear gap (0.85 vs median 0.70 → 0.15 gap) → strong")
+    # _grade_spans: no scores at all (table path) → treat as strong (no false alarm)
+    c.ok(_grade_spans([{"snippet": "text", "chunk_id": "c1"}])["grade"] == "strong",
+         "T1 _grade_spans: score-less spans (table path) → grade=strong (no false alarm)")
+
+    # _expand_query: parenthetical stripped
+    c.ok(_expand_query("governing law (dispute resolution)") == "governing law",
+         "T1 _expand_query: trailing parenthetical stripped")
+    # _expand_query: prepositional phrase stripped
+    c.ok(_expand_query("net sales in fiscal year 2023") == "net sales",
+         "T1 _expand_query: trailing 'in <phrase>' stripped")
+    # _expand_query: single-word query → None (can't broaden further)
+    c.ok(_expand_query("revenue") is None,
+         "T1 _expand_query: single-word query → None (no broadening possible)")
+
+    # Via the tool: strong scores → grade=strong in envelope, no repair, no extra retrieve.
+    class _ScoreRM:
+        """Returns docs with controllable scores to drive grade logic."""
+        def __init__(self, text_scores, expand_scores=None):
+            self._text_scores = text_scores
+            self._expand_scores = expand_scores or []
+            self.expand_called = False
+            self.retrieve_calls = 0
+        def retrieve(self, query, **kw):
+            self.retrieve_calls += 1
+            is_expand = self.retrieve_calls > 1
+            scores = self._expand_scores if is_expand else self._text_scores
+            return [_Doc("text", {"filename": "a.pdf", "page_number": i+1,
+                                  "chunk_id": f"c{i}", "score": sc})
+                    for i, sc in enumerate(scores)]
+        def retrieve_table_chunks(self, query, **kw):
+            return []
+
+    # strong case: high score with gap → grade=strong, only ONE retrieve call
+    rm = _ScoreRM(text_scores=[0.85, 0.40])
+    r = search_vault("governing law", rm, scope={"collection_id": "x"}, kind="text")
+    c.ok(is_envelope(r) and r["ok"], "T1: strong retrieval → ok envelope")
+    c.ok(r["data"]["retrieval_quality"]["grade"] == "strong",
+         "T1: high-score+gap result → grade=strong in envelope")
+    c.ok(rm.retrieve_calls == 1,
+         "T1: strong grade → no expansion (only 1 retrieve call)")
+
+    # weak case: low scores → grade=weak, expansion attempted, repair named
+    rm_weak = _ScoreRM(text_scores=[0.30, 0.25],
+                       expand_scores=[0.75, 0.50])
+    r = search_vault("governing law (dispute resolution)", rm_weak,
+                     scope={"collection_id": "x"}, kind="text")
+    c.ok(is_envelope(r) and r["ok"], "T1: weak retrieval → still ok envelope (graceful)")
+    c.ok(r["data"]["retrieval_quality"]["grade"] in ("weak", "strong"),
+         "T1: weak initial → grade re-evaluated after expansion")
+    c.ok(rm_weak.retrieve_calls == 2,
+         "T1: weak grade → one expansion retrieve fired (2 retrieve calls total)")
+    c.ok("repair" in r["data"]["retrieval_quality"],
+         "T1: weak result → repair key present in retrieval_quality")
+    c.ok("governing law" in (r["data"]["retrieval_quality"].get("repair") or ""),
+         "T1: repair names the expanded query")
+    # The summary line reflects the grade
+    c.ok("[" in r.get("summary", ""),
+         "T1: summary includes grade bracket e.g. [strong] or [weak]")
+
+    # empty case: nothing returned on first retrieve, expansion also empty → grade=empty
+    class _EmptyRM:
+        def retrieve(self, *a, **k): return []
+        def retrieve_table_chunks(self, *a, **k): return []
+    r = search_vault("xyzzy nonexistent topic", _EmptyRM(), kind="both")
+    c.ok(r["ok"] and r["data"]["retrieval_quality"]["grade"] == "empty",
+         "T1: zero chunks → grade=empty (not an error, still ok)")
+    c.ok("repair" in r["data"]["retrieval_quality"],
+         "T1: empty grade → repair guidance present")
+
+    # LIVE gate owed (not run here — requires live Pinecone):
+    # eval/routing_recall.py: a semantically-distant query against the real index
+    # must return grade=weak; a precise query must return grade=strong.
+
+    print("\n── S-E: ingestion fidelity_warning in search_vault spans ───────")
+    # S-E: when a doc was ingested with low fidelity (grade != "good"), spans from that
+    # doc must carry fidelity_warning=True so the agent sees the caveat.
+
+    class _FidelityRM:
+        """Returns one span with a doc_id so we can test the stamp."""
+        def __init__(self, doc_id):
+            self._doc_id = doc_id
+        def retrieve(self, query, **kw):
+            return [_Doc("net sales rose", {"filename": "a.pdf", "page_number": 1,
+                                            "chunk_id": "c1", "score": 0.9,
+                                            "doc_id": self._doc_id})]
+        def retrieve_table_chunks(self, query, **kw):
+            return []
+
+    DOC_ID_LOW = "doc-low-fidelity"
+    DOC_ID_GOOD = "doc-good-fidelity"
+    DOC_ID_UNKNOWN = "doc-no-entry"
+
+    # S-E.1: a low-fidelity doc's spans carry fidelity_warning=True.
+    r = search_vault("net sales", _FidelityRM(DOC_ID_LOW),
+                     scope={"collection_id": "x"},
+                     fidelity_by_doc={DOC_ID_LOW: "partial", DOC_ID_GOOD: "good"},
+                     kind="text")
+    c.ok(is_envelope(r) and r["ok"], "S-E: search_vault with fidelity_by_doc → ok envelope")
+    low_spans = [sp for sp in r["provenance"] if sp.get("doc_id") == DOC_ID_LOW]
+    c.ok(low_spans and low_spans[0].get("fidelity_warning") is True,
+         "S-E: span from low-fidelity doc (grade=partial) carries fidelity_warning=True")
+
+    # S-E.2: a good-fidelity doc's spans do NOT carry fidelity_warning.
+    r_good = search_vault("net sales", _FidelityRM(DOC_ID_GOOD),
+                          scope={"collection_id": "x"},
+                          fidelity_by_doc={DOC_ID_LOW: "partial", DOC_ID_GOOD: "good"},
+                          kind="text")
+    good_spans = [sp for sp in r_good["provenance"] if sp.get("doc_id") == DOC_ID_GOOD]
+    c.ok(good_spans and not good_spans[0].get("fidelity_warning"),
+         "S-E: span from good-fidelity doc does NOT carry fidelity_warning")
+
+    # S-E.3: when fidelity_by_doc is None (flag off) → byte-identical (no fidelity_warning).
+    r_off = search_vault("net sales", _FidelityRM(DOC_ID_LOW),
+                         scope={"collection_id": "x"}, kind="text")
+    off_spans = r_off["provenance"]
+    c.ok(not any(sp.get("fidelity_warning") for sp in off_spans),
+         "S-E: fidelity_by_doc=None → no fidelity_warning on any span (flag-off byte-identical)")
+
+    # S-E.4: a doc_id not in fidelity_by_doc (unknown) → no warning (treat as good, don't alarm).
+    r_unk = search_vault("net sales", _FidelityRM(DOC_ID_UNKNOWN),
+                         scope={"collection_id": "x"},
+                         fidelity_by_doc={DOC_ID_LOW: "partial", DOC_ID_GOOD: "good"},
+                         kind="text")
+    unk_spans = [sp for sp in r_unk["provenance"] if sp.get("doc_id") == DOC_ID_UNKNOWN]
+    c.ok(unk_spans and not unk_spans[0].get("fidelity_warning"),
+         "S-E: doc_id not in fidelity_by_doc → no fidelity_warning (unknown ≠ low)")
+
+    # S-E.5: span_to_dict carries doc_id from chunk metadata.
+    from src.components.agent_core.tools._envelope import span_to_dict as _s2d
+    _fake_chunk = type("D", (), {
+        "page_content": "some text",
+        "metadata": {"filename": "x.pdf", "page_number": 1,
+                     "chunk_id": "c99", "doc_id": "uuid-42"},
+    })()
+    _sp = _s2d(_fake_chunk)
+    c.ok(_sp.get("doc_id") == "uuid-42",
+         "S-E: span_to_dict reads doc_id from chunk metadata (the fidelity stamp axis)")
+
     print("\n── survey_collection (G5 broad-pass tool — demoted map_reduce) ──")
     from src.components.agent_core.tools import survey_collection
     from src.components.brain import map_reduce as _mr
@@ -530,6 +690,164 @@ def main() -> int:
     c.ok(r["ok"] and r["data"]["passages"] == []
          and r["data"].get("blocked_by_source_filter"),
          "search_knowledge: requesting a disabled instrument_type → 0 results (not bypassable)")
+
+    print("\n── S-D: KB retrieval quality grade + section existence check ────")
+    # S-D.1: strong KB match carries grade=strong in the envelope.
+    strong_kb_doc = _Doc(
+        "Art.21 — No person shall be deprived of his life or personal liberty…",
+        {"citation": "Constitution Art.21", "source_key": "constitution_of_india",
+         "instrument_type": "article", "section_or_article_id": "21",
+         "jurisdiction": "IN", "as_of_date": "2025-01-01",
+         "enacted_date": "1950-01-26", "chunk_id": "kb-strong",
+         "score": 0.88},   # high score — stands out from neighbours
+    )
+    low_score_doc = _Doc(
+        "Art.22 — protection against arbitrary arrest",
+        {"citation": "Constitution Art.22", "source_key": "constitution_of_india",
+         "instrument_type": "article", "section_or_article_id": "22",
+         "jurisdiction": "IN", "as_of_date": "2025-01-01",
+         "enacted_date": "1950-01-26", "chunk_id": "kb-low",
+         "score": 0.40},
+    )
+
+    class _ScoredKB:
+        def __init__(self, docs): self._docs = docs
+        def retrieve(self, query, **kw): return list(self._docs)
+
+    r = search_knowledge("right to life", _ScoredKB([strong_kb_doc, low_score_doc]))
+    c.ok(is_envelope(r) and r["ok"], "S-D: strong KB hit → ok envelope")
+    c.ok((r["data"] or {}).get("kb_retrieval_quality", {}).get("grade") == "strong",
+         "S-D: high-score KB hit with gap → grade=strong in envelope")
+    c.ok("repair" not in ((r["data"] or {}).get("kb_retrieval_quality") or {}),
+         "S-D: strong grade → no repair key (no false alarm)")
+
+    # S-D.2: weak KB match (low scores) → grade=weak + repair message.
+    weak_doc = _Doc(
+        "Some tangentially related text.",
+        {"citation": "X s.1", "source_key": "x", "instrument_type": "act",
+         "section_or_article_id": "1", "jurisdiction": "IN",
+         "as_of_date": "2025-01-01", "enacted_date": "2000-01-01",
+         "chunk_id": "kb-weak", "score": 0.28},
+    )
+    r_weak = search_knowledge("director duties Companies Act", _ScoredKB([weak_doc]))
+    c.ok(is_envelope(r_weak) and r_weak["ok"], "S-D: weak KB hit → still ok envelope (graceful)")
+    c.ok((r_weak["data"] or {}).get("kb_retrieval_quality", {}).get("grade") == "weak",
+         "S-D: low-score KB result → grade=weak signals uncertain authority")
+    c.ok("repair" in ((r_weak["data"] or {}).get("kb_retrieval_quality") or {}),
+         "S-D: weak KB grade → repair guidance present in envelope")
+    c.ok("[weak]" in (r_weak.get("summary") or ""),
+         "S-D: weak grade reflected in summary line")
+
+    # S-D.3: section_verified=True when the cited §/article id is in the snippet.
+    r_sv = search_knowledge("right to life", _ScoredKB([strong_kb_doc]))
+    passage = (r_sv["data"] or {}).get("passages", [{}])[0]
+    c.ok(passage.get("section_verified") is True,
+         "S-D: section_or_article_id '21' present in citation 'Art.21' → section_verified=True")
+
+    # S-D.4: section_verified=False when the cited id is NOT in the snippet/citation.
+    mismatch_doc = _Doc(
+        "This section deals with something else entirely.",
+        {"citation": "Constitution Art.99",   # citation says Art.99
+         "source_key": "constitution_of_india",
+         "instrument_type": "article",
+         "section_or_article_id": "21",       # but id says 21 — mismatch
+         "jurisdiction": "IN", "as_of_date": "2025-01-01",
+         "enacted_date": "1950-01-26", "chunk_id": "kb-mismatch", "score": 0.80},
+    )
+    r_mm = search_knowledge("right to life", _ScoredKB([mismatch_doc]))
+    mm_passage = (r_mm["data"] or {}).get("passages", [{}])[0]
+    c.ok(mm_passage.get("section_verified") is False,
+         "S-D: section id '21' absent from citation 'Art.99' and snippet → section_verified=False")
+
+    # S-D.5: no section_or_article_id → section_verified=True (can't verify, don't block).
+    no_id_doc = _Doc(
+        "General commentary on the Act.",
+        {"citation": "Companies Act 2013", "source_key": "companies_act_2013",
+         "instrument_type": "act", "jurisdiction": "IN",
+         "as_of_date": "2025-01-01", "enacted_date": "2013-09-12",
+         "chunk_id": "kb-noid", "score": 0.75},
+    )
+    r_noid = search_knowledge("company secretary", _ScoredKB([no_id_doc]))
+    noid_passage = (r_noid["data"] or {}).get("passages", [{}])[0]
+    c.ok(noid_passage.get("section_verified") is True,
+         "S-D: no section_or_article_id → section_verified=True (no false block)")
+
+    # S-D.6: empty KB result → grade=empty.
+    class _EmptyKB:
+        def retrieve(self, *a, **k): return []
+    r_empty = search_knowledge("nonexistent provision", _EmptyKB())
+    c.ok(r_empty["ok"] and
+         (r_empty["data"] or {}).get("kb_retrieval_quality", {}).get("grade") == "empty",
+         "S-D: zero KB chunks → grade=empty (still ok envelope)")
+    c.ok("repair" in ((r_empty["data"] or {}).get("kb_retrieval_quality") or {}),
+         "S-D: empty KB grade → repair guidance present")
+
+    print("\n── T6: every error names its repair (argument audit) ───────────")
+    # T6 rule: every error_result must carry a message that names the EXACT repair the
+    # model should take — not a bare "requires X". Validated per tool/site.
+
+    # compute: bad op → names the valid ops list.
+    r = compute({"op": "not_an_op", "row": {"label": "x"}}, amzn)
+    c.ok(not r["ok"] and "Valid ops:" in (r.get("error") or ""),
+         "T6 compute: invalid op error names the valid op list")
+    # compute: non-dict spec → names the type received + valid ops.
+    r = compute("string", amzn)
+    c.ok(not r["ok"] and "Valid ops:" in (r.get("error") or ""),
+         "T6 compute: non-dict spec error names valid ops (agent knows what to pass)")
+    # compute: kernel error with candidates → candidates propagated in data, named in error.
+    # Use a bad label that makes the kernel scan candidates.
+    r_fail = compute(
+        {"op": "value", "row": {"label": "ZZZNOMATCH"}, "period": "2022"}, amzn
+    )
+    c.ok(not r_fail["ok"] and "error" in r_fail,
+         "T6 compute: kernel miss → error envelope (no raise)")
+    # If the kernel returned candidates, the error message must name them.
+    if (r_fail.get("data") or {}).get("candidates"):
+        c.ok("Candidates" in (r_fail.get("error") or ""),
+             "T6 compute: kernel miss with candidates → candidates named in error message")
+    else:
+        c.ok(True, "T6 compute: kernel miss with no candidates → bare error (acceptable)")
+
+    # table_lookup: names which arg is missing and the repair steps.
+    r = table_lookup("", "2022", msft)
+    c.ok("missing:" in (r.get("error") or "") and "list_metrics" in (r.get("error") or ""),
+         "T6 table_lookup: missing metric → error names the missing arg + repair (use list_metrics)")
+    r = table_lookup("revenue", "", msft)
+    c.ok("missing:" in (r.get("error") or "") and "read_document" in (r.get("error") or ""),
+         "T6 table_lookup: missing period → error names the missing arg + repair (use read_document)")
+
+    # list_metrics: no grids → tells model to call read_document first.
+    r = list_metrics("amzn.pdf", [])
+    c.ok("read_document" in (r.get("error") or ""),
+         "T6 list_metrics: no grids → error tells model to call read_document first")
+    # list_metrics: no doc_id → lists loaded docs.
+    r = list_metrics("", amzn)
+    c.ok((r.get("error") or "").startswith("list_metrics requires a 'doc_id'") and
+         "amzn" in (r.get("error") or "").lower(),
+         "T6 list_metrics: empty doc_id → error lists loaded docs so model can pick one")
+
+    # search_vault: empty query → names what to pass.
+    r = search_vault("", _StubRM())
+    c.ok("specific phrase" in (r.get("error") or "") or "non-empty" in (r.get("error") or ""),
+         "T6 search_vault: empty query → error gives example of what to pass")
+    # search_vault: no manager → distinguishes internal from model error.
+    r = search_vault("x", None)
+    c.ok("routing bug" in (r.get("error") or "") or "retrieval_manager" in (r.get("error") or ""),
+         "T6 search_vault: no manager → error flags it as routing bug (not a model mistake)")
+
+    # search_knowledge: empty query → example format.
+    r = search_knowledge("", _StubKB())
+    c.ok("non-empty" in (r.get("error") or ""),
+         "T6 search_knowledge: empty query → error names what to pass")
+    # search_knowledge: no manager → distinguishes internal routing from model error.
+    r = search_knowledge("x", None)
+    c.ok("routing bug" in (r.get("error") or "") or "USE_KNOWLEDGE" in (r.get("error") or ""),
+         "T6 search_knowledge: no manager → error flags it as routing bug")
+
+    # survey_collection: empty vault scope → repair hint (check vault docs).
+    r_sv = survey_collection("q", _SurveyRM(), object(), filenames=[])
+    c.ok("search_vault" in (r_sv.get("error") or "") or "documents" in (r_sv.get("error") or ""),
+         "T6 survey_collection: empty scope → error names repair (check vault contains docs)")
 
     print("\n── schemas (registry-ready, A2) ─────────────────────────────────")
     c.ok(set(SCHEMAS) == {"search_vault", "read_document", "list_metrics",

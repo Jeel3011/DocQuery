@@ -163,11 +163,13 @@ async def _run_report_workflow(template, run, body, sb, user_config, retrieval_m
     from src.components.agent_core.budgets import budget_for
     from src.components.agent_core.model import build_model
     from src.components.agent_core.loop import run_agent
-    from src.components.agent_core.gates import gate_sectioned, run_output_gates
+    from src.components.agent_core.loop import make_question_gate
 
     # report (Draft) = multi-section memo → per-section gate; output (Output) = a freeform
     # single deliverable → the whole-answer gate. Both non-bypassable; never a softer gate.
-    gate_fn = gate_sectioned if run.shape == "report" else run_output_gates
+    # T2: build the gate via make_question_gate so `question` is threaded into the completeness
+    # check on BOTH shapes (a bare gate_sectioned would run with question="" and disable T2).
+    gate_fn = make_question_gate(question, sectioned=(run.shape == "report"))
 
     scope = RunScope(
         collection_id=body.collection_id, doc_ids=scoped_doc_ids,
@@ -314,23 +316,59 @@ async def _run_grid_workflow(template, run, body, sb, user_config, retrieval_mgr
             yield "data: [DONE]\n\n"
         return StreamingResponse(_degraded(), media_type="text/event-stream")
 
+    # T4: de-correlated second-verify factory for FOUND clause cells. build_cell runs the
+    # second pass with a FRESH model carrying the auditor lens (a DIFFERENT system prompt from
+    # the cell-extraction model) — an independent entailment check, NOT the same model grading
+    # itself. Only fires on found, non-numeric cells (grid_engine gates that); numeric cells are
+    # the kernel's deterministic job. A build failure here must NOT break the grid — degrade to
+    # None (no second verify) so the primary extraction still ships.
+    from src.components.agent_core.grid_engine import _SECOND_VERIFY_SYSTEM
+
+    def _verify_model_factory():
+        return build_model("standard", grid_budget, user_config, system=_SECOND_VERIFY_SYSTEM)
+
+    try:
+        # Probe once so a broken verify-model degrades cleanly here, not per-cell.
+        _verify_model_factory()
+        verify_factory = _verify_model_factory
+    except Exception as exc:  # noqa: BLE001 — second-verify is best-effort; never block the grid
+        logger.warning("[workflow-grid] T4 verify-model unavailable (%s) — skipping second verify", exc)
+        verify_factory = None
+
     def _run_all_cells(emit) -> Dict[str, int]:
+        from src.components.agent_core.review_grid import CellStatus
+        from src.components.agent_core.workflows import _step_failure_detail
         cells = []
+        step_index = 0
         for did in spec.doc_ids:
             for column in spec.columns:
                 cell = build_cell(
                     did, column, collection_id=body.collection_id, model=model,
                     filename_by_doc=filename_by_doc, grids_by_doc=grids_by_doc,
                     retrieval_manager=retrieval_mgr, db_client=sb, model_id=model_id,
+                    model_factory=verify_factory,
                 )
                 cells.append(cell)
+                # S-C: when a cell abstains or errors, include a structured step_failure
+                # payload naming WHICH step failed and WHY — not a blanket message.
+                step_failure = None
+                if cell.status in (CellStatus.ABSTAIN, CellStatus.ERROR):
+                    step_label = (
+                        f"doc:{cell.doc_name or cell.doc_id} / col:{cell.column_key}"
+                    )
+                    reason = cell.abstain_reason or cell.note or "unknown"
+                    step_failure = _step_failure_detail(step_label, reason, step_index)
                 emit({
                     "type": "cell", "doc_id": cell.doc_id, "doc_name": cell.doc_name,
                     "column_key": cell.column_key, "status": cell.status.value,
                     "value": cell.value, "quote": cell.quote, "risk": cell.risk.value,
                     "note": cell.note, "abstain_reason": cell.abstain_reason,
                     "provenance": cell.provenance, "verified": cell.is_verified,
+                    # S-C: step_failure is None for found/missing/conforming cells
+                    # (not a failure), and a structured dict for abstain/error cells.
+                    "step_failure": step_failure,
                 })
+                step_index += 1
         return GridResult(spec=spec, cells=cells).coverage()
 
     async def _stream():

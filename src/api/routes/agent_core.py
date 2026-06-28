@@ -381,8 +381,12 @@ async def agentcore_query_stream(
     # G6.1: a draft is a multi-section deliverable too (`##` headings), so it gets the
     # SAME per-section gate — one unsupported section is withheld visibly, never sinks the
     # whole document. Same non-bypassable rules; never a softer gate for prose.
-    from src.components.agent_core.gates import run_output_gates, gate_sectioned
-    gate_fn = gate_sectioned if mode in ("deep", "draft") else run_output_gates
+    # T2: bind the question into the gate so verify_completeness fires on EVERY path. Deep/draft
+    # use the per-section gate (sectioned=True); standard uses the whole-answer gate. Building the
+    # gate via make_question_gate (not the bare function) is what threads `question` into
+    # gate_sectioned — passing it raw would run it with question="" and silently disable T2.
+    from src.components.agent_core.loop import make_question_gate
+    gate_fn = make_question_gate(body.question, sectioned=(mode in ("deep", "draft")))
 
     def _agent_stream():
         try:

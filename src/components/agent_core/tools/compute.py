@@ -116,7 +116,15 @@ def compute(spec: Dict[str, Any], grids: List[Any]) -> Dict[str, Any]:
     from src.components.brain.analyst import compute as kernel_compute
 
     if not isinstance(spec, dict) or not spec.get("op"):
-        return error_result("spec must be a dict with an 'op'")
+        _valid_ops = [
+            "value", "delta", "growth_pct", "sum", "difference", "ratio",
+            "margin_pct", "average", "cagr_pct",
+            "argmax", "argmin", "first_exceeds", "last_below", "rank", "filter",
+        ]
+        return error_result(
+            f"spec must be a dict with an 'op'; got {type(spec).__name__ if not isinstance(spec, dict) else repr(spec.get('op'))}. "
+            f"Valid ops: {', '.join(_valid_ops)}"
+        )
 
     result = kernel_compute(spec, grids or [])
 
@@ -125,12 +133,37 @@ def compute(spec: Dict[str, Any], grids: List[Any]) -> Dict[str, Any]:
 
     if not result.ok:
         # A kernel error (bad spec, missing cell) is an error; an AmbiguousCell is
-        # surfaced as the error string by the kernel. Either way we carry the
-        # candidates the kernel scanned so the model can disambiguate.
-        return error_result(
-            result.error or "compute failed",
-            summary=f"compute {result.op}: {result.error or 'failed'}",
-        )
+        # surfaced as the error string by the kernel. The comment said "carry the
+        # candidates" but the old code dropped them on the error path — the model
+        # had no did-you-mean to act on (T6 gap). Now we carry them via data so
+        # the model can disambiguate (change section/label/doc) in one step.
+        error_msg = result.error or "compute failed"
+        # T6: when the kernel rejects the op name, append the valid-ops list so the
+        # model can correct in one step instead of looping on bad guesses.
+        if "operation not allowed" in error_msg or "not allowed" in error_msg:
+            _valid_ops = [
+                "value", "delta", "growth_pct", "sum", "difference", "ratio",
+                "margin_pct", "average", "cagr_pct",
+                "argmax", "argmin", "first_exceeds", "last_below", "rank", "filter",
+            ]
+            error_msg = f"{error_msg}. Valid ops: {', '.join(_valid_ops)}"
+        candidates_hint = []
+        if cand_prov:
+            candidates_hint = cand_prov
+            error_msg = (
+                f"{error_msg}. Candidates the kernel scanned: "
+                + ", ".join(
+                    f"{c.get('label')!r}[{c.get('period')}] (§{c.get('section') or 'no-section'}, doc={c.get('doc')})"
+                    for c in cand_prov[:5]
+                )
+            )
+        return {
+            "ok": False,
+            "summary": f"compute {result.op}: {result.error or 'failed'}",
+            "data": {"candidates": candidates_hint} if candidates_hint else None,
+            "provenance": [],
+            "error": error_msg,
+        }
 
     # A selection op's threshold (e.g. first_exceeds > 500000) is a legitimate figure the
     # answer may restate, and it originated from this VERIFIED spec — so it belongs in

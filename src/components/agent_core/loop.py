@@ -25,10 +25,11 @@ and does not touch this file's control flow.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 from dataclasses import dataclass
-from typing import Any, Callable, Dict, Iterator, List, Optional
+from typing import Any, Callable, Dict, Iterator, List, Optional, Set
 
 from .budgets import Budget
 from .ledger import EvidenceLedger
@@ -54,11 +55,44 @@ _GATE_UNAVAILABLE_TEXT = (
 )
 
 
+def _make_gate(question: str, sectioned: bool = False) -> Callable[..., GateOutcome]:
+    """Return a gate_fn closure that threads `question` into the output gates for T2
+    (completeness). The gate_fn interface is (draft, ledger) — question is captured from
+    the run context so the completeness check knows which entities were asked for.
+
+    `sectioned=False` (default) wraps `run_output_gates` (the simple/standard whole-answer
+    path). `sectioned=True` wraps `gate_sectioned` (the deep/draft/report per-section path)
+    — both gates accept `question` for the completeness check; without this wrapper the
+    deep path runs `gate_sectioned(draft, ledger)` with `question=""`, silently disabling T2
+    on exactly the multi-entity reports that need it most.
+
+    Fails CLOSED on import error — byte-identical to the old _default_gate behavior."""
+    def _gate(draft: str, ledger: EvidenceLedger) -> GateOutcome:
+        try:
+            from .gates import run_output_gates, gate_sectioned
+            _gates = gate_sectioned if sectioned else run_output_gates
+            return _gates(draft, ledger, question=question)
+        except Exception as exc:  # noqa: BLE001
+            logger.error("[agent_core.loop] output gates unavailable — failing CLOSED: %s", exc)
+            return GateOutcome(
+                passed=False, abstained=True,
+                failures=[{"name": "gates_unavailable", "detail": str(exc)}],
+                redacted_draft=_GATE_UNAVAILABLE_TEXT,
+            )
+    return _gate
+
+
+def make_question_gate(question: str, sectioned: bool = False) -> Callable[..., GateOutcome]:
+    """Public alias of `_make_gate` for the route layer: build a question-bound gate_fn so
+    T2 completeness fires on the deep/draft/report paths (which inject a custom gate_fn and
+    therefore bypass the loop's own `_make_gate(question)` default). `sectioned=True` →
+    per-section gate (`gate_sectioned`); `sectioned=False` → whole-answer (`run_output_gates`)."""
+    return _make_gate(question, sectioned=sectioned)
+
+
 def _default_gate(draft: str, ledger: EvidenceLedger) -> GateOutcome:
-    """Resolve the real A3 output gates lazily (avoids a gates↔loop import cycle:
-    gates.py imports GateOutcome from this module). If gates.py is somehow unavailable
-    the loop fails CLOSED — "non-bypassable" (§3.4) means an unverifiable draft is
-    withheld, never shipped ungated. Failing open here would be the product failing."""
+    """Legacy no-question gate (used by tests that inject gate_fn directly).
+    For the live loop, `_make_gate(question)` is used instead."""
     try:
         from .gates import run_output_gates as _gates
         return _gates(draft, ledger)
@@ -116,7 +150,7 @@ def run_agent(
     system_prompt: str = "",
     history: Optional[List[Dict[str, Any]]] = None,
     registry=REGISTRY,
-    gate_fn: Callable[[str, EvidenceLedger], GateOutcome] = _default_gate,
+    gate_fn: Optional[Callable[[str, EvidenceLedger], GateOutcome]] = None,
     tools: Optional[List[str]] = None,
 ) -> Iterator[Dict[str, Any]]:
     """Drive one agent run, yielding §3.6 events. `model` is injected (live or scripted).
@@ -128,6 +162,11 @@ def run_agent(
     back to Brain — that's A4). This function never raises into the generator consumer.
     """
     import time
+
+    # T2: thread the question into the gate so verify_completeness knows which entities
+    # were asked for. Callers that inject a custom gate_fn keep their own behavior.
+    if gate_fn is None:
+        gate_fn = _make_gate(question)
 
     ledger = EvidenceLedger()
     # G7: a workflow template may restrict the run to its own `tools` subset (validated
@@ -149,6 +188,20 @@ def run_agent(
     abstained = False
     started = time.monotonic()
     low_budget_warned = False  # inject the "wrap up" nudge once, near the wall
+
+    # ── T3: anti-loop circuit-breaker ────────────────────────────────────────────
+    # Track (tool, normalized-args-hash) for calls that returned ok=False or 0 provenance.
+    # On a repeat of a previously-dead call we inject a structured redirect and skip
+    # execution — the model burned the budget by looping; this stops it.
+    # On _REPEAT_CAP identical failed sigs, fire the hard block (redirect, no execute).
+    _failed_sigs: Dict[str, int] = {}    # sig → count of failures on this sig
+    _REPEAT_CAP = 2                       # hard ceiling: after 2 failures, block the 3rd
+
+    # ── T5: budget-aware self-heal ────────────────────────────────────────────────
+    # (a) dead-scope: tools whose query returned ok+0-prov (likely empty-ingested doc).
+    # (b) consecutive model errors: 2+ in a row → degrade early rather than burning the wall.
+    _dead_scopes: Set[str] = set()       # query-keys that already returned nothing
+    _consecutive_model_errors: int = 0   # resets on any successful model response
 
     def _wall_exhausted() -> bool:
         return budget.wall_clock_s > 0 and (time.monotonic() - started) >= budget.wall_clock_s
@@ -233,10 +286,16 @@ def run_agent(
                 resp = model.invoke(messages, tool_schemas)
         except Exception as exc:  # noqa: BLE001 — surfaced as a degrade signal to the caller
             logger.warning("[agent_core.loop] model call failed at step %d: %s", step, exc)
+            _consecutive_model_errors += 1
             yield {"type": "gate", "name": "model_error", "pass": False, "detail": str(exc)}
             final_text = None
             abstained = True
-            # Signal degrade: yield meta with an error marker; A4's route falls back.
+            # T5(b): an unrecoverable model error → emit a named t5_early_degrade gate so the
+            # tracer/UI can distinguish "API died" from "budget ran out" or "gate redaction".
+            # This is the "signal → action" promotion: the degrade is explicit + labelled, not
+            # just a meta with degrade=True. Signal degrade to A4's route via the meta.
+            yield {"type": "gate", "name": "t5_early_degrade", "pass": False,
+                   "detail": f"model error at step {step} — stopping (consecutive={_consecutive_model_errors})"}
             yield {"type": "meta", "mode": budget.mode, "steps": step,
                    "tokens": budget.tokens_used, "abstained": True,
                    "error": f"model_error: {exc}", "degrade": True}
@@ -254,15 +313,77 @@ def run_agent(
 
         if resp.wants_tools:
             for call in resp.tool_calls:
+                # T3: compute a normalized signature for this call to detect repeats.
+                _raw_sig = json.dumps({"n": call.name, "a": call.args}, sort_keys=True,
+                                      default=str)
+                _call_sig = hashlib.md5(_raw_sig.encode()).hexdigest()[:12]  # noqa: S324 — not security
+
+                # T3: if this exact call already failed _REPEAT_CAP times, redirect instead
+                # of executing again — the model is stuck in a loop and will burn the budget.
+                if _failed_sigs.get(_call_sig, 0) >= _REPEAT_CAP:
+                    logger.warning("[agent_core.loop] T3: repeated-failing call blocked "
+                                   "(%s, sig=%s, count=%d)", call.name, _call_sig,
+                                   _failed_sigs[_call_sig])
+                    redirect_msg = (
+                        f"[circuit-breaker] You already tried `{call.name}` with these same "
+                        f"arguments {_failed_sigs[_call_sig]} time(s) and it has not returned "
+                        f"useful results. Do NOT retry it again. Instead: (a) change the section, "
+                        f"document, or tool, OR (b) state what you have verified so far and "
+                        f"explicitly abstain on what you could not find."
+                    )
+                    yield {"type": "gate", "name": "t3_circuit_breaker", "pass": False,
+                           "detail": f"repeated failing call blocked: {call.name} sig={_call_sig}"}
+                    messages.append({"role": "user", "content": redirect_msg})
+                    break  # inject the redirect and let the model respond to it
+
                 yield {"type": "tool_call", "name": call.name,
                        "args_summary": _args_summary(call.args)}
                 result = registry.execute(call, scope)
+                ok = bool(result.get("ok"))
                 n_prov = ledger.record(call.name, step, result.get("provenance"))
                 yield {"type": "tool_result", "name": call.name,
-                       "ok": bool(result.get("ok")), "summary": result.get("summary", ""),
+                       "ok": ok, "summary": result.get("summary", ""),
                        "n_provenance": n_prov}
                 messages.append(_tool_result_message(call, result))
-            continue  # let the model see the results and decide the next move
+
+                # T3: track failed/zero-prov calls for the circuit-breaker.
+                if not ok or n_prov == 0:
+                    _failed_sigs[_call_sig] = _failed_sigs.get(_call_sig, 0) + 1
+                    # First repeat of a dead call: inject a structured redirect hint (softer
+                    # than the hard block above — gives the model one chance to self-correct).
+                    if _failed_sigs[_call_sig] == 2:
+                        prior_result = result.get("summary") or result.get("error") or "no results"
+                        messages.append({
+                            "role": "user",
+                            "content": (
+                                f"[tool-loop notice] You just repeated a `{call.name}` call that "
+                                f"already returned: {prior_result!r:.200}. "
+                                f"Repeating it will return the same result. "
+                                f"Try a different query, section, or document; or abstain on this part."
+                            ),
+                        })
+
+                # T5(a): if a scope-sensitive tool returned ok+0-provenance, the doc/scope
+                # is likely empty-ingested. Remember the scope key and warn the model once.
+                if ok and n_prov == 0 and call.name in ("search_vault", "read_document"):
+                    scope_key = json.dumps(call.args.get("scope") or call.args.get("doc_id") or "",
+                                           sort_keys=True, default=str)
+                    if scope_key not in _dead_scopes:
+                        _dead_scopes.add(scope_key)
+                        logger.info("[agent_core.loop] T5: empty scope at step %d: %s args=%s",
+                                    step, call.name, scope_key[:80])
+                        messages.append({
+                            "role": "user",
+                            "content": (
+                                f"[empty-scope notice] `{call.name}` returned 0 results for this "
+                                f"scope — the document may not be ingested or may be outside this "
+                                f"vault. Stop probing this scope. Either try a different document, "
+                                f"flag the gap explicitly in your answer, or move on."
+                            ),
+                        })
+            else:
+                continue  # all tool calls processed normally — let the model respond
+            continue  # a break inside the for-loop (redirect injected) — also let model respond
 
         # No tool calls → the model thinks it's done. Run the output gates (A3).
         # A raising gate_fn fails CLOSED (withhold) — same contract as _default_gate.
@@ -305,6 +426,19 @@ def run_agent(
             ),
         })
         # loop continues → model re-answers
+
+    # F-F (tool_hard.md): the cross-vault-leak invariant on the hot path. Before rendering
+    # ANY source, assert the ledger holds no span from a vault other than the active one.
+    # A leaked span is dropped (never shown, never cited) and the run is flagged — the answer
+    # path must never surface a chunk from outside `scope.collection_id`. Clean run ⇒ no-op
+    # (byte-identical). Deterministic, $0, no model call.
+    leaked = ledger.drop_foreign_spans(getattr(scope, "collection_id", None))
+    if leaked:
+        logger.error("[agent_core.loop] VAULT LEAK: dropped %d foreign-vault span(s) from the "
+                     "ledger before rendering sources (active vault=%s)",
+                     leaked, getattr(scope, "collection_id", None))
+        yield {"type": "gate", "name": "vault_leak", "pass": False,
+               "detail": f"dropped {leaked} span(s) from another vault — cross-vault leak blocked"}
 
     # Wrap up: emit sources from the ledger, the final answer, and run meta.
     yield {"type": "sources", "sources": ledger.to_sources()}
