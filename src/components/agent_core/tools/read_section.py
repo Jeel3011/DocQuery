@@ -21,6 +21,7 @@ from typing import Any, Dict, List, Optional
 from ._chunks import resolve_doc_id, text_chunks_for_doc
 from ._envelope import error_result, ok_result, safe_tool
 from ._outline import build_outline, slice_by_heading
+from ._untrusted import mark_injection, wrap_untrusted
 
 SCHEMA: Dict[str, Any] = {
     "name": "read_section",
@@ -138,11 +139,14 @@ def read_section(
     body = "".join(blocks).strip()
 
     summary = f"read_section {doc_id} ({how}): {len(selected)} chunk(s)"
-    return ok_result(
+    # L3 (§16.11): fence the section prose as untrusted content + flag injection. Wrapped,
+    # not mutated — provenance spans stay byte-exact for figure-traces-to-span grounding.
+    result = ok_result(
         summary=summary,
-        data={"doc_id": doc_id, "section_text": body, "matched": how},
+        data={"doc_id": doc_id, "section_text": wrap_untrusted(body), "matched": how},
         provenance=provenance,
     )
+    return mark_injection(result, body)
 
 
 def abstain_or_outline(doc_id: str, chunks: List[Dict[str, Any]], why: str) -> Dict[str, Any]:

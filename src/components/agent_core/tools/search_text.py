@@ -29,6 +29,7 @@ from typing import Any, Dict, List, Optional
 
 from ._chunks import resolve_doc_id, text_chunks_for_doc
 from ._envelope import error_result, ok_result, safe_tool
+from ._untrusted import mark_injection
 
 _MAX_REGEX_LEN = 200          # G-e: cap regex source length (ReDoS guard)
 _DEFAULT_K = 20               # max matching passages returned
@@ -193,4 +194,8 @@ def search_text(
             f"document whole if it's small"
         )
     # Provenance == the hit spans (same shape as a search_vault span → ledger-identical).
-    return ok_result(summary=summary, data={"matches": hits}, provenance=hits)
+    # L3 (§16.11): snippets are short ±120-char grep fragments that ALSO serve as ledger
+    # provenance, so they must stay byte-exact (no per-snippet fence — it would break the
+    # span shape). Flag injection at the envelope level for observability instead.
+    result = ok_result(summary=summary, data={"matches": hits}, provenance=hits)
+    return mark_injection(result, *[h.get("snippet", "") for h in hits])

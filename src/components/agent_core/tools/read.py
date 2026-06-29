@@ -22,6 +22,7 @@ from typing import Any, Dict, List, Optional
 from ._chunks import resolve_doc_id, text_chunks_for_doc
 from ._envelope import error_result, ok_result, safe_tool
 from ._outline import build_outline
+from ._untrusted import mark_injection, wrap_untrusted
 
 # DOCUMENT_HARNESS §6.3: whole-doc reads get the clean prose; a huge filing returns its
 # OUTLINE instead so the model reads the right section (read_section) rather than blowing
@@ -132,12 +133,16 @@ def _read_full_text(
         if table_grids else []
     summary = (f"read_document {doc_id} (full text): {len(chunks)} chunk(s), "
                f"~{n_tokens} tokens, {len(grid_jsons)} grid(s)")
-    return ok_result(
+    # L3 (§16.11): fence the doc prose as untrusted content (data, not instructions) and
+    # flag any injection pattern for the Trust-UI. The body is wrapped, NOT mutated — the
+    # per-page provenance spans stay byte-exact so figure-traces-to-span grounding holds.
+    result = ok_result(
         summary=summary,
-        data={"doc_id": doc_id, "full_text": body, "grids": grid_jsons,
+        data={"doc_id": doc_id, "full_text": wrap_untrusted(body), "grids": grid_jsons,
               "n_tokens_est": n_tokens},
         provenance=provenance,
     )
+    return mark_injection(result, body)
 
 
 def _grid_to_json(g: Any) -> Dict[str, Any]:
@@ -368,9 +373,17 @@ def read_document(
         {"kind": "span", "doc": gj["doc"], "page": gj["page"], "table_id": gj["table_id"]}
         for gj in grid_jsons
     ]
+    # L3 (§16.11): fence each page's prose as untrusted content + flag injection. Wrap, not
+    # mutate — grids (the numeric moat) are structured data, not free text, so they pass
+    # through untouched; only the free prose gets the data boundary.
+    raw_page_texts = [pt.get("text", "") for pt in page_text]
+    wrapped_page_text = [
+        {**pt, "text": wrap_untrusted(pt.get("text", ""))} for pt in page_text
+    ]
     summary = f"read_document {doc_id}: {len(grid_jsons)} grid(s), {len(page_text)} text page(s)"
-    return ok_result(
+    result = ok_result(
         summary=summary,
-        data={"doc_id": doc_id, "grids": grid_jsons, "page_text": page_text},
+        data={"doc_id": doc_id, "grids": grid_jsons, "page_text": wrapped_page_text},
         provenance=provenance,
     )
+    return mark_injection(result, *raw_page_texts)
