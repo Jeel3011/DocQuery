@@ -337,8 +337,15 @@ def run_agent(
                     )
                     yield {"type": "gate", "name": "t3_circuit_breaker", "pass": False,
                            "detail": f"repeated failing call blocked: {call.name} sig={_call_sig}"}
-                    messages.append({"role": "user", "content": redirect_msg})
-                    break  # inject the redirect and let the model respond to it
+                    # PROTOCOL: every tool_call in the assistant turn MUST get a tool_result
+                    # message, or the next model.invoke 400s ("tool_call_ids did not have
+                    # response messages") and the run degrades to a BLANK answer (observed live
+                    # on a multi-tool-call harness turn). So respond to the BLOCKED call with a
+                    # synthetic result carrying the redirect, then CONTINUE to its siblings —
+                    # never `break` and leave declared calls unanswered.
+                    messages.append(_tool_result_message(
+                        call, {"ok": False, "summary": redirect_msg, "error": redirect_msg}))
+                    continue  # answer the remaining sibling calls in this turn
 
                 yield {"type": "tool_call", "name": call.name,
                        "args_summary": _args_summary(call.args),
@@ -392,7 +399,7 @@ def run_agent(
                         })
             else:
                 continue  # all tool calls processed normally — let the model respond
-            continue  # a break inside the for-loop (redirect injected) — also let model respond
+            continue  # for-loop has no break (every call gets a tool_result) — let model respond
 
         # No tool calls → the model thinks it's done. Run the output gates (A3).
         # A raising gate_fn fails CLOSED (withhold) — same contract as _default_gate.

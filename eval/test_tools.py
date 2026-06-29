@@ -156,6 +156,17 @@ def main() -> int:
          and "amzn-20221231.pdf" in (r.get("error") or ""),
          "read_document: unknown doc → error naming loaded docs (no silent fallback)")
 
+    # Harness never-blank guard (live Phase-2 bug): a doc that resolves but returns NO
+    # content with the given args (table_grids=false, no page_range, no full_text) must come
+    # back with an ACTIONABLE summary pointing to full_text=true / read_section — NOT a
+    # silent empty ok envelope (which made the agent degrade to a blank answer). With no
+    # db_client and table_grids=false there are no grids and no page_text → the guard fires.
+    r = read_document("some-doc-id", db_client=None, table_grids=False)
+    c.ok(is_envelope(r) and r["ok"] and not r["data"]["grids"] and not r["data"]["page_text"],
+         "read_document: no-content read still returns an ok envelope (no raise)")
+    c.ok("full_text=true" in (r.get("summary") or "") and "read_section" in (r.get("summary") or ""),
+         "read_document: no-content read's summary points to full_text/read_section (never silently blank)")
+
     # Doc-miss WITH a db_client: the doc's grids load FRESH and JOIN the run's grid
     # scope, so a follow-up compute can use them (live: the model read the right doc
     # but compute said "document not in scope").

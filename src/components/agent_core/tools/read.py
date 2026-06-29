@@ -381,6 +381,18 @@ def read_document(
         {**pt, "text": wrap_untrusted(pt.get("text", ""))} for pt in page_text
     ]
     summary = f"read_document {doc_id}: {len(grid_jsons)} grid(s), {len(page_text)} text page(s)"
+    # Harness never-blank guard: this branch returns grids (+ page_text ONLY when a
+    # page_range is given). If the call yielded NO content — e.g. table_grids=false with no
+    # page_range, or both content paths off — return an ACTIONABLE repair hint instead of a
+    # silent empty ok envelope (observed live: the agent read 0 pages and then degraded to a
+    # blank answer). Tell it how to actually read the prose: full_text=true / read_section.
+    if not grid_jsons and not page_text:
+        summary = (
+            f"read_document {doc_id}: returned no content with these arguments. To READ THE "
+            f"PROSE call read_document(doc_id, full_text=true) (the harness way to read a "
+            f"contract), or read_section(doc_id, heading=...) for one clause, or pass a "
+            f"page_range to get those pages. table_grids alone returns only tables."
+        )
     result = ok_result(
         summary=summary,
         data={"doc_id": doc_id, "grids": grid_jsons, "page_text": wrapped_page_text},

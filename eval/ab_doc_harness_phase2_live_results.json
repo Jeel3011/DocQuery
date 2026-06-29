@@ -1,0 +1,107 @@
+{
+  "vault": "contracts",
+  "doc": "Document.pdf (Sezzle)",
+  "model": "gpt-5.4",
+  "a_hits": 1,
+  "b_hits": 3,
+  "b_cited": 3,
+  "recovered": 2,
+  "regressed": 0,
+  "audit_rows_derived": 6,
+  "audit_rows_written_live": 6,
+  "rows": [
+    {
+      "q": "Under this consulting agreement, what law governs the agreement?",
+      "gold_any": [
+        "minnesota"
+      ],
+      "why": "\u00a79 governing law \u2014 Minnesota",
+      "A_hit": false,
+      "B_hit": true,
+      "B_cited": true,
+      "verdict": "RECOVERED (A false-abstain \u2192 B cited answer)",
+      "n_audit_rows_derived": 1,
+      "A": {
+        "answer": "The agreement is governed by the laws of the State of New York. The governing-law clause states: \u201cThe Plan and the rights of all persons under the Plan shall be construed and administered in accordance with the laws of the State of New York without regard to its conflict of law principles.\u201d [EX-10.01.pdf p.1]",
+        "tools": [
+          "search_vault",
+          "read_document"
+        ],
+        "n_sources": 4
+      },
+      "B": {
+        "answer": "The consulting agreement is governed by **the laws of the State of Minnesota**. The agreement states: \u201c**This Agreement shall be governed by and construed in accordance with the laws of the State of Minnesota, without regard to its conflict of laws principles.**\u201d [Document.pdf p.1]",
+        "tools": [
+          "list_documents",
+          "search_text",
+          "search_text"
+        ],
+        "n_sources": 2
+      }
+    },
+    {
+      "q": "How can either party terminate this consulting agreement, and is there a cure period?",
+      "gold_any": [
+        "cure"
+      ],
+      "why": "\u00a74: terminate on written notice if the other party breaches a material term and fails to cure; or by mutual agreement on notice",
+      "A_hit": true,
+      "B_hit": true,
+      "B_cited": true,
+      "verdict": "=",
+      "n_audit_rows_derived": 3,
+      "A": {
+        "answer": "I can\u2019t verify the termination terms of a consulting agreement from the document currently in scope. The document I reviewed is titled \u201cALPHABET INC. AMENDED AND RESTATED 2021 STOCK PLAN\u201d [EX-10.01.pdf p.1].\n\nThis document does not provide bilateral consulting-agreement termination mechanics. It states: \u201cNothing contained in the Plan or any agreement evidence the grant of any Incentive Award shall confer upon any Participant any right with respect to the continuation of his employment by or service to the Company or interfere in any way with the right of the Company at any time to terminate such employment or service\u201d [EX-10.01.pdf p.1].\n\nIt also states: \u201cThe agreement evidencing the grant of each Option shall specify the consequences with respect to such Option of the termination of the employment or other service between the Company and the Participant holding the Option\u201d [EX-10.01.pdf p.1].\n\nI therefore cannot verify from this document:\n- how either party to a consulting agreement may terminate, or\n- whether there is a cure period.\n\nPlease provide the consulting agreement itself, and I can quote the exact termination and cure provisions.",
+        "tools": [
+          "search_vault",
+          "search_vault",
+          "read_document"
+        ],
+        "n_sources": 5
+      },
+      "B": {
+        "answer": "Either party can terminate **for cause** by written notice if the other party materially breaches the agreement and does not cure within **10 days** after receiving notice of the breach. Specifically: \u201cEither party may terminate this Agreement immediately upon written notice if the other party breaches any material term of this Agreement and fails to cure such breach within ten (10) days of receipt of written notice of the breach.\u201d [Document.pdf p.1]\n\nFor **termination for convenience**, the agreement states: \u201cParties may terminate this Agreement at any time, with or without cause, by mutual agreement on notice.\u201d [Document.pdf p.1] That means termination without cause is only provided for **by mutual agreement**, not unilaterally by either party. [Document.pdf p.1]\n\nSo, **yes, there is a cure period**: **10 days** for a material breach before termination for cause can be effected. [Document.pdf p.1]",
+        "tools": [
+          "list_documents",
+          "search_text",
+          "read_document",
+          "read_document"
+        ],
+        "n_sources": 2
+      }
+    },
+    {
+      "q": "What are the consultant's confidentiality obligations under this agreement?",
+      "gold_any": [
+        "non-public",
+        "prior written consent",
+        "third party"
+      ],
+      "why": "\u00a75: maintain confidentiality of all non-public information; no disclosure to third parties without prior written consent",
+      "A_hit": false,
+      "B_hit": true,
+      "B_cited": true,
+      "verdict": "RECOVERED (A false-abstain \u2192 B cited answer)",
+      "n_audit_rows_derived": 2,
+      "A": {
+        "answer": "I can\u2019t verify any consultant confidentiality obligations from this document because the document in scope is an **Alphabet Inc. Amended and Restated 2021 Stock Plan**, not a consulting agreement, and the text I reviewed does not contain a confidentiality clause for consultants [EX-10.01.pdf p.1].\n\nWhat the document does say is that consultants are merely eligible to receive Incentive Awards: \u201cThe Persons who shall be eligible to be selected by the Committee from time to time to receive Incentive Awards pursuant to the Plan shall be those Persons (a) who are employees and consultants of, or who render services directly or indirectly to, the Company...\u201d [EX-10.01.pdf p.1].\n\nIf you want the consultant\u2019s confidentiality obligations, please provide the actual consulting agreement or the exhibit/section containing the confidentiality clause, and I can extract the exact obligations clause-by-clause.",
+        "tools": [
+          "search_vault",
+          "search_vault",
+          "read_document"
+        ],
+        "n_sources": 5
+      },
+      "B": {
+        "answer": "The consultant\u2019s confidentiality obligations are:\n\n- \u201cConsultant agrees to maintain the confidentiality of all non-public information disclosed by the Company in connection with this Agreement, including but not limited to trade secrets, business plans, and customer information (\u2018Confidential Information\u2019).\u201d [Document.pdf p.1]\n- \u201cConsultant shall not disclose any Confidential Information to any third party without the prior written consent of the Company.\u201d [Document.pdf p.1]",
+        "tools": [
+          "list_documents",
+          "search_text",
+          "search_text",
+          "read_document"
+        ],
+        "n_sources": 2
+      }
+    }
+  ]
+}

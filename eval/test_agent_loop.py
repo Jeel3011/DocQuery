@@ -326,6 +326,73 @@ def main() -> int:
     c.ok(soft_tokens and "513,983" in soft_tokens[0]["text"],
          "T3: run delivers correctly after soft-hint + model change (no over-block)")
 
+    # ── 10b. T3 protocol: a BLOCKED call in a MULTI-tool-call turn still gets a ────
+    # tool_result, so the next invoke doesn't 400 ("tool_call_ids without responses")
+    # and degrade to a BLANK answer. This is the live Phase-2 blank-answer bug: the
+    # model emitted two tool_calls in one turn, one tripped the repeat cap, the loop
+    # `break`-ed and left the sibling's tool_call_id unanswered → 400 → empty answer.
+    print("\n── T3 protocol: multi-tool-call turn answers EVERY tool_call_id ──────")
+
+    class _ProtocolModel(ScriptedModel):
+        """Snapshots the messages on EACH invoke so we can assert every assistant
+        tool_use block has a matching tool_result before the next request."""
+        def __init__(self, script):
+            super().__init__(script)
+            self.snapshots = []
+        def invoke(self, messages, tools):
+            self.snapshots.append(_copy.deepcopy(messages))
+            return super().invoke(messages, tools)
+
+    # Prime the repeat counter on a failing compute (idx 7), then in a LATER turn issue
+    # TWO calls at once: the same blocked compute + a sibling good lookup. The blocked one
+    # must still receive a synthetic tool_result so the good sibling's turn is protocol-valid.
+    multi_script = [
+        ModelResponse(text="p1", tool_calls=[_failing_compute_tc(7)]),   # count→1
+        ModelResponse(text="p2", tool_calls=[_failing_compute_tc(7)]),   # count→2 (cap reached)
+        # one assistant turn, TWO tool calls: blocked compute + a real lookup
+        ModelResponse(text="p3", tool_calls=[
+            _failing_compute_tc(7),  # BLOCKED — must still get a tool_result
+            ToolCall(id="good9", name="compute",
+                     args={"op": "value", "row": {"label": "Total net sales"},
+                           "period": "2022"})]),
+        ModelResponse(text="Net sales were 513,983 [amzn-2022 p.41].", tool_calls=[]),
+    ]
+    pm = _ProtocolModel(multi_script)
+    multi_events = collect(run_agent("multi tool block", model=pm,
+                                     scope=scope, budget=std_budget()))
+
+    def _tool_use_ids(msg):
+        ids = []
+        if isinstance(msg.get("content"), list):
+            for b in msg["content"]:
+                if isinstance(b, dict) and b.get("type") == "tool_use":
+                    ids.append(b.get("id"))
+        return ids
+
+    def _tool_result_ids(msg):
+        ids = []
+        if isinstance(msg.get("content"), list):
+            for b in msg["content"]:
+                if isinstance(b, dict) and b.get("type") == "tool_result":
+                    ids.append(b.get("tool_use_id"))
+        return ids
+
+    # The LAST snapshot (the delivery invoke) must contain a tool_result for EVERY tool_use
+    # id ever declared — including the blocked one. That's the protocol invariant the 400
+    # enforced; if it holds, no 400, no blank.
+    final_msgs = pm.snapshots[-1] if pm.snapshots else []
+    declared, answered = set(), set()
+    for m in final_msgs:
+        declared.update(_tool_use_ids(m))
+        answered.update(_tool_result_ids(m))
+    c.ok(declared and declared <= answered,
+         "T3 protocol: every declared tool_use id (incl. the blocked call) has a tool_result")
+    multi_tokens = [e for e in multi_events if e["type"] == "token"]
+    c.ok(multi_tokens and multi_tokens[0]["text"].strip(),
+         "T3 protocol: run delivers a NON-EMPTY answer (no 400-degrade blank)")
+    c.ok(multi_tokens and "513,983" in multi_tokens[0]["text"],
+         "T3 protocol: the good sibling call still resolves and is delivered")
+
     # ── 11. T5(a): empty-scope notice ─────────────────────────────────────────────
     print("\n── T5(a): empty-scope notice ───────────────────────────────────────")
 
