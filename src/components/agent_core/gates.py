@@ -79,23 +79,73 @@ def _ledger_cells(ledger: EvidenceLedger) -> List[_CellLike]:
 
 # ── Gate 1: every figure traces to a cell ───────────────────────────────────────
 
+def _untraced_figures(text: str, cells: List[_CellLike]) -> List[str]:
+    """The substantive figure-tokens in `text` that figure_traces_to_cells does NOT vouch
+    for. Used to ask the de-correlated question: are these grounded in a READ span instead?"""
+    from src.components.brain.monitoring.invariants import figure_traces_to_cells
+    out: List[str] = []
+    for tok in _NUM_RE.findall(text or ""):
+        t = tok.strip()
+        if not _has_substantive_figure(t):
+            continue
+        # A figure is "traced" only if it POSITIVELY matches a cell (decided AND ok).
+        # With no cells the check is undecided (ok=True by default) — that is NOT a trace,
+        # so the figure is untraced and must find a verbatim span home or fail.
+        chk = figure_traces_to_cells(t, cells)
+        if not (chk.decided and chk.ok):
+            out.append(t)
+    return out
+
+
+def _figure_in_spans(figure: str, corpus: str) -> bool:
+    """True if a stated figure appears VERBATIM in the read-span corpus. The document
+    itself stated this number in prose (e.g. '...approximately 53%...', '$2.3 billion')
+    and the agent READ that passage — so the span IS the figure's provenance, the same
+    evidence principle the qualitative gate uses (T8). This does NOT loosen the numeric
+    moat: a COMPUTED or invented figure has no verbatim home in any read passage; only a
+    figure the source explicitly asserts and the agent actually read can match."""
+    digits = figure.strip().lstrip("$").strip()
+    if not digits:
+        return False
+    return digits.lower() in corpus
+
+
+def _figures_grounded_in_spans(figures: List[str], ledger: EvidenceLedger) -> bool:
+    """Every untraced figure must appear verbatim in a read span — else fail closed."""
+    if not figures:
+        return True
+    corpus = _span_text(ledger)
+    if not corpus:
+        return False
+    return all(_figure_in_spans(f, corpus) for f in figures)
+
+
 def verify_numbers(draft: str, ledger: EvidenceLedger) -> Dict[str, Any]:
-    """Fail if any substantive figure in the draft traces to no ledger cell."""
+    """Fail if any substantive figure in the draft traces to neither a ledger cell NOR a
+    verbatim read span (a figure the document STATES IN PROSE, read + quoted by the agent)."""
     from src.components.brain.monitoring.invariants import figure_traces_to_cells
 
     cells = _ledger_cells(ledger)
     traceable = _strip_citations(draft)  # citation markers are provenance, not figures
     check = figure_traces_to_cells(traceable, cells)
-    # decided=False (no cells to trace against) → can't vouch for any stated figure.
-    # If the draft states figures but the ledger is empty, that's a FAIL (free-floating
-    # numbers); if the draft states no figures, it passes vacuously.
+    # decided=False (no cells to trace against) → can't vouch via cells. But a figure the
+    # SOURCE stated in prose and the agent READ is grounded by that span — check there
+    # before failing (kills the false-abstain on a document-stated percentage like 53%).
     if not check.decided:
-        has_fig = bool(_has_substantive_figure(traceable))
-        if has_fig:
+        untraced = _untraced_figures(traceable, cells)  # cells empty ⇒ all substantive figs
+        if untraced and not _figures_grounded_in_spans(untraced, ledger):
             return {"name": "verify_numbers", "pass": False,
-                    "detail": "draft states figures but no source cells were gathered"}
-        return {"name": "verify_numbers", "pass": True, "detail": "no figures to verify"}
-    return {"name": "verify_numbers", "pass": bool(check.ok), "detail": check.detail}
+                    "detail": "draft states figures grounded in neither a source cell nor a read span"}
+        return {"name": "verify_numbers", "pass": True,
+                "detail": "no figures to verify" if not untraced else "figures grounded in read spans"}
+    if check.ok:
+        return {"name": "verify_numbers", "pass": True, "detail": check.detail}
+    # Cell-trace failed for SOME figure — give the document-stated ones a span home before redacting.
+    untraced = _untraced_figures(traceable, cells)
+    if _figures_grounded_in_spans(untraced, ledger):
+        return {"name": "verify_numbers", "pass": True,
+                "detail": "untraced figures grounded verbatim in read spans"}
+    return {"name": "verify_numbers", "pass": False, "detail": check.detail}
 
 
 _NUM_RE = re.compile(r"\$?\s*\d[\d,]*\.?\d*")

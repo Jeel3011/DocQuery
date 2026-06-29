@@ -95,6 +95,31 @@ def main() -> int:
     r = verify_numbers("Revenue increased by 47,500 [msft-fy22 p.95].", led_delta)
     c.ok(not r["pass"], "non-result figure still fails with params present")
 
+    # ── verify_numbers: a figure the DOCUMENT STATES IN PROSE (harness read it) ──────
+    # The harness reads the real doc, so a percentage/stat the filing itself asserts
+    # ("approximately 53% ... were international") is grounded by the READ SPAN — not a
+    # computed cell. Forcing it through compute (which can't re-derive a prose number)
+    # made the agent abstain on a correct, doc-stated fact. The span-trace escape fixes
+    # that WITHOUT loosening the moat: an invented/computed figure has no verbatim span.
+    led_prose = EvidenceLedger()
+    led_prose.record("read_document", 1, [{"kind": "span", "doc": "goog-2023", "page": 15,
+        "snippet": "International revenues accounted for approximately 53% of our "
+                   "consolidated revenues in 2023."}])
+    r = verify_numbers("About 53% of consolidated revenues were international in 2023 "
+                       "[goog-2023 p.15].", led_prose)
+    c.ok(r["pass"], "prose-stated 53% grounds on the read span (Q1 false-abstain fix)")
+    led_big = EvidenceLedger()
+    led_big.record("read_document", 1, [{"kind": "span", "doc": "f", "page": 5,
+        "snippet": "total stated revenue was 2,300 million for the year"}])
+    r = verify_numbers("The filing states revenue of 2,300 million [f p.5].", led_big)
+    c.ok(r["pass"], "prose-stated substantive figure grounds on the read span")
+    # MOAT: an invented big figure with NO matching span and NO cell still FAILS.
+    led_bad = EvidenceLedger()
+    led_bad.record("read_document", 1, [{"kind": "span", "doc": "f", "page": 5,
+        "snippet": "unrelated narrative about market strategy and competition"}])
+    r = verify_numbers("The total was 513,983 million [f p.5].", led_bad)
+    c.ok(not r["pass"], "invented 513,983 with no span/cell home still FAILS (moat intact)")
+
     print("\n── verify_citations (marker presence) ───────────────────────────")
     r = verify_citations("Net sales were 513,983 [amzn-2022 p.41].", led)
     c.ok(r["pass"], "cited factual sentence passes")
