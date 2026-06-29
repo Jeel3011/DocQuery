@@ -1,0 +1,111 @@
+{
+  "vault": "very big",
+  "model": "gpt-5.4",
+  "a_hits": 1,
+  "b_hits": 2,
+  "recovered": 1,
+  "regressed": 0,
+  "rows": [
+    {
+      "q": "In Alphabet's 2023 10-K, what percentage of consolidated revenues were international in 2023?",
+      "gold_any": [
+        "53%",
+        "approximately 53",
+        "53 percent"
+      ],
+      "A_hit": false,
+      "B_hit": true,
+      "verdict": "RECOVERED (A missed \u2192 B hit)",
+      "A": {
+        "answer": "I could not verify the percentage through a numeric tool computation within the remaining budget.\n\n_Note: I removed one or more statements I could not verify against the source documents. I'm not stating anything I couldn't confirm._",
+        "n_sources": 116,
+        "tools": [
+          "search_vault",
+          "read_document",
+          "list_metrics",
+          "search_vault",
+          "read_document",
+          "compute",
+          "read_document"
+        ]
+      },
+      "B": {
+        "answer": "I couldn\u2019t verify the requested percentage through a `compute` or `table_lookup` result within the remaining budget. [goog-20231231.pdf p.37]\n\nBecause I do not have a successful numeric tool result deriving the international percentage, I cannot restate **53%** as a fully verified computed figure under your verification rule. [goog-20231231.pdf p.15]\n\n_Note: I removed one or more statements I could not verify against the source documents. I'm not stating anything I couldn't confirm._",
+        "n_sources": 96,
+        "tools": [
+          "list_documents",
+          "list_documents",
+          "search_text",
+          "search_text",
+          "search_text",
+          "read_document",
+          "compute"
+        ]
+      }
+    },
+    {
+      "q": "In Alphabet's 2023 10-K, roughly what share of total revenues came from online advertising in 2023?",
+      "gold_any": [
+        "75%",
+        "more than 75",
+        "greater than 75",
+        "75 percent"
+      ],
+      "A_hit": false,
+      "B_hit": false,
+      "verdict": "=",
+      "A": {
+        "answer": "**About 77%**. [goog-20231231.pdf p.36]\n\n- **Google advertising (2023): 237,855** million [goog-20231231.pdf p.36]  \n- **Total revenues (2023): 307,394** million [goog-20231231.pdf p.36]  \n- **Ratio: 237,855 / 307,394 = 0.7738x** [goog-20231231.pdf p.36]\n\n_Note: I removed one or more statements I could not verify against the source documents. I'm not stating anything I couldn't confirm._",
+        "n_sources": 21,
+        "tools": [
+          "search_vault",
+          "search_vault",
+          "search_vault",
+          "read_document",
+          "compute"
+        ]
+      },
+      "B": {
+        "answer": "Roughly **77%** of Alphabet\u2019s total revenues came from online advertising in 2023.[goog-20231231.pdf p.36]\n\nSupporting figures:\n- **Google advertising:** **237,855** million.[goog-20231231.pdf p.36]\n- **Total revenues:** **307,394** million.[goog-20231231.pdf p.36]\n- Computed share: **237,855 / 307,394 = 0.7738x**, or about **77%**.[goog-20231231.pdf p.36]",
+        "n_sources": 4,
+        "tools": [
+          "list_documents",
+          "list_documents",
+          "read_document",
+          "compute"
+        ]
+      }
+    },
+    {
+      "q": "In Alphabet's 2023 10-K, how do the rights of the different classes of common/capital stock differ?",
+      "gold_any": [
+        "voting",
+        "identical",
+        "except with respect to voting"
+      ],
+      "A_hit": true,
+      "B_hit": true,
+      "verdict": "=",
+      "A": {
+        "answer": "The classes differ only in voting rights, plus Class B has a conversion feature. [goog-20231231.pdf p.81]\n\n- \u201cThe rights of the holders of each class of our common and capital stock are identical, except with respect to voting.\u201d [goog-20231231.pdf p.81]\n- \u201cEach share of Class A common stock is entitled to one vote per share.\u201d [goog-20231231.pdf p.81]\n- \u201cEach share of Class B common stock is entitled to 10 votes per share.\u201d [goog-20231231.pdf p.81]\n- \u201cClass C capital stock has no voting rights, except as required by applicable law.\u201d [goog-20231231.pdf p.81]\n- \u201cShares of Class B common stock may be converted at any time at the option of the stockholder and automatically convert upon sale or transfer to Class A common stock.\u201d [goog-20231231.pdf p.81]\n\nAlso, Alphabet states that the classes have identical dividend and liquidation rights: \u201cThe rights, including the liquidation and dividend rights, of the holders of our Class A, Class B, and Class C stock are identical, except with respect to voting.\u201d [goog-20231231.pdf p.81]",
+        "n_sources": 101,
+        "tools": [
+          "search_vault",
+          "read_document"
+        ]
+      },
+      "B": {
+        "answer": "Alphabet\u2019s 2023 10-K says the stock classes differ primarily in **voting rights**: \u201cOur Class B stock has 10 votes per share, our Class A stock has one vote per share, and our Class C stock has no voting rights.\u201d [goog-20231231.pdf p.23]\n\nThe filing also states that **Class C is generally non-voting except as required by law**: \u201cbecause our Class C stock carries no voting rights (except as required by applicable law)\u201d [goog-20231231.pdf p.23]\n\nSo, in short:\n- **Class B common stock:** 10 votes per share [goog-20231231.pdf p.23]\n- **Class A common stock:** 1 vote per share [goog-20231231.pdf p.23]\n- **Class C capital stock:** no voting rights, except as required by applicable law [goog-20231231.pdf p.23]\n\nI could verify the voting-rights distinction from the 10-K, but I could not verify any further class-specific differences from the materials I was able to access in this vault.",
+        "n_sources": 8,
+        "tools": [
+          "list_documents",
+          "list_documents",
+          "search_text",
+          "search_text",
+          "read_document",
+          "read_document"
+        ]
+      }
+    }
+  ]
+}
