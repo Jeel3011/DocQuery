@@ -491,6 +491,111 @@ def main() -> int:
     c.ok(fetched and fetched[0].get("section_path") == "9. GOVERNING LAW",
          "1.5: text_chunks_for_doc carries metadata.section_path through to read_section")
 
+    # ── Phase 2.4 — L4 record-of-processing audit (DOCUMENT_HARNESS §16.6 Layer 4) ──
+    print("── 2.4 L4 audit (record-of-processing for harness reads) ────────")
+    from src.api.routes.agent_core import (
+        _collect_harness_reads, _harness_audit_rows, _HARNESS_READ_TOOLS,
+    )
+
+    _evs = [
+        {"type": "tool_call", "name": "read_document", "doc_id": "D1"},
+        {"type": "tool_call", "name": "read_section", "doc_id": "D1"},   # same doc, +tool
+        {"type": "tool_call", "name": "read_document", "doc_id": "D1"},  # repeat → still 1 row
+        {"type": "tool_call", "name": "read_document", "doc_id": "D2"},
+        {"type": "tool_call", "name": "search_text"},                    # matter-wide, no doc_id
+        {"type": "tool_call", "name": "list_documents"},
+        {"type": "tool_call", "name": "compute", "doc_id": "D9"},        # grid read, NOT audited
+        {"type": "agent_step", "n": 1},                                  # ignored
+    ]
+    dr, mt = _collect_harness_reads(_evs, harness=True)
+    c.ok(set(dr.keys()) == {"D1", "D2"},
+         "2.4: distinct doc_ids captured (repeat read of D1 collapses to one)")
+    c.ok(dr["D1"] == {"read_document", "read_section"},
+         "2.4: tools that touched a doc are unioned into its row")
+    c.ok("D9" not in dr and mt == {"search_text", "list_documents"},
+         "2.4: compute (grid read) excluded; matter-wide tools captured separately")
+
+    rows = _harness_audit_rows(dr, mt, collection_id="C1", mode="standard", run_id="r1")
+    doc_rows = [r for r in rows if r[0] == "document.read.harness"]
+    mat_rows = [r for r in rows if r[0] == "vault.read.harness"]
+    c.ok(len(doc_rows) == 2, "2.4: ONE audit row per distinct document (2 docs → 2 rows)")
+    c.ok(all(r[1] == "document" and r[3]["collection_id"] == "C1" and r[3]["run_id"] == "r1"
+             for r in doc_rows),
+         "2.4: doc rows carry resource_type=document + matter (collection_id) + run_id")
+    c.ok(len(mat_rows) == 1 and mat_rows[0][2] == "C1" and
+         mat_rows[0][3]["tools"] == ["list_documents", "search_text"],
+         "2.4: one matter-scoped row (resource=collection) lists the matter-wide tools")
+
+    # Flag OFF ⇒ no reads collected ⇒ NO rows (byte-identical record-of-processing).
+    dr_off, mt_off = _collect_harness_reads(_evs, harness=False)
+    c.ok(dr_off == {} and mt_off == set() and
+         _harness_audit_rows(dr_off, mt_off, collection_id="C1", mode="standard",
+                             run_id="r1") == [],
+         "2.4: flag OFF → zero audit rows (byte-identical)")
+
+    # The read tools we audit are exactly the harness content-read set (not the grid moat).
+    c.ok(_HARNESS_READ_TOOLS == frozenset(
+            {"read_document", "read_section", "search_text", "list_documents"}),
+         "2.4: audited tool set = harness content reads (table_lookup/compute excluded)")
+
+    # The loop must surface the raw doc_id on the tool_call event so the route can audit it
+    # (it can't reliably parse it back out of the truncated args_summary). Lock that field.
+    import inspect
+    from src.components.agent_core import loop as _loop
+    _loop_src = inspect.getsource(_loop)
+    c.ok('"doc_id": call.args.get("doc_id")' in _loop_src,
+         "2.4: tool_call event carries raw doc_id for the route's L4 audit")
+
+    # ── Phase 2.1/2.2 — chat & draft modes offer the harness tools behind the flag ──
+    print("── 2.1/2.2 chat+draft serve harness tools (flag-gated) ──────────")
+    from src.components.agent_core.registry import REGISTRY as _REG
+    _HFS = {"list_documents", "search_text", "read_document", "read_section"}
+    for _mode in ("standard", "deep", "draft", "grid"):
+        _off = _REG.names(_mode, harness=False)
+        _on = _REG.names(_mode, harness=True)
+        c.ok("search_vault" in _off and "search_vault" not in _on,
+             f"2.1: {_mode} swaps search_vault→harness fs when on; keeps it when off")
+        c.ok(_HFS <= set(_on),
+             f"2.1: {_mode} offers the document-filesystem tools when harness on")
+        # The numeric moat rides every mode unchanged (harness only swaps the search path).
+        c.ok({"table_lookup", "compute"} <= set(_on),
+             f"2.1: {_mode} keeps the numeric moat (table_lookup/compute) under harness")
+    c.ok(_HFS <= set(_REG.names("draft", harness=True)),
+         "2.2: draft inherits the harness toolset (same engine, prompt overlay only)")
+
+    # ── Phase 2.3 — search-ladder overlay (rungs 3–4) + structural repair nudge ──────
+    print("── 2.3 search ladder: synonym→expand→whole-doc-read (flag-gated) ─")
+    from src.components.agent_core.prompt import (
+        system_prompt as _sysp, SYSTEM_PROMPT_V1 as _BASE,
+        DEEP_PROMPT_SUFFIX as _DEEP, DRAFT_PROMPT_SUFFIX as _DRAFTP,
+        HARNESS_PROMPT_SUFFIX as _HARN,
+    )
+    # Flag OFF ⇒ byte-identical prompt (no ladder overlay).
+    c.ok(_sysp("v1", "standard", harness=False) == _BASE and _sysp("v1", "standard") == _BASE,
+         "2.3: harness=False prompt is byte-identical (no ladder overlay)")
+    c.ok(_sysp("v1", "deep", harness=False) == _BASE + _DEEP and
+         _sysp("v1", "draft", harness=False) == _BASE + _DRAFTP,
+         "2.3: deep/draft overlays unchanged when harness off")
+    # Flag ON ⇒ ladder overlay appended, and it COMPOSES with deep/draft.
+    c.ok(_sysp("v1", "standard", harness=True) == _BASE + _HARN,
+         "2.3: harness on appends the search-ladder overlay")
+    c.ok(_sysp("v1", "deep", harness=True) == _BASE + _DEEP + _HARN and
+         _sysp("v1", "draft", harness=True) == _BASE + _DRAFTP + _HARN,
+         "2.3: ladder overlay composes with deep AND draft overlays")
+    # The overlay actually teaches rungs 2→4 (synonyms, expansion, whole-doc read).
+    c.ok(all(k in _HARN for k in ("any_of", "read_document", "read_section", "whole")),
+         "2.3: overlay names rung-2 any_of, rung-3 expansion, rung-4 whole-doc read")
+
+    # Structural repair nudge: search_text's 0-hit summary mirrors the ladder (a de-correlated
+    # signal that backs the prompt — not a model self-check).
+    _zero = search_text("a_phrase_that_will_not_match_anything_xyzzy",
+                        db_client=db, filename_by_doc=fb, scope_doc_ids=[DOC_UUID])
+    _zmsg = _zero.get("summary", "").lower()
+    c.ok(_zero.get("ok") and "0 hit" in _zmsg,
+         "2.3: a no-match grep returns ok with a 0-hit summary (not a crash/abstain)")
+    c.ok("any_of" in _zmsg and "read_document" in _zmsg and "wording" in _zmsg,
+         "2.3: 0-hit repair hint climbs the ladder (any_of → expand wording → read whole)")
+
     print(f"\n{c.passed} passed, {c.failed} failed")
     return 0 if c.failed == 0 else 1
 

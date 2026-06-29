@@ -341,7 +341,12 @@ def run_agent(
                     break  # inject the redirect and let the model respond to it
 
                 yield {"type": "tool_call", "name": call.name,
-                       "args_summary": _args_summary(call.args)}
+                       "args_summary": _args_summary(call.args),
+                       # L4 (DOCUMENT_HARNESS §16.6 Layer 4): surface the raw doc_id a read
+                       # tool targeted so the route can write a record-of-processing audit row
+                       # (it can't reliably parse it back out of the truncated args_summary).
+                       # Additive field — existing consumers (tracer/_translate) ignore it.
+                       "doc_id": call.args.get("doc_id") if isinstance(call.args, dict) else None}
                 result = registry.execute(call, scope)
                 ok = bool(result.get("ok"))
                 n_prov = ledger.record(call.name, step, result.get("provenance"))

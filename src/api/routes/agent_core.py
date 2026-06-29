@@ -48,6 +48,7 @@ from src.api.routes.chat import (
     _saving_stream_wrapper,
     _embed_query,
 )
+from src.api.routes.audit import log_audit  # L4: record-of-processing for harness reads
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -56,6 +57,61 @@ logger = logging.getLogger(__name__)
 def _sse(payload: dict) -> str:
     """One SSE line."""
     return f"data: {json.dumps(payload, default=str)}\n\n"
+
+
+# ── L4 (DOCUMENT_HARNESS §16.6 Layer 4 / task 2.4): record-of-processing audit ──────
+# When the harness is on, the agent reads real firm-document content. DPDP / F2k require a
+# durable record of who accessed which document and when. These two helpers are PURE (no
+# DB, no FastAPI) so the gate can assert the row set directly: given the run's loop events,
+# produce ONE audit row PER DISTINCT DOCUMENT (a doc read N times ⇒ one row, the tools that
+# touched it kept in metadata) plus one matter-scoped row when matter-wide tools (search_
+# text greps the whole vault, list_documents enumerates it) ran with no single doc_id.
+# Flag OFF ⇒ no harness reads happen ⇒ empty ⇒ no rows (byte-identical).
+
+# Harness read tools that surface firm-document content. table_lookup/compute read GRIDS
+# (numeric moat, already preloaded) — they aren't a document content-read, so excluded.
+_HARNESS_READ_TOOLS = frozenset({"read_document", "read_section", "search_text",
+                                 "list_documents"})
+
+
+def _collect_harness_reads(events, harness: bool):
+    """Fold loop `tool_call` events → (doc_reads, matter_read_tools).
+
+    `doc_reads`: {doc_id: set(tool names that read it)} for doc-targeted reads.
+    `matter_read_tools`: set(tool names) for matter-wide reads (no single doc_id).
+    Returns empty containers when `harness` is False (flag-off identity).
+    """
+    doc_reads: dict = {}
+    matter_read_tools: set = set()
+    if not harness:
+        return doc_reads, matter_read_tools
+    for ev in events:
+        if not isinstance(ev, dict) or ev.get("type") != "tool_call":
+            continue
+        name = ev.get("name")
+        if name not in _HARNESS_READ_TOOLS:
+            continue
+        doc_id = ev.get("doc_id")
+        if doc_id:
+            doc_reads.setdefault(str(doc_id), set()).add(name)
+        else:
+            matter_read_tools.add(name)
+    return doc_reads, matter_read_tools
+
+
+def _harness_audit_rows(doc_reads, matter_read_tools, *, collection_id, mode, run_id):
+    """Build the list of (action, resource_type, resource_id, metadata) audit rows for one
+    run. One row per distinct document, plus one matter-scoped row if matter-wide reads ran.
+    Pure — the route maps each tuple through `log_audit(sb, *tuple)`."""
+    rows = []
+    for doc_id, tools in sorted(doc_reads.items()):
+        rows.append(("document.read.harness", "document", doc_id,
+                     {"collection_id": collection_id, "tools": sorted(tools),
+                      "mode": mode, "run_id": run_id}))
+    if matter_read_tools:
+        rows.append(("vault.read.harness", "collection", str(collection_id),
+                     {"tools": sorted(matter_read_tools), "mode": mode, "run_id": run_id}))
+    return rows
 
 
 # Map loop §3.6 event dicts → SSE payloads the frontend (and saving wrapper) consume.
@@ -354,7 +410,10 @@ async def agentcore_query_stream(
     budget = budget_for(mode, user_config)
     # G5: deep mode gets the Deep Analysis overlay (sectioned report + breadth-first
     # workflow) on top of the shared base contract; standard/fast get the base prompt.
-    sys_prompt = system_prompt("v1", mode=mode)
+    # DOCUMENT_HARNESS Phase 2 (2.3): in harness mode also append the search-ladder overlay
+    # (synonym/expansion/whole-doc-read climb — rungs 3–4) so the agent reads the real doc
+    # before abstaining. Flag OFF ⇒ harness=False ⇒ byte-identical prompt.
+    sys_prompt = system_prompt("v1", mode=mode, harness=scope.harness)
 
     try:
         model = build_model(mode, budget, user_config, system=sys_prompt)
@@ -391,6 +450,35 @@ async def agentcore_query_stream(
     from src.components.agent_core.loop import make_question_gate
     gate_fn = make_question_gate(body.question, sectioned=(mode in ("deep", "draft")))
 
+    # ── L4 record-of-processing (task 2.4) — see _collect_harness_reads / _harness_audit_rows
+    # above. We accumulate distinct doc reads during the run and write the rows in the
+    # `finally` block (so a degraded/errored run still records what it read). Actor =
+    # sb.user_id (the session client, RLS-bound — Layer 2, never a tool arg); ts = the
+    # audit_log server clock; retention = the table's F2k floor (≥365d). Flag OFF ⇒ no
+    # harness reads ⇒ no rows (byte-identical).
+    _doc_reads: dict = {}                   # doc_id → {tool names that read it}
+    _matter_read_tools: set = set()         # matter-wide reads (search_text/list_documents)
+
+    def _capture_read(ev: dict) -> None:
+        if not scope.harness or not isinstance(ev, dict) or ev.get("type") != "tool_call":
+            return
+        name = ev.get("name")
+        if name not in _HARNESS_READ_TOOLS:
+            return
+        doc_id = ev.get("doc_id")
+        if doc_id:
+            _doc_reads.setdefault(str(doc_id), set()).add(name)
+        else:
+            _matter_read_tools.add(name)
+
+    def _flush_audit() -> None:
+        rows = _harness_audit_rows(
+            _doc_reads, _matter_read_tools,
+            collection_id=collection_id, mode=mode, run_id=tracer.run_id,
+        ) if scope.harness else []
+        for action, rtype, rid, meta in rows:
+            log_audit(sb, action, rtype, rid, meta)
+
     def _agent_stream():
         try:
             for ev in run_agent(
@@ -405,6 +493,7 @@ async def agentcore_query_stream(
                 tools=run_tools,            # G8.7: vault-off strips vault tools; None = default
             ):
                 tracer.record(ev)  # durable journal + health (never raises)
+                _capture_read(ev)  # L4: accumulate distinct harness doc reads (never raises)
                 # Also log compactly to the API stdout for live tailing — but NOT the
                 # per-word `token_delta` previews (one INFO line per word floods the log and
                 # buries the trace events you actually debug from). The tracer still journals
@@ -424,6 +513,12 @@ async def agentcore_query_stream(
                         "content": "I hit an internal error before I could verify an answer, "
                                    "so I'm not stating one. Please try again."})
         finally:
+            # L4: write the record-of-processing audit rows (best-effort; log_audit never
+            # raises). Done here so an errored/degraded run still records what it read.
+            try:
+                _flush_audit()
+            except Exception as exc:  # noqa: BLE001 — audit must never break the stream
+                logger.warning("[agentcore] L4 audit flush failed (non-fatal): %s", exc)
             # Persist the journal + surface health flags (warns in the log if flagged).
             health = tracer.finish()
             if health.get("flags"):

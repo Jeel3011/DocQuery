@@ -189,9 +189,14 @@ def search_text(
     n_docs = len({h["doc_id"] for h in hits})
     summary = f"search_text {query!r}: {len(hits)} hit(s) across {n_docs} doc(s)"
     if not hits:
+        # The repair hint mirrors the search ladder (§16.3②): rung 2 synonyms → rung 3
+        # expand the wording → rung 4 read the doc whole. 0 hits means wrong WORDING far
+        # more often than absent text — climb before abstaining.
         summary = (
-            f"search_text {query!r}: 0 hits — try synonyms via any_of, or read the "
-            f"document whole if it's small"
+            f"search_text {query!r}: 0 hits — grep is exact, so this is likely the wrong "
+            f"WORDING, not absent text. Retry with any_of=[several synonyms/phrasings], "
+            f"then expand the wording (the ways a doc phrases this), then read the "
+            f"document whole (read_document) before concluding it isn't there"
         )
     # Provenance == the hit spans (same shape as a search_vault span → ledger-identical).
     # L3 (§16.11): snippets are short ±120-char grep fragments that ALSO serve as ledger

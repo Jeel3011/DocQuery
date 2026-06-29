@@ -167,14 +167,63 @@ single line: `_Insufficient evidence in the vault to draft this section._` — n
 with uncited generalities."""
 
 
-def system_prompt(version: str = "v1", mode: str = "standard") -> str:
+# ── Harness search-ladder overlay (DOCUMENT_HARNESS Phase 2, §16.3② / ladder §16.3(c)) ─
+# In harness mode the model searches the REAL document with grep-style tools (`search_text`
+# / `read_section` / `read_document`) instead of an embedding index — so it cannot rely on
+# semantic recall to bridge a wording gap. Lexical grep is exact: it misses pure synonyms
+# ("indemnify" vs "hold harmless"). The fix is a LADDER the model climbs before it ever
+# abstains (rungs 3–4 are this overlay; rung 2 `any_of` lives in the search_text schema):
+#   1. exact `search_text(query=...)`            — the literal phrase
+#   2. `search_text(any_of=[synonyms])`          — match ANY of several wordings at once
+#   3. EXPAND the wording yourself, then grep     — think of the 8 ways a doc phrases it
+#   4. `read_document(doc_id)` the WHOLE candidate — stop searching, read it directly
+# The model supplies meaning (synonyms, the expansion); grep supplies precision; the
+# whole-doc read is the escalation that cannot miss. Only after rung 4 comes an HONEST,
+# ACTIONABLE abstain (never a blank) — the never-blank contract.
+HARNESS_PROMPT_SUFFIX = """\
+
+────────────────────────────────────────────────────────────────────────────────
+HOW YOU FIND TEXT (document-filesystem mode — you read the REAL files, like grep + cat):
+
+You search the actual document with `search_text` (exact/lexical grep over the real text), \
+`read_section` (a clause/section by heading or page range), and `read_document` (the whole \
+clean document). There is NO semantic/embedding search here — grep is EXACT, so it will \
+miss a clause that uses DIFFERENT WORDS than your query ("indemnify" vs "hold harmless", \
+"governing law" vs "this Agreement shall be governed by"). When a search comes back empty, \
+that almost never means the clause is absent — it means you searched for the wrong WORDING. \
+CLIMB this ladder before you ever conclude something isn't there:
+1. `search_text(query="…")` — the literal phrase you expect.
+2. `search_text(any_of=["…","…","…"])` — pass SEVERAL synonyms/phrasings at once; grep \
+matches ANY of them in one call. Always prefer this over a single guess.
+3. If still empty, EXPAND the wording yourself: think of the 5–8 ways a contract or filing \
+actually phrases this idea (legal doublets, defined terms, section titles, the verb form) \
+and grep those via `any_of`. You supply the meaning; grep supplies the precision.
+4. STILL empty, or it's a single contract / a short doc? STOP searching and \
+`read_document(doc_id)` the WHOLE thing (or `read_section` the likely part of a long one) \
+and read it directly — a whole-doc read cannot miss a clause that grep's wording skipped. \
+For a small set of candidate docs, read the top one or two whole.
+
+Only after you have honestly climbed this ladder — synonyms, expansion, and a whole-doc \
+read — may you conclude a clause/figure genuinely isn't in the documents. When you do \
+abstain, say WHY (searched several wordings and read the doc; the clause isn't present) and \
+what would resolve it — never a bare "I couldn't find it". Reading the real document is the \
+whole point: use it before you give up."""
+
+
+def system_prompt(version: str = "v1", mode: str = "standard", harness: bool = False) -> str:
     """The system prompt for a run. `mode="deep"` appends the Deep Analysis overlay and
     `mode="draft"` appends the drafting overlay onto the shared base contract (one engine,
     one set of rules — the overlays only add the deliverable shape + workflow). All other
-    modes get the base prompt unchanged."""
+    modes get the base prompt unchanged.
+
+    DOCUMENT_HARNESS Phase 2 (§16.3② / ladder rungs 3–4): when `harness` is True the search-
+    ladder overlay is appended too (synonym/expansion/whole-doc-read climb for grep-style
+    tools). Additive — `harness=False` (every existing caller) is byte-identical."""
     base = SYSTEM_PROMPT_V1
     if mode == "deep":
-        return base + DEEP_PROMPT_SUFFIX
-    if mode == "draft":
-        return base + DRAFT_PROMPT_SUFFIX
+        base = base + DEEP_PROMPT_SUFFIX
+    elif mode == "draft":
+        base = base + DRAFT_PROMPT_SUFFIX
+    if harness:
+        base = base + HARNESS_PROMPT_SUFFIX
     return base
