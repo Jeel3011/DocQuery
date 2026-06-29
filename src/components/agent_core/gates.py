@@ -534,15 +534,65 @@ _WITHHELD_LINE = (
     "documents. I'm not stating anything I couldn't confirm._"
 )
 
+# Harness contract (Jeel, 2026-06-29): NEVER a bare abstain. When a figure can't be
+# verified, keep the SENTENCE (and its citation) but neutralize the unverified FIGURE — an
+# answer with a caveat, never blank and never the wrong number. The moat is preserved: the
+# specific untraced digit is replaced, so a fabricated number is never asserted as fact.
+_FIGURE_CAVEAT = "the figure on the cited page (I couldn't verify the exact number)"
+
+
+def _doc_harness_on() -> bool:
+    """Read the harness flag from the LIVE environment (not the Config class attr, which is
+    evaluated once at import and won't reflect a runtime/per-process setting). The worker/API
+    process exports USE_DOC_HARNESS when the flag is on; flag off ⇒ legacy strip behavior."""
+    import os
+    return os.getenv("USE_DOC_HARNESS", "false").strip().lower() == "true"
+
+
+def _neutralize_untraced_figures(sentence: str, cells: List["_CellLike"],
+                                 ledger: EvidenceLedger) -> str:
+    """Replace each substantive figure in `sentence` that traces to NEITHER a cell NOR a
+    read span with a caveat phrase, leaving the rest of the sentence (and its citation)
+    intact. The result asserts no unverified digit but still answers."""
+    from src.components.brain.monitoring.invariants import figure_traces_to_cells
+    corpus = _span_text(ledger)
+    cite = _CITE_RE.findall(sentence)  # keep the page markers — they're real provenance
+
+    def _repl(m):
+        tok = m.group(0).strip()
+        if not _has_substantive_figure(tok):
+            return m.group(0)
+        chk = figure_traces_to_cells(tok, cells)
+        if chk.decided and chk.ok:
+            return m.group(0)                     # traces to a cell — keep verbatim
+        if _figure_in_spans(tok, corpus):
+            return m.group(0)                     # stated in a read passage — keep verbatim
+        # Untraced computed figure — neutralize. Pad with a leading space because _NUM_RE
+        # consumes the space before the number ("was 513,983" → "was<caveat>" otherwise).
+        return " " + _FIGURE_CAVEAT
+
+    # Only touch the non-citation text so we never mangle a `[doc p.41]` marker's digits.
+    body = _strip_citations(sentence)
+    neutralized = _NUM_RE.sub(_repl, body)
+    # Tidy the seams left where a figure (+ its unit/punctuation) was replaced: collapse
+    # double spaces and a stranded " ." / " ," so the caveat reads as a clean sentence.
+    neutralized = re.sub(r"\s+([.,;])", r"\1", neutralized)
+    neutralized = re.sub(r"\s{2,}", " ", neutralized).strip()
+    # Re-attach the citation markers that were stripped (so the answer stays clickable).
+    if cite and not any(c in neutralized for c in cite):
+        neutralized = f"{neutralized} {' '.join(cite)}".strip()
+    return neutralized
+
 
 def _redact(draft: str, ledger: EvidenceLedger, failures: List[Dict[str, Any]]) -> str:
-    """Strip the offending content and append an explicit withhold line (§3.4).
+    """Turn a gate failure into the BEST honest answer — never a blank.
 
-    Drops: (a) any sentence flagged uncited by verify_citations; (b) any sentence that
-    contains an untraced figure (if verify_numbers failed). Conservative — when in doubt
-    it removes the sentence rather than ship an unverifiable claim."""
-    # `failures` only ever contains gates that FAILED, so a verify_numbers entry being
-    # present IS the signal that numbers failed (no `pass` key to consult).
+    Harness mode (USE_DOC_HARNESS, the default product contract): keep every sentence; for
+    a sentence whose figure can't be verified, neutralize ONLY that figure (caveat) so the
+    answer still ships, cited, with no asserted wrong number. Reading grounds prose, so an
+    'uncited' prose sentence is kept with a soft note rather than deleted.
+
+    Legacy mode (flag off): the original strip-the-sentence behavior, byte-identical."""
     uncited = set()
     numbers_failed = False
     for f in failures:
@@ -554,26 +604,46 @@ def _redact(draft: str, ledger: EvidenceLedger, failures: List[Dict[str, Any]]) 
     cells = _ledger_cells(ledger)
     from src.components.brain.monitoring.invariants import figure_traces_to_cells
 
+    harness = _doc_harness_on()
+
     kept: List[str] = []
+    neutralized_any = False
     for s in _SENT_SPLIT.split(draft or ""):
         st = s.strip()
         if not st:
             continue
+        st_traceable = _strip_citations(st)
+        fig_fails = numbers_failed and _has_substantive_figure(st_traceable) and not (
+            figure_traces_to_cells(st_traceable, cells).decided
+            and figure_traces_to_cells(st_traceable, cells).ok)
+
+        if harness:
+            # NEVER blank: keep the sentence; neutralize an unverified figure in place.
+            if fig_fails:
+                st = _neutralize_untraced_figures(st, cells, ledger)
+                neutralized_any = True
+            # An 'uncited' prose sentence is kept (reading grounds it); a soft note is added
+            # at the end rather than deleting a read fact.
+            kept.append(st)
+            continue
+
+        # ── Legacy strip behavior (flag off) — byte-identical to before ──────────────
         if st in uncited:
             continue
-        st_traceable = _strip_citations(st)  # don't count citation-marker digits as figures
-        if numbers_failed and _has_substantive_figure(st_traceable):
-            # Keep only if THIS sentence's figures PROVABLY trace. Undecided (e.g. an
-            # EMPTY ledger — the model gathered no evidence at all) must redact, not
-            # pass: `decided=False` means "nothing to trace against", and shipping an
-            # unverifiable figure on absence-of-evidence is the exact fail-open §3.4
-            # forbids. Fail closed.
-            chk = figure_traces_to_cells(st_traceable, cells)
-            if not (chk.decided and chk.ok):
-                continue
+        if fig_fails:
+            continue
         kept.append(st)
 
     body = " ".join(kept).strip()
+    if harness:
+        if not body:
+            # Degenerate: nothing was drafted at all. Still answer honestly, not blank.
+            return ("I read the cited material but couldn't fully verify a specific figure; "
+                    "please check the cited pages for the exact number.")
+        note = ("\n\n_Note: where I couldn't verify an exact figure against the source, I've "
+                "flagged it inline rather than state an unconfirmed number._") if (
+                    neutralized_any or uncited) else ""
+        return body + note
     return (body + _WITHHELD_LINE) if body else (
         "I could not verify the requested figures against the source documents, so I'm "
         "not stating them. Please check the cited pages directly." )

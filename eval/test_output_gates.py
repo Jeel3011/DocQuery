@@ -499,6 +499,45 @@ def main() -> int:
             ok = False
         c.ok(ok, f"run_output_gates({bad_in!r}) did not raise")
 
+    # ── _redact: harness contract = NEVER blank, neutralize the bad figure ───────────
+    # (Jeel, 2026-06-29): an answer with a caveat beats a bare abstain; but a fabricated
+    # number must NEVER ship as fact. So in harness mode redaction keeps the sentence and
+    # replaces ONLY an unverifiable figure with a caveat phrase.
+    print("\n── _redact harness mode (never-blank, neutralize) ───────────────")
+    import os as _os
+    from src.components.agent_core.gates import _redact
+    _prev = _os.environ.get("USE_DOC_HARNESS")
+    try:
+        _os.environ["USE_DOC_HARNESS"] = "true"
+        # 1) untraced computed figure → neutralized, sentence + cite kept, NOT blank.
+        out = _redact("The total was 513,983 million [goog p.36].", EvidenceLedger(),
+                      [{"name": "verify_numbers", "detail": "x"}])
+        c.ok("513,983" not in out, "harness: untraced figure is removed (no wrong number)")
+        c.ok("p.36" in out and out.strip(), "harness: sentence + citation kept, never blank")
+        # 2) a figure the source STATED IN PROSE (read into a span) is kept verbatim.
+        led_p = EvidenceLedger()
+        led_p.record("read", 1, [{"kind": "span",
+                                  "snippet": "approximately 53% of our consolidated revenues"}])
+        out = _redact("About 53% were international [goog p.15].", led_p,
+                      [{"name": "verify_numbers", "detail": "x"}])
+        c.ok("53%" in out, "harness: prose-stated figure survives redaction (grounded)")
+        # 3) MOAT: the neutralized output asserts NO unverified digit.
+        out = _redact("Revenue of 999,999 and cost of 888,888 [p.5].", EvidenceLedger(),
+                      [{"name": "verify_numbers", "detail": "x"}])
+        c.ok("999,999" not in out and "888,888" not in out,
+             "harness: every untraced figure neutralized (moat preserved in output)")
+        # 4) flag OFF → legacy strip path unchanged (byte-identical).
+        _os.environ["USE_DOC_HARNESS"] = "false"
+        out = _redact("The total was 513,983 million.", EvidenceLedger(),
+                      [{"name": "verify_numbers", "detail": "x"}])
+        c.ok("could not verify" in out.lower() and "513,983" not in out,
+             "flag-off: legacy strip-to-abstain unchanged")
+    finally:
+        if _prev is None:
+            _os.environ.pop("USE_DOC_HARNESS", None)
+        else:
+            _os.environ["USE_DOC_HARNESS"] = _prev
+
     print("\n" + "=" * 64)
     print(f"  PASS: {c.passed}   FAIL: {c.failed}")
     print("=" * 64)
