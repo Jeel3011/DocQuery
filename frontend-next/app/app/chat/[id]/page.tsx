@@ -11,12 +11,12 @@ import { AnimatePresence, motion } from "framer-motion";
 import { ChatMessage } from "@/components/chat/ChatMessage";
 import { ChatInput } from "@/components/chat/ChatInput";
 import { ArtifactPanel, detectArtifact, Artifact } from "@/components/chat/ArtifactPanel";
-import { ThinkingStreamFixture, ThinkingStream, ThinkingStep } from "@/components/chat/ThinkingStream";
+import { ThinkingStreamFixture, ThinkingStream, ThinkingStep, ChipTarget } from "@/components/chat/ThinkingStream";
 import { SkeletonMessage } from "@/components/ui/Skeleton";
 import { MOCK_ANSWER_META, AnswerMeta, ConfidenceLevel } from "@/components/chat/TrustBar";
 import { useAuthStore } from "@/stores/auth.store";
 import { getMessages, MessageResponse, SourceInfo, exportConversation, compareDocuments, ComparisonResult, DocumentResponse, listDocuments, listCollections } from "@/lib/api";
-import { streamQuery, streamAgenticQuery, streamBrainQuery, streamAgentCoreQuery } from "@/lib/streaming";
+import { streamQuery, streamAgenticQuery, streamBrainQuery, streamAgentCoreQuery, ToolCallMeta } from "@/lib/streaming";
 import { useCollectionStore } from "@/stores/collection.store";
 import { toast } from "sonner";
 import { Search, Download, FolderOpen, GitCompare, Globe, X, ChevronRight, TrendingUp, BarChart3, ArrowUpRight } from "lucide-react";
@@ -77,19 +77,67 @@ function _short(s: string, n = 52): string {
   const t = s.trim();
   return t.length > n ? t.slice(0, n).trimEnd() + "…" : t;
 }
-// The live phrase while a tool is RUNNING (present continuous).
-function toolPhrase(name: string, argsSummary?: string): { label: string; chips: string[] } {
+// §2.5.2 — resolve a trace-chip's cited target ({doc, page}) to a source_id in the message's
+// sources, so clicking it scrolls to + expands that source card. Matches on doc (filename
+// contains the doc_id, or vice-versa — the ledger filename and the tool's doc_id differ in
+// form) and, when given, the page. Falls back to first same-doc source; returns null if no
+// doc match (the chip then stays non-clickable).
+function _resolveSourceId(sources: SourceInfo[] | undefined, target: ChipTarget): number | null {
+  if (!sources || !sources.length) return null;
+  const doc = (target.doc ?? "").toString().toLowerCase();
+  const docMatches = sources.filter((s) => {
+    const fn = (s.filename ?? "").toLowerCase();
+    return doc !== "" && (fn.includes(doc) || doc.includes(fn.replace(/\.(pdf|html?|docx?|txt)$/i, "")));
+  });
+  const pool = docMatches.length ? docMatches : (doc === "" ? sources : []);
+  if (!pool.length) return null;
+  if (target.page != null) {
+    const onPage = pool.find((s) => s.page != null && Number(s.page) === target.page);
+    if (onPage) return onPage.source_id ?? null;
+  }
+  return pool[0].source_id ?? null;
+}
+// The live phrase while a tool is RUNNING (present continuous). §2.5.2: `meta` carries the
+// harness tool's structured args (query / heading / page_range / full_text / doc_id) so the
+// harness lines ("Searching the text for …", "Reading clause 8.2 (p.12)") read like watching
+// the agent navigate→grep→read — instead of falling to the bland default. Legacy tools pass
+// no meta and keep their existing args_summary-parsed phrasing.
+function toolPhrase(name: string, argsSummary?: string, meta?: ToolCallMeta): { label: string; chips: string[] } {
   const chips = _chipsFrom(argsSummary);
-  const query = _argVal(argsSummary, "query");
+  const query = meta?.query ?? _argVal(argsSummary, "query");
   const metric = _argVal(argsSummary, "metric");
-  const docLabel = _docLabel(_argVal(argsSummary, "doc") ?? undefined);
+  const docLabel = _docLabel(meta?.doc_id ?? _argVal(argsSummary, "doc") ?? undefined);
   let label: string;
   switch (name) {
+    // ── harness tools (DOCUMENT_HARNESS §16.4 — the "watch it read" loop) ──
+    case "list_documents":
+      label = "Listing documents in the matter";
+      break;
+    case "search_text": {
+      const terms = query || (meta?.any_of && meta.any_of.length ? meta.any_of[0] : null);
+      label = terms ? `Searching the text for “${_short(terms)}”` : "Searching the document text";
+      break;
+    }
+    case "read_section": {
+      const where = meta?.heading
+        ? `“${_short(meta.heading, 36)}”`
+        : meta?.page_range
+        ? `p.${meta.page_range}`
+        : null;
+      label = where
+        ? `Reading ${where}${docLabel ? ` in ${docLabel}` : ""}`
+        : docLabel ? `Reading a section of ${docLabel}` : "Reading a section";
+      break;
+    }
+    // ── legacy tools ──
     case "search_vault":
       label = query ? `Searching documents for “${_short(query)}”` : "Searching uploaded documents";
       break;
     case "read_document":
-      label = docLabel ? `Reading ${docLabel}` : "Reading the document";
+      // Harness whole-doc read (full_text=true) vs the legacy grid read share this tool name.
+      label = docLabel
+        ? `Reading ${docLabel}${meta?.full_text ? " in full" : ""}`
+        : "Reading the document";
       break;
     case "table_lookup":
       label = metric ? `Looking up ${_short(metric, 40)}` : "Looking up a figure in the tables";
@@ -447,15 +495,27 @@ function ChatPageInner({ scopedCollectionId, conversationId, analysisMode = "sta
               // label; the real, accurate signal comes from the tool steps below.
               if (text) upsert("plan", { id: "plan", label: "Planning", detail: "Choosing which tools to call", status: "active" });
             },
-            onToolCall: (name, argsSummary) => {
+            onToolCall: (name, argsSummary, meta) => {
               upsert("plan", { id: "plan", label: "Planning the analysis", status: "done" });
               // Each tool call is its OWN step (id unique per call), rendered as a clean,
               // readable action phrase (Harvey-style) — "Searching documents for …",
-              // "Looking up research & development" — with source/doc chips beneath.
+              // "Reading clause 8.2 (p.12)" — with source/doc chips beneath.
               const stepId = `tool-${toolStepSeq.current++}`;
               lastToolStepId.current = stepId;
-              const { label, chips } = toolPhrase(name, argsSummary);
-              upsert(stepId, { id: stepId, label, chips, status: "active" });
+              const { label, chips } = toolPhrase(name, argsSummary, meta);
+              const patch: ThinkingStep = { id: stepId, label, chips, status: "active" };
+              // §2.5.2 — a harness READ targets a known doc (+page). Surface it as a CLICKABLE
+              // chip now (jumps to the cited source). search_text is matter-wide (no single
+              // doc up-front) — its clickable spans arrive with the result/sources, so the
+              // onToolResult summary-chip path handles it; here we only add the doc-read chip.
+              const readDoc = meta?.doc_id ? _docLabel(meta.doc_id) : null;
+              if (readDoc && (name === "read_section" || name === "read_document")) {
+                const pageNum = meta?.page_range ? parseInt(meta.page_range, 10) : null;
+                const chipLabel = pageNum && !isNaN(pageNum) ? `${readDoc} p.${pageNum}` : readDoc;
+                patch.chips = [chipLabel];
+                patch.chipTargets = [{ doc: meta!.doc_id ?? null, page: pageNum && !isNaN(pageNum) ? pageNum : null }];
+              }
+              upsert(stepId, patch);
             },
             onToolResult: ({ name, ok, summary, nProvenance }) => {
               const stepId = lastToolStepId.current ?? `tool-${name}`;
@@ -1046,6 +1106,16 @@ function ChatPageInner({ scopedCollectionId, conversationId, analysisMode = "sta
                         steps={msg.thinkingSteps}
                         totalMs={msg.thinkingTotalMs}
                         keepExpanded
+                        // §2.5.2 — a clickable trace-span jumps to the cited evidence: resolve
+                        // its {doc, page} to a source_id in THIS message's sources, then let the
+                        // ChatMessage below open + scroll to that source row (DOM CustomEvent).
+                        onChipClick={(target) => {
+                          const sourceId = _resolveSourceId(msg.sources, target);
+                          if (sourceId == null) return;
+                          window.dispatchEvent(new CustomEvent("docquery:open-source", {
+                            detail: { messageId: msg.id, sourceId },
+                          }));
+                        }}
                       />
                     </motion.div>
                   )}

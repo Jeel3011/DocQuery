@@ -1,6 +1,6 @@
 "use client";
 
-import { memo, useState, useCallback, useMemo } from "react";
+import { memo, useState, useCallback, useMemo, useEffect } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -211,6 +211,27 @@ export const ChatMessage = memo(function ChatMessage({
   }, [content, sources, isUser, isStreaming]);
 
   const handleSourceHover = useCallback((id: number | null) => setHoveredSource(id), []);
+
+  // §2.5.2 — a trace-chip in the live reasoning timeline (rendered by the page, above this
+  // message) jumps to the cited source: it dispatches `docquery:open-source` with this
+  // message's id + the resolved source_id. We open the sources panel, highlight that row,
+  // and scroll it into view — the same affordance an inline citation chip uses, reused so
+  // "watch it read → click the span → land on the cited evidence" works end to end.
+  useEffect(() => {
+    if (isUser || !messageId) return;
+    function onOpenSource(e: Event) {
+      const det = (e as CustomEvent).detail as { messageId?: string; sourceId?: number } | undefined;
+      if (!det || det.messageId !== messageId || !det.sourceId) return;
+      setSourcesOpen(true);
+      setHoveredSource(det.sourceId);
+      requestAnimationFrame(() => {
+        const el = document.querySelector(`[data-source-row="${det.sourceId}"]`);
+        el?.scrollIntoView({ behavior: "smooth", block: "center" });
+      });
+    }
+    window.addEventListener("docquery:open-source", onOpenSource as EventListener);
+    return () => window.removeEventListener("docquery:open-source", onOpenSource as EventListener);
+  }, [isUser, messageId]);
 
   return (
     <motion.div

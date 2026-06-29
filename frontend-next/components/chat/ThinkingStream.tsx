@@ -13,12 +13,25 @@ export interface ThinkingStep {
   status: StepStatus;
   durationMs?: number;
   chips?: string[];   // source/doc chips surfaced under the step (e.g. "goog p.53")
+  // §2.5.2 — when a chip maps to a cited source, its target (doc + page) lets the chip be
+  // clicked to scroll to + expand that source card. Same index as `chips`; absent entries
+  // render as a plain (non-clickable) chip, so legacy timelines are unchanged.
+  chipTargets?: (ChipTarget | undefined)[];
+}
+
+// §2.5.2 — a clickable trace-chip's cited target: jump to the source matching this doc/page.
+export interface ChipTarget {
+  doc?: string | null;
+  page?: number | null;
 }
 
 interface ThinkingStreamProps {
   steps: ThinkingStep[];
   totalMs?: number;
   collapsed?: boolean;
+  // §2.5.2 — invoked when a clickable trace-chip is clicked (scroll to + expand the
+  // matching cited source card). Absent → chips render as plain, non-clickable pills.
+  onChipClick?: (target: ChipTarget) => void;
   // When true, the timeline stays fully expanded even after every step finishes
   // (it does NOT fold to the "Reasoned over N steps" pill). Used by the Ask screen,
   // where the live agent run reads as an inline transcript that remains in the
@@ -40,7 +53,7 @@ const statusLineColor: Record<StepStatus, string> = {
   failed: "bg-[var(--step-failed)]",
 };
 
-export function ThinkingStream({ steps, totalMs, collapsed = false, keepExpanded = false }: ThinkingStreamProps) {
+export function ThinkingStream({ steps, totalMs, collapsed = false, keepExpanded = false, onChipClick }: ThinkingStreamProps) {
   const shouldReduceMotion = useReducedMotion();
   const allDone = steps.every((s) => s.status === "done" || s.status === "failed");
 
@@ -103,22 +116,35 @@ export function ThinkingStream({ steps, totalMs, collapsed = false, keepExpanded
             {step.detail && step.status !== "pending" && (
               <p className="text-[11px] text-[var(--text-muted)] mt-0.5 leading-snug">{step.detail}</p>
             )}
-            {/* Source/doc chips surfaced under the step as it works (Harvey-style) */}
+            {/* Source/doc chips surfaced under the step as it works (Harvey-style). §2.5.2:
+                a chip with a cited target is CLICKABLE — clicking jumps to (scrolls to +
+                expands) that source card. Untargeted chips stay plain pills. */}
             {step.chips && step.chips.length > 0 && step.status !== "pending" && (
               <div className="flex flex-wrap gap-1.5 mt-1.5">
-                {step.chips.map((c, ci) => (
-                  <motion.span
-                    key={c + ci}
-                    initial={{ opacity: 0, scale: 0.9 }}
-                    animate={{ opacity: 1, scale: 1 }}
-                    transition={{ delay: ci * 0.05, duration: 0.2, ease: [0.23, 1, 0.32, 1] }}
-                    className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md text-[10px] font-medium text-[var(--text-secondary)]"
-                    style={{ background: "#F0F0F0", border: "1px solid rgba(0,0,0,0.07)" }}
-                  >
-                    <FileText size={9} className="text-[var(--text-muted)]" />
-                    {c}
-                  </motion.span>
-                ))}
+                {step.chips.map((c, ci) => {
+                  const target = step.chipTargets?.[ci];
+                  const clickable = !!(target && onChipClick);
+                  return (
+                    <motion.span
+                      key={c + ci}
+                      initial={{ opacity: 0, scale: 0.9 }}
+                      animate={{ opacity: 1, scale: 1 }}
+                      transition={{ delay: ci * 0.05, duration: 0.2, ease: [0.23, 1, 0.32, 1] }}
+                      role={clickable ? "button" : undefined}
+                      tabIndex={clickable ? 0 : undefined}
+                      onClick={clickable ? () => onChipClick!(target!) : undefined}
+                      onKeyDown={clickable ? (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onChipClick!(target!); } } : undefined}
+                      title={clickable ? "Jump to the cited source" : undefined}
+                      className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md text-[10px] font-medium text-[var(--text-secondary)] ${
+                        clickable ? "cursor-pointer hover:text-[var(--text-primary)] hover:border-[var(--step-active)] transition-colors" : ""
+                      }`}
+                      style={{ background: "#F0F0F0", border: "1px solid rgba(0,0,0,0.07)" }}
+                    >
+                      <FileText size={9} className="text-[var(--text-muted)]" />
+                      {c}
+                    </motion.span>
+                  );
+                })}
               </div>
             )}
             {step.status === "done" && step.durationMs != null && (

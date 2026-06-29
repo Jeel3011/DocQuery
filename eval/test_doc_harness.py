@@ -546,6 +546,33 @@ def main() -> int:
     c.ok('"doc_id": call.args.get("doc_id")' in _loop_src,
          "2.4: tool_call event carries raw doc_id for the route's L4 audit")
 
+    # ── Phase 2.5.1 — renderable trace-UI fields on tool_call (DOCUMENT_HARNESS §16.4) ──
+    print("── 2.5.1 tool_call carries renderable fields for the trace UI ────")
+    from src.components.agent_core.loop import _render_fields
+
+    # search_text → query + any_of survive; non-renderable args (is_regex) are dropped.
+    rf = _render_fields({"query": "limitation of liability",
+                         "any_of": ["indemnify", "hold harmless"], "is_regex": False})
+    c.ok(rf == {"query": "limitation of liability",
+                "any_of": ["indemnify", "hold harmless"]},
+         "2.5.1: search_text args → query + any_of rendered (is_regex/etc. dropped)")
+
+    # read_section → heading + page_range; read_document → full_text; empty values skipped.
+    c.ok(_render_fields({"doc_id": "D1", "heading": "8.2 Limitation", "page_range": "12"})
+         == {"heading": "8.2 Limitation", "page_range": "12"},
+         "2.5.1: read_section args → heading + page_range (doc_id stays its own field)")
+    c.ok(_render_fields({"doc_id": "D1", "full_text": True}) == {"full_text": True},
+         "2.5.1: read_document whole-doc read → full_text=True surfaced")
+    c.ok(_render_fields({"query": "", "any_of": [], "heading": None}) == {},
+         "2.5.1: empty/blank renderable args are skipped (no noise on the event)")
+    c.ok(_render_fields("not-a-dict") == {} and _render_fields(None) == {},
+         "2.5.1: non-dict args → {} (never raises on the timeline path)")
+
+    # The tool_call emission must SPREAD the render fields (additive — flag-OFF byte-identical
+    # since harness tools, hence these args, only exist when USE_DOC_HARNESS is on).
+    c.ok("**_render_fields(call.args)" in _loop_src,
+         "2.5.1: tool_call event spreads the renderable fields (additive enrichment)")
+
     # ── Phase 2.1/2.2 — chat & draft modes offer the harness tools behind the flag ──
     print("── 2.1/2.2 chat+draft serve harness tools (flag-gated) ──────────")
     from src.components.agent_core.registry import REGISTRY as _REG

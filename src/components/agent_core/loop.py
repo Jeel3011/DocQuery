@@ -10,7 +10,10 @@ ledger.
 Event shapes (yielded dicts), per §3.6:
     {"type": "agent_step", "n": int}
     {"type": "agent_thought", "text": str}
-    {"type": "tool_call", "name": str, "args_summary": str}
+    {"type": "tool_call", "name": str, "args_summary": str, "doc_id": str|None,
+                          # additive renderable fields (only present when the call set them):
+                          "query": str?, "any_of": [str]?, "heading": str?,
+                          "page_range": str?, "full_text": bool?}
     {"type": "tool_result", "name": str, "ok": bool, "summary": str, "n_provenance": int}
     {"type": "gate", "name": str, "pass": bool, "detail": str}
     {"type": "sources", "sources": [...]}              # ledger payloads
@@ -114,6 +117,28 @@ def _args_summary(args: Dict[str, Any]) -> str:
     except Exception:  # noqa: BLE001
         s = str(args)
     return s[:160]
+
+
+# Renderable harness-tool fields the trace UI shows as a human "watch it read" line
+# (DOCUMENT_HARNESS §16.4 / §2.5.1). Pulled from the structured call args so the frontend
+# never has to regex-parse the truncated `args_summary` (the old, fragile path). Each is
+# ADDITIVE on the `tool_call` event — existing consumers (tracer / route `_translate` pass
+# unknown event keys through verbatim) ignore them, so flag-OFF stays byte-identical (these
+# fields only appear when a harness tool is actually called).
+_RENDER_ARG_KEYS = ("query", "any_of", "heading", "page_range", "full_text")
+
+
+def _render_fields(args: Any) -> Dict[str, Any]:
+    """Extract the small set of renderable fields a harness tool carried (for the trace
+    UI), skipping any the call didn't set. Safe on non-dict args (returns {})."""
+    if not isinstance(args, dict):
+        return {}
+    out: Dict[str, Any] = {}
+    for k in _RENDER_ARG_KEYS:
+        v = args.get(k)
+        if v not in (None, "", [], {}):
+            out[k] = v
+    return out
 
 
 def _tool_result_message(call: ToolCall, result: Dict[str, Any]) -> Dict[str, Any]:
@@ -353,7 +378,11 @@ def run_agent(
                        # tool targeted so the route can write a record-of-processing audit row
                        # (it can't reliably parse it back out of the truncated args_summary).
                        # Additive field — existing consumers (tracer/_translate) ignore it.
-                       "doc_id": call.args.get("doc_id") if isinstance(call.args, dict) else None}
+                       "doc_id": call.args.get("doc_id") if isinstance(call.args, dict) else None,
+                       # §2.5.1: structured renderable fields for the "watch it read" trace UI
+                       # (query / heading / page_range / full_text), so the frontend phrases the
+                       # step from real values instead of regex-parsing args_summary. Additive.
+                       **_render_fields(call.args)}
                 result = registry.execute(call, scope)
                 ok = bool(result.get("ok"))
                 n_prov = ledger.record(call.name, step, result.get("provenance"))

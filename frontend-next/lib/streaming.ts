@@ -23,6 +23,13 @@ export interface StreamEvent {
   text?: string;              // agent_thought
   name?: string;              // tool_call / tool_result / gate
   args_summary?: string;      // tool_call
+  // §2.5.1 — additive renderable fields on tool_call (harness tools only; absent otherwise)
+  doc_id?: string | null;     // tool_call (read tools)
+  query?: string;             // tool_call (search_text)
+  any_of?: string[];          // tool_call (search_text synonym set)
+  heading?: string;           // tool_call (read_section)
+  page_range?: string;        // tool_call (read_section / read_document)
+  full_text?: boolean;        // tool_call (read_document whole-doc read)
   ok?: boolean;               // tool_result
   summary?: string;           // tool_result
   n_provenance?: number;      // tool_result
@@ -464,10 +471,23 @@ export async function streamBrainQuery(
 // that drive the same ThinkingStream timeline as Brain — now showing the model's tool
 // calls and the non-bypassable output gates, plus the standard sources/token answer.
 
+// §2.5.1 — structured renderable fields a harness tool_call carries for the trace UI.
+export interface ToolCallMeta {
+  doc_id?: string | null;
+  query?: string;
+  any_of?: string[];
+  heading?: string;
+  page_range?: string;
+  full_text?: boolean;
+}
+
 export interface AgentCoreStreamCallbacks extends StreamCallbacks {
   onAgentStep?: (n: number) => void;
   onAgentThought?: (text: string) => void;
-  onToolCall?: (name: string, argsSummary?: string) => void;
+  // §2.5.1 — `meta` carries the structured renderable fields the harness tool_call emits
+  // (doc_id/query/any_of/heading/page_range/full_text). The frontend phrases the trace
+  // line from these instead of regex-parsing argsSummary. Legacy tools omit `meta`.
+  onToolCall?: (name: string, argsSummary?: string, meta?: ToolCallMeta) => void;
   onToolResult?: (ev: { name: string; ok: boolean; summary?: string; nProvenance?: number }) => void;
   onGate?: (ev: { name: string; pass: boolean; detail?: string }) => void;
   onAgentMeta?: (meta: { mode?: string; steps?: number; tokens?: number; abstained?: boolean; degrade?: boolean }) => void;
@@ -558,7 +578,14 @@ export async function streamAgentCoreQuery(
               callbacks.onAgentThought?.(event.text ?? "");
               break;
             case "tool_call":
-              callbacks.onToolCall?.(event.name ?? "tool", event.args_summary);
+              callbacks.onToolCall?.(event.name ?? "tool", event.args_summary, {
+                doc_id: event.doc_id,
+                query: event.query,
+                any_of: event.any_of,
+                heading: event.heading,
+                page_range: event.page_range,
+                full_text: event.full_text,
+              });
               break;
             case "tool_result":
               callbacks.onToolResult?.({
