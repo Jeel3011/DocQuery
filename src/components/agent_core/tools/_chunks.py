@@ -109,6 +109,9 @@ def text_chunks_for_doc(
             "content": r.get("content", "") or "",
             "page": md.get("page_number"),
             "chunk_index": md.get("chunk_index"),
+            # Phase 1.5: the persisted heading (None pre-1.5 / for table-derived chunks);
+            # read_section prefers it over the runtime heuristic when present.
+            "section_path": md.get("section_path"),
         })
 
     def _key(c: Dict[str, Any]):

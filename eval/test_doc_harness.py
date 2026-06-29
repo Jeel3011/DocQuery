@@ -414,6 +414,83 @@ def main() -> int:
     c.ok(r["ok"] and "injection_detected" not in r,
          "L3: a clean doc read carries no injection_detected flag")
 
+    # ── 9. Phase 1.5 — persisted section_path makes read_section EXACT ───────────
+    # New docs persist the heading at ingest (data_ingestion._leading_heading +
+    # chunk_legal_prose); old docs are backfilled. read_section prefers the persisted
+    # section_path over the runtime heuristic; the heuristic is the fallback when absent.
+    print("\n── Phase 1.5 section_path (exact read_section) ──────────────────")
+    from src.components.agent_core.tools._outline import (
+        build_outline, slice_by_heading, _chunk_heading,
+    )
+    from src.components.data_ingestion import _leading_heading
+
+    # ingestion-side: the heading the chunk leads with is what gets persisted.
+    c.ok(_leading_heading("9. GOVERNING LAW\nThis Agreement is governed by Minnesota law.")
+         == "9 GOVERNING LAW",
+         "1.5: _leading_heading derives the numbered-clause heading from chunk text")
+    c.ok(_leading_heading("Item 8. Financial Statements\nThe following...").lower().startswith("item 8"),
+         "1.5: _leading_heading derives a 10-K Item heading")
+    c.ok(_leading_heading("just some body prose with no heading line") is None,
+         "1.5: _leading_heading → None when no heading (key omitted at ingest)")
+
+    # Corpus-driven regression (2026-06-29 dry-run): the detector must REJECT finance/ESG
+    # noise (year-led data rows, body acronyms, watermarks) and ACCEPT real clause/Item/
+    # marker headings — else the backfill writes wrong section labels.
+    from src.components.agent_core.tools._outline import _line_heading as _lh
+    for s in ["2021 Acquisition Activity", "2014 Notes issuance of $6.0 billion",
+              "GDPR", "APAC", "BRSR", "CAGR", "MSFT MSFT MSFT", "ISCT"]:
+        c.ok(_lh(s) is None, f"1.5: detector rejects non-heading noise {s!r}")
+    for s in ["19 Governing Law", "24. Disclosure requirements",
+              "14 Amendment or Termination of the Plan", "Item 8.", "Exhibit 21",
+              "PART I", "HUMAN CAPITAL RESOURCES", "9.1 Governing Law"]:
+        c.ok(_lh(s) is not None, f"1.5: detector accepts real heading {s!r}")
+
+    # read-side: a persisted section_path is matched EXACTLY, even if the text body would
+    # NOT trip the runtime line-heading heuristic (proves persisted > heuristic).
+    sp_chunks = [
+        {"content": "the parties agree to arbitrate all disputes in Wilmington.",
+         "page": 14, "chunk_index": 40, "section_path": "12. Dispute Resolution"},
+        {"content": "continuation prose with no heading line at all.",
+         "page": 14, "chunk_index": 41, "section_path": None},
+    ]
+    c.ok(_chunk_heading(sp_chunks[0]) == "12. Dispute Resolution",
+         "1.5: _chunk_heading uses persisted section_path (exact)")
+    sliced = slice_by_heading(sp_chunks, "Dispute Resolution")
+    c.ok(len(sliced) == 2 and "arbitrate" in sliced[0]["content"],
+         "1.5: read_section finds the section by persisted heading + grabs its body "
+         "(body would NOT match the heuristic — persisted is what made it exact)")
+    out = build_outline(sp_chunks)
+    c.ok(out and out[0]["heading"] == "12. Dispute Resolution",
+         "1.5: build_outline surfaces the persisted heading")
+
+    # fixture 10-K: a persisted Item heading is matched exactly (the §17 gate).
+    tenk = [
+        {"content": "Item 7. Management's Discussion and Analysis\nRevenue grew 12%.",
+         "page": 30, "chunk_index": 1, "section_path": "Item 7 Management's Discussion and Analysis"},
+        {"content": "Item 8. Financial Statements\nSee the consolidated statements.",
+         "page": 45, "chunk_index": 2, "section_path": "Item 8 Financial Statements"},
+    ]
+    s8 = slice_by_heading(tenk, "Item 8")
+    c.ok(len(s8) == 1 and "consolidated statements" in s8[0]["content"]
+         and "Revenue grew" not in s8[0]["content"],
+         "1.5: 10-K fixture — read_section('Item 8') returns the right span, stops before it")
+
+    # fallback: a chunk with NO section_path still resolves via the runtime heuristic.
+    heur = [{"content": "5. CONFIDENTIALITY\nKeep it secret.", "page": 6, "chunk_index": 1}]  # no section_path key
+    c.ok(_chunk_heading(heur[0]) == "5 CONFIDENTIALITY",
+         "1.5: heuristic fallback still works when section_path is absent (pre-1.5 docs)")
+
+    # _chunks carries section_path through (live path) — assert the key survives the fetch.
+    from src.components.agent_core.tools._chunks import text_chunks_for_doc
+    sp_store = {(DOC_UUID, ALICE): [
+        {"content": "9. GOVERNING LAW\nMinnesota.",
+         "metadata": {"chunk_type": "text", "page_number": 13, "chunk_index": 1,
+                      "section_path": "9. GOVERNING LAW"}}]}
+    sp_db = FakeDB(user_id=ALICE, store=sp_store)
+    fetched = text_chunks_for_doc(sp_db, DOC_UUID)
+    c.ok(fetched and fetched[0].get("section_path") == "9. GOVERNING LAW",
+         "1.5: text_chunks_for_doc carries metadata.section_path through to read_section")
+
     print(f"\n{c.passed} passed, {c.failed} failed")
     return 0 if c.failed == 0 else 1
 

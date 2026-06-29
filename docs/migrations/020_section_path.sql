@@ -1,0 +1,31 @@
+-- 020_section_path.sql
+-- DOCUMENT_HARNESS Phase 1.5 (§6.4 / §17 task 1.5): persist the section heading on each
+-- TEXT chunk so `read_section` is EXACT, not a runtime heuristic.
+--
+-- NO DDL IS REQUIRED. `document_chunks.metadata` is already JSONB (001_document_chunks.sql).
+-- `section_path` is a new OPTIONAL key inside that JSONB:
+--
+--     metadata->>'section_path'   -- the chunk's section heading, e.g. "9. GOVERNING LAW"
+--
+-- WHERE IT IS WRITTEN:
+--   - NEW docs get it for free at ingestion (data_ingestion.py): the legal-prose path
+--     persists the clause heading `chunk_legal_prose` already computed (was dropped at
+--     :922); the chunk_by_title path persists the chunk's leading detected heading.
+--   - OLD docs get it via a one-off BACKFILL that re-derives the heading from the ALREADY
+--     STORED clean text (NO PDF re-parse, no PDF_PARALLEL_WORKERS OOM risk):
+--         python -u scripts/backfill_section_path.py            # dry run (prints, writes nothing)
+--         python -u scripts/backfill_section_path.py --apply    # writes metadata.section_path
+--     The backfill uses the SAME heading detector as the runtime heuristic
+--     (agent_core.tools._outline._line_heading) so a persisted heading is byte-identical
+--     to what Phase-1 would have detected — no drift between the two read_section paths.
+--
+-- READ PATH: `read_section` (via _outline.slice_by_heading / build_outline) prefers
+-- `section_path` when present and falls back to the runtime line-heading heuristic when
+-- absent — so this migration is non-breaking: pre-1.5 chunks (no key) keep working.
+--
+-- NO INDEX: read_section filters by `document_id` (already indexed, 001) then scopes in
+-- app code; section_path is never a standalone WHERE clause, so a GIN index would be dead
+-- weight. Add one only if a future surface queries chunks BY section across docs.
+--
+-- This file is intentionally a no-op marker so the migration ledger records the change.
+SELECT 'Phase 1.5 section_path is a JSONB metadata key — no DDL; backfill via scripts/backfill_section_path.py' AS note;

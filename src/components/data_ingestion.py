@@ -384,6 +384,28 @@ _CLAUSE_HEADING = re.compile(r"^\s*\d+(\.\d+){0,3}\.?\s+[A-Z(\"']")
 # A bare numbered heading line (the heading on its own short element).
 _CLAUSE_HEADING_BARE = re.compile(r"^\s*\d+(\.\d+){0,3}\.?\s+\S")
 
+
+def _leading_heading(chunk_text: str) -> Optional[str]:
+    """Phase 1.5: the section heading of a chunk = its first detected-heading line.
+
+    Reuses the harness's canonical heading detector (`_outline._line_heading`) so a
+    PERSISTED `section_path` is byte-identical to what the runtime heuristic would
+    detect — no drift between the two read_section code paths. Returns None when no
+    line in the chunk looks like a heading (then the metadata key is omitted). Lazy
+    import + never-raise: a detector hiccup must never break ingestion.
+    """
+    if not chunk_text:
+        return None
+    try:
+        from src.components.agent_core.tools._outline import _line_heading
+        for line in chunk_text.split("\n"):
+            h = _line_heading(line)
+            if h:
+                return h
+    except Exception:  # noqa: BLE001 — heading detection is best-effort
+        return None
+    return None
+
 DOC_TYPE_LEGAL = "legal_contract"
 DOC_TYPE_FINANCIAL = "financial_filing"
 DOC_TYPE_MIXED = "mixed"
@@ -915,11 +937,14 @@ class DocumentProcessor:
             if is_legal_prose:
                 prose_chunks = chunk_legal_prose(text_elements, self.config.CHUNK_SIZE)
 
-            normalized = []  # list of (text, page, filename, filetype)
+            normalized = []  # list of (text, page, filename, filetype, section_path)
             if prose_chunks:
                 print(f"Chunking TEXT by CLAUSE (legal prose) → {len(prose_chunks)} chunks...")
                 for pc in prose_chunks:
-                    normalized.append((pc["text"], pc.get("page"), _fname, _ftype))
+                    # Phase 1.5 (DOCUMENT_HARNESS §6.4): persist the clause heading that
+                    # chunk_legal_prose already computed, instead of dropping it here — so
+                    # read_section is EXACT, not a runtime heuristic.
+                    normalized.append((pc["text"], pc.get("page"), _fname, _ftype, pc.get("heading")))
             else:
                 print("Chunking TEXT elements by title...")
                 text_chunks = chunk_by_title(
@@ -937,9 +962,13 @@ class DocumentProcessor:
                         filetype = getattr(chunk.metadata, "filetype", None)
                     else:
                         page_number = filepath = filename = filetype = None
-                    normalized.append((chunk_text, page_number, filename or filepath, filetype))
+                    # Phase 1.5: chunk_by_title splits ON the title, so the chunk's leading
+                    # line IS its section heading — persist it. None when not derivable;
+                    # read_section's runtime heuristic (task 1.5.3) is the fallback.
+                    section_path = _leading_heading(chunk_text)
+                    normalized.append((chunk_text, page_number, filename or filepath, filetype, section_path))
 
-            for i, (chunk_text, page_number, filename, filetype) in enumerate(normalized, start=1):
+            for i, (chunk_text, page_number, filename, filetype, section_path) in enumerate(normalized, start=1):
                 chunk_text = (chunk_text or "").strip()
                 if not chunk_text or len(chunk_text) < 10:
                     continue
@@ -953,6 +982,11 @@ class DocumentProcessor:
                     "chunk_index": i,
                     "doc_type": doc_type,  # G1d — surfaced for the grid/agent + filtering
                 }
+                # Phase 1.5 (DOCUMENT_HARNESS §6.4): persist the section heading so
+                # read_section is exact. Omitted when None (no key churn for table chunks
+                # or undeterminable headings → byte-identical to pre-1.5 for those).
+                if section_path:
+                    metadata["section_path"] = section_path
 
                 metadata["chunk_id"] = _stable_id(
                     file_path=str(filename) if filename else "unknown",
