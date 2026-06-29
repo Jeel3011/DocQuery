@@ -313,6 +313,51 @@ def main() -> int:
              for cell in cells),
          "build_doc_cells: abstain_reason uses the shared G4 taxonomy")
 
+    # ── 7. envelope SHAPE tolerance (G4 sibling-fix, task 1.8) ──────────────────
+    # The live read-once A/B (Sezzle contract) exposed gpt-5.4 returning the COMBINED
+    # shape: ONE array element mapping column-key → {value, source_quote}, not the M flat
+    # keyed envelopes we ask for. The old indexer keyed on e["key"] only → every column
+    # fell to "no envelope returned" and a fully-correct, grounded answer was discarded.
+    print("\n── envelope shape tolerance (combined / aliased) ────────────────")
+    from src.components.agent_core.grid_engine import (
+        _index_doc_cell_envelopes, _extract_envelope_array,
+    )
+    keys = ["governing_law", "term_termination", "confidentiality"]
+
+    # Shape 2 (COMBINED) — exactly what the live model produced.
+    combined = _extract_envelope_array(
+        '[{"governing_law":{"value":"State of Minnesota",'
+        '"source_quote":"9.1 Governing Law: ... laws of the State of Minnesota ..."},'
+        '"term_termination":{"value":"Begins Nov 1 2025; cure 10 days",'
+        '"source_quote":"4.1 Term: ..."},'
+        '"confidentiality":{"value":"Keep non-public info confidential",'
+        '"source_quote":"5. Confidentiality ..."}}]'
+    )
+    bk = _index_doc_cell_envelopes(combined, keys)
+    c.ok(set(bk) == set(keys),
+         "shape: COMBINED object → all 3 columns mapped (was: all discarded)")
+    c.ok(all(bk[k].get("status") == "found" for k in keys),
+         "shape: status synthesized 'found' when value+quote present")
+    c.ok(all(bk[k].get("quote") for k in keys),
+         "shape: source_quote aliased to quote")
+
+    # Shape 1 (CANONICAL) still wins — no regression to the keyed-array path.
+    canon = _extract_envelope_array(
+        '[{"key":"governing_law","status":"missing","value":null,"quote":null}]'
+    )
+    bk2 = _index_doc_cell_envelopes(canon, keys)
+    c.ok(bk2.get("governing_law", {}).get("status") == "missing"
+         and "term_termination" not in bk2,
+         "shape: CANONICAL keyed array unchanged (only present keys map)")
+
+    # Shape 3 (POSITIONAL) — keyless objects, count matches → bound in order.
+    pos = _extract_envelope_array(
+        '[{"value":"MN","quote":"q1"},{"value":"T","quote":"q2"},{"value":"C","quote":"q3"}]'
+    )
+    bk3 = _index_doc_cell_envelopes(pos, keys)
+    c.ok(set(bk3) == set(keys) and bk3["governing_law"].get("value") == "MN",
+         "shape: POSITIONAL fallback binds keyless envelopes in column order")
+
     print(f"\n{c.passed} passed, {c.failed} failed")
     return 0 if c.failed == 0 else 1
 

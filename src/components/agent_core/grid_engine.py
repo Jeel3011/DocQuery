@@ -587,6 +587,99 @@ def build_cell(
     return cell
 
 
+# Sub-envelope quote aliases a model uses instead of "quote".
+_QUOTE_ALIASES = ("quote", "source_quote", "source", "evidence", "citation", "source_text")
+
+
+def _normalize_subenvelope(raw: Any) -> Optional[Dict[str, Any]]:
+    """Coerce a per-column sub-object from the COMBINED shape into a canonical envelope.
+
+    The read-once agent often answers the M columns as ONE object keyed by column
+    (``{"governing_law": {"value": ..., "source_quote": ...}, ...}``) rather than the M
+    flat envelopes we ask for. That sub-object carries the answer but not our key names —
+    e.g. ``source_quote`` not ``quote``, and no ``status``. Normalize it so the SHARED
+    ``_cell_from_envelope`` (and its provenance gate) handle it identically to a flat
+    envelope: alias the quote field, and synthesize ``status`` when omitted (a value with
+    a quote ⇒ ``found``; nothing usable ⇒ leave for the tolerant-recovery path).
+
+    A bare string (the model put the value directly) becomes ``{value: <str>}``. Anything
+    else returns ``None`` so the caller falls through to the per-column abstain.
+    """
+    if isinstance(raw, str):
+        s = raw.strip()
+        return {"value": s} if s and s.lower() != "null" else None
+    if not isinstance(raw, dict):
+        return None
+    env = dict(raw)  # copy — never mutate the parsed JSON
+    if "quote" not in env:
+        for alias in _QUOTE_ALIASES:
+            if alias != "quote" and env.get(alias):
+                env["quote"] = env[alias]
+                break
+    if "status" not in env:
+        has_value = bool(env.get("value"))
+        has_quote = bool(env.get("quote"))
+        if has_value and has_quote:
+            env["status"] = "found"
+        # else: leave status absent → _cell_from_envelope's recovery decides.
+    return env
+
+
+def _index_doc_cell_envelopes(
+    envelopes: List[Dict[str, Any]], column_keys: List[str]
+) -> Dict[str, Dict[str, Any]]:
+    """Map the agent's parsed JSON to ``{column_key: envelope}``, tolerant of SHAPE
+    variants (DOCUMENT_HARNESS §16.3③ / task 1.8 — the G4 sibling-fix).
+
+    Three shapes are accepted, in priority order:
+      1. CANONICAL — a flat array of envelopes each carrying its own ``key``. The shape
+         we ask for. ``[{"key": "governing_law", "status": "found", ...}, ...]``.
+      2. COMBINED  — one (or a few) object(s) whose KEYS are the column keys, each value a
+         per-column sub-object. ``[{"governing_law": {...}, "confidentiality": {...}}]``.
+         This is what gpt-5.4 actually returns on a read-once doc grid; without this the
+         agent finds + grounds every clause and the parser discarded all of it.
+      3. POSITIONAL — last resort: if exactly N envelopes came back without keys and none
+         matched by name, bind them to the columns in order.
+
+    Canonical and combined are merged (canonical wins on a key collision) so a mixed
+    answer still resolves every column it actually contains. Sub-objects are normalized via
+    ``_normalize_subenvelope`` so the downstream cell-folding + provenance gate are
+    identical to the flat path — a recovered value still only becomes FOUND if grounded.
+    """
+    key_set = set(column_keys)
+    by_key: Dict[str, Dict[str, Any]] = {}
+
+    # Shapes 1 + 2, in one pass over the array.
+    keyless: List[Dict[str, Any]] = []
+    for e in envelopes:
+        if not isinstance(e, dict):
+            continue
+        k = str(e.get("key", "")).strip()
+        if k in key_set:
+            by_key.setdefault(k, e)  # canonical wins; first occurrence kept
+            continue
+        # Combined shape: this object maps column keys → sub-envelopes.
+        matched_any = False
+        for ck in column_keys:
+            if ck in by_key or ck not in e:
+                continue
+            sub = _normalize_subenvelope(e.get(ck))
+            if sub is not None:
+                by_key[ck] = sub
+                matched_any = True
+        if not matched_any and k not in key_set:
+            keyless.append(e)
+
+    # Shape 3: positional fallback — only if nothing bound by name and the counts line up.
+    if not by_key and len(keyless) == len(column_keys):
+        for ck, e in zip(column_keys, keyless):
+            sub = _normalize_subenvelope(e)
+            if sub is not None:
+                by_key[ck] = sub
+
+    return by_key
+
+
 def build_doc_cells(
     doc_id: str,
     columns: List[GridColumn],
@@ -678,11 +771,7 @@ def build_doc_cells(
                 for c in columns]
 
     envelopes = _extract_envelope_array(final_text) or []
-    by_key: Dict[str, Dict[str, Any]] = {}
-    for e in envelopes:
-        k = str(e.get("key", "")).strip()
-        if k:
-            by_key[k] = e
+    by_key = _index_doc_cell_envelopes(envelopes, [c.key for c in columns])
 
     cells: List[GridCell] = []
     for column in columns:

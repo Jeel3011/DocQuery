@@ -1,0 +1,102 @@
+{
+  "doc": "Document.pdf",
+  "model": "gpt-5.4",
+  "columns": [
+    "governing_law",
+    "term_termination",
+    "confidentiality"
+  ],
+  "resolved_false_abstains": 3,
+  "regressions": 0,
+  "quotes_diverge": [],
+  "verified_rate": {
+    "A": [
+      0,
+      3
+    ],
+    "B": [
+      3,
+      3
+    ]
+  },
+  "coverage": {
+    "A": {
+      "found": 0,
+      "missing": 0,
+      "abstain": 3,
+      "error": 0,
+      "verified": 0,
+      "total": 3
+    },
+    "B": {
+      "found": 3,
+      "missing": 0,
+      "abstain": 0,
+      "error": 0,
+      "verified": 3,
+      "total": 3
+    }
+  },
+  "cells": [
+    {
+      "column": "governing_law",
+      "A": {
+        "status": "abstain",
+        "value": null,
+        "quote": null,
+        "abstain_reason": "ambiguous",
+        "verified": false,
+        "note": "abstain; I can\u2019t extract 'Governing Law' because no document content was available in the current vault scope. A search "
+      },
+      "B": {
+        "status": "found",
+        "value": "Laws of the State of Minnesota, without regard to its conflict of laws principles.",
+        "quote": "9.1 Governing Law: This Agreement shall be governed by and construed in accordance with the laws of the State of Minnesota, without regard to its conflict of la",
+        "abstain_reason": null,
+        "verified": true,
+        "note": null
+      },
+      "verdict": "RESOLVED  (A abstained \u2192 B found)"
+    },
+    {
+      "column": "term_termination",
+      "A": {
+        "status": "abstain",
+        "value": null,
+        "quote": null,
+        "abstain_reason": "unparsed",
+        "verified": false,
+        "note": "parse: True; Term & Termination; I can\u2019t extract this field because no document content was available in the current vau"
+      },
+      "B": {
+        "status": "found",
+        "value": "Commences on November 1st, 2025 and continues unless earlier terminated; termination by mutual agreement on notice at an",
+        "quote": "4.1 Term: This Agreement shall commence on November 1st, 2025 and continues unless earlier terminated in accordance with this Section 4. 4.2 Termination for Con",
+        "abstain_reason": null,
+        "verified": true,
+        "note": null
+      },
+      "verdict": "RESOLVED  (A abstained \u2192 B found)"
+    },
+    {
+      "column": "confidentiality",
+      "A": {
+        "status": "abstain",
+        "value": null,
+        "quote": null,
+        "abstain_reason": "ambiguous",
+        "verified": false,
+        "note": null
+      },
+      "B": {
+        "status": "found",
+        "value": "Consultant must keep all non-public information confidential and may not disclose it to third parties without the Compan",
+        "quote": "5. Confidentiality Consultant agrees to maintain the confidentiality of all non-public information disclosed by the Company in connection with this Agreement, i",
+        "abstain_reason": null,
+        "verified": true,
+        "note": null
+      },
+      "verdict": "RESOLVED  (A abstained \u2192 B found)"
+    }
+  ]
+}
