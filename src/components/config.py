@@ -187,6 +187,20 @@ class Config:
     # false-abstain-from-retrieval-miss class (plans/DOCUMENT_HARNESS.md §17 Phase 1).
     USE_DOC_HARNESS: bool = os.getenv("USE_DOC_HARNESS", "false").lower() == "true"
 
+    # DOCUMENT_HARNESS Phase 3.1 — loop compaction (the anti-quit spine, §7.1). OFF ⇒
+    # byte-identical to today: at the token wall the loop still stop-and-abstains
+    # (loop.py:241-259). ON, when the run nears the wall the loop asks the model for a
+    # structured summary of work-done, rebuilds `messages` to [question, summary,
+    # last-K verbatim], and CONTINUES instead of abstaining. The EvidenceLedger is a
+    # SEPARATE object and is NEVER summarized — every verified figure survives every
+    # compaction, so the output gate still binds each claim to a real span (compaction
+    # cannot create an ungrounded claim). Hand-rolled so it works on BOTH vendors
+    # (OpenAI now, Claude at prod) and stays gate-safe. COMPACT_AT_FRACTION = trigger as
+    # a fraction of token_budget; COMPACT_KEEP_LAST_K = raw messages kept verbatim.
+    USE_LOOP_COMPACTION: bool = os.getenv("USE_LOOP_COMPACTION", "false").lower() == "true"
+    COMPACT_AT_FRACTION: float = float(os.getenv("COMPACT_AT_FRACTION", "0.8"))
+    COMPACT_KEEP_LAST_K: int = int(os.getenv("COMPACT_KEEP_LAST_K", "6"))
+
     # Orchestrator model policy is CONFIG, not code (§3.1) — multi-vendor from day one.
     # Jeel's call (2026-06-10): Opus 4.8 for BOTH standard and deep — max quality
     # everywhere, overriding the plan's Sonnet-for-standard default. Env-overridable so

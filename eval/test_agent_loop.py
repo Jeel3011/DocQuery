@@ -480,13 +480,117 @@ def main() -> int:
     c.ok("t5_early_degrade" not in trans_gates,
          "T5(b): stream-error-then-invoke-success (one retry) does NOT emit t5_early_degrade")
 
+    # ── 6. Phase 3.1: loop compaction (the anti-quit spine — DOCUMENT_HARNESS §7.1) ──
+    # A run that fills the window mid-task: OFF ⇒ dies at the token wall (abstain); ON ⇒
+    # compacts the verbose history and CONTINUES to a clean, verified answer. The ledger
+    # is NEVER summarized, so the verified figure survives compaction (gate stays sound).
+    import os as _os
+
+    _BIG = "padding " * 300  # ~2.4k chars per turn → the history grows fast toward the wall
+
+    from src.components.agent_core.model import BaseModel as _BaseModel
+
+    class _WallModel(_BaseModel):
+        """Drives tokens toward the wall with big per-step usage + bulky assistant text.
+        A compaction call (tools == []) returns a short summary and is FREE of the script
+        cursor, so it never desyncs the tool sequence. Normal steps: 3 tool calls, then the
+        final answer. Each normal step reports ~350 input tokens of usage."""
+        def __init__(self):
+            self._i = 0
+            self._script = [
+                ModelResponse(text="Reading the table. " + _BIG, tool_calls=[
+                    ToolCall(id="w1", name="compute", args={
+                        "op": "value", "row": {"label": "Total net sales"}, "period": "2021"})],
+                    usage={"in": 350, "out": 0}),
+                ModelResponse(text="Still reading. " + _BIG, tool_calls=[
+                    ToolCall(id="w2", name="compute", args={
+                        "op": "value", "row": {"label": "Total net sales"}, "period": "2023"})],
+                    usage={"in": 350, "out": 0}),
+                ModelResponse(text="One more. " + _BIG, tool_calls=[
+                    ToolCall(id="w3", name="compute", args={
+                        "op": "value", "row": {"label": "Total net sales"}, "period": "2022"})],
+                    usage={"in": 350, "out": 0}),
+                ModelResponse(
+                    text="Amazon net sales were 513,983 in 2022 [amzn-2022 p.41].",
+                    tool_calls=[], usage={"in": 50, "out": 30}),
+            ]
+
+        def invoke(self, messages, tools):
+            # Compaction summary request: no tools, ends with the compaction instruction.
+            if not tools:
+                return ModelResponse(
+                    text=("QUESTION: net sales 2022. VERIFIED FINDINGS: Total net sales (2022): "
+                          "513,983 [amzn-2022 p.41]. OPEN SUBGOALS: deliver the answer."),
+                    tool_calls=[], usage={"in": 40, "out": 20})
+            item = self._script[min(self._i, len(self._script) - 1)]
+            self._i += 1
+            return item
+
+    # token_budget=1000, frac=0.8 → compaction trigger at 800; each step adds ~350 → wall ~step 3.
+    def _wall_budget():
+        return Budget(mode="standard", model="claude-opus-4-8",
+                      max_steps=20, wall_clock_s=90, token_budget=1000)
+
+    print("\n── 3.1 compaction OFF: run dies at the token wall (abstain) ─────")
+    _os.environ.pop("USE_LOOP_COMPACTION", None)  # OFF
+    off_events = collect(run_agent("net sales 2022", model=_WallModel(),
+                                   scope=scope, budget=_wall_budget()))
+    off_meta = next(e for e in off_events if e["type"] == "meta")
+    off_compaction = [e for e in off_events if e["type"] == "gate" and e["name"] == "compaction"]
+    off_budget = [e for e in off_events if e["type"] == "gate" and e["name"] == "budget"]
+    c.ok(len(off_compaction) == 0, "OFF: no compaction gate ever fires (flag-OFF identity)")
+    c.ok(len(off_budget) == 1 and off_meta["abstained"] is True,
+         "OFF: run abstains at the token wall (the false-abstain Phase 3.1 fixes)")
+
+    print("\n── 3.1 compaction ON: run survives the wall and completes ───────")
+    _os.environ["USE_LOOP_COMPACTION"] = "true"
+    _os.environ["COMPACT_AT_FRACTION"] = "0.8"
+    _os.environ["COMPACT_KEEP_LAST_K"] = "2"
+    try:
+        on_events = collect(run_agent("net sales 2022", model=_WallModel(),
+                                      scope=scope, budget=_wall_budget()))
+    finally:
+        _os.environ.pop("USE_LOOP_COMPACTION", None)
+        _os.environ.pop("COMPACT_AT_FRACTION", None)
+        _os.environ.pop("COMPACT_KEEP_LAST_K", None)
+    on_meta = next(e for e in on_events if e["type"] == "meta")
+    on_compaction = [e for e in on_events if e["type"] == "gate" and e["name"] == "compaction"]
+    on_final = "".join(e.get("text", "") for e in on_events if e["type"] == "token")
+    c.ok(len(on_compaction) >= 1 and on_compaction[0]["pass"] is True,
+         "ON: a compaction gate fired (summarized + continued instead of abstaining)")
+    c.ok(on_meta["abstained"] is False,
+         "ON: the run COMPLETES — wall-death converted to a real answer")
+    c.ok("513,983" in on_final,
+         "ON: the verified figure 513,983 SURVIVES compaction and ships (ledger never lost)")
+
+    print("\n── 3.1 compaction-correctness: the ledger survives compaction ───")
+    # The verified cell (513,983) must be in the run's sources AFTER a compaction happened —
+    # proving the EvidenceLedger was NOT summarized away.
+    on_sources = next((e for e in on_events if e["type"] == "sources"), {"sources": []})["sources"]
+    c.ok(any(s.get("value") == 513983.0 for s in on_sources),
+         "ledger holds the real CellRef (513,983) post-compaction — never summarized")
+
+    print("\n── 3.1 boundary safety: _safe_tail never orphans a tool_result ──")
+    from src.components.agent_core.loop import _safe_tail, _is_tool_result_msg
+    _msgs = [
+        {"role": "user", "content": "q"},
+        {"role": "assistant", "content": [{"type": "tool_use", "id": "t1", "name": "x", "input": {}}]},
+        {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "t1", "content": "r"}]},
+        {"role": "assistant", "content": [{"type": "text", "text": "done"}]},
+    ]
+    # keep_last_k=2 would start at the bare tool_result (index 2) → must shift forward off it.
+    _tail = _safe_tail(_msgs, 2)
+    c.ok(not _is_tool_result_msg(_tail[0]) if _tail else True,
+         "_safe_tail does not start the kept tail with an orphaned tool_result")
+    c.ok(_safe_tail(_msgs, 99) == _msgs, "_safe_tail keeps everything when K ≥ len(messages)")
+
     print("\n" + "=" * 64)
     print(f"  PASS: {c.passed}   FAIL: {c.failed}")
     print("=" * 64)
     if c.failed == 0:
-        print("  ✓ A2+T3+T5 loop gate GREEN (bridge · budget · tool-error · degrade · stream · memory · circuit-breaker · self-heal)")
+        print("  ✓ A2+T3+T5+3.1 loop gate GREEN (bridge · budget · tool-error · degrade · stream · memory · circuit-breaker · self-heal · compaction)")
         return 0
-    print("  ✗ A2+T3+T5 gate FAILED")
+    print("  ✗ A2+T3+T5+3.1 gate FAILED")
     return 1
 
 

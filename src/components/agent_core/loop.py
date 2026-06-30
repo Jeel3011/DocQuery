@@ -164,6 +164,108 @@ def _assistant_message(resp: ModelResponse) -> Dict[str, Any]:
     return {"role": "assistant", "content": content or [{"type": "text", "text": ""}]}
 
 
+# ── Phase 3.1: loop compaction (the anti-quit spine — DOCUMENT_HARNESS §7.1) ─────────
+# OFF by default (USE_LOOP_COMPACTION). Read the flag from the LIVE env (same pattern as
+# gates._doc_harness_on) so a per-process export is honored — the Config attr is import-time.
+
+def _compaction_settings():
+    """(enabled, at_fraction, keep_last_k) read from the live environment."""
+    import os
+    enabled = os.getenv("USE_LOOP_COMPACTION", "false").strip().lower() == "true"
+    try:
+        frac = float(os.getenv("COMPACT_AT_FRACTION", "0.8"))
+    except ValueError:
+        frac = 0.8
+    try:
+        keep = int(os.getenv("COMPACT_KEEP_LAST_K", "6"))
+    except ValueError:
+        keep = 6
+    return enabled, frac, max(1, keep)
+
+
+def _is_tool_result_msg(msg: Dict[str, Any]) -> bool:
+    """A user message whose content is a tool_result block — must never START a kept tail
+    (its matching tool_use lives in the prior assistant turn; an orphaned tool_result 400s)."""
+    if msg.get("role") != "user":
+        return False
+    content = msg.get("content")
+    if isinstance(content, list):
+        return any(isinstance(b, dict) and b.get("type") == "tool_result" for b in content)
+    return False
+
+
+def _msg_chars(messages: List[Dict[str, Any]]) -> int:
+    """Rough size proxy for the message list (chars/4 ≈ tokens). Used to credit back the
+    context freed by a compaction so the loop's token counter reflects current PRESSURE."""
+    return len(json.dumps(messages, default=str))
+
+
+def _safe_tail(messages: List[Dict[str, Any]], keep_last_k: int) -> List[Dict[str, Any]]:
+    """The last K messages, shifted FORWARD past any leading tool_result so the kept tail
+    never opens with an orphaned tool_result (which would dangle without its tool_use)."""
+    if keep_last_k <= 0 or len(messages) <= keep_last_k:
+        start = 0
+    else:
+        start = len(messages) - keep_last_k
+    # Walk forward off any leading tool_result message — keep the tail self-consistent.
+    while start < len(messages) and _is_tool_result_msg(messages[start]):
+        start += 1
+    return messages[start:]
+
+
+_COMPACT_SUMMARY_INSTRUCTION = (
+    "[context-compaction] You are running low on context. Before continuing, write a TIGHT "
+    "structured summary of the work so far so we can drop the verbose history and keep going. "
+    "Cover, in plain prose under these headings:\n"
+    "QUESTION: the user's question, restated.\n"
+    "DECISIONS: key choices/interpretations you've committed to.\n"
+    "VERIFIED FINDINGS: every figure/fact you have ALREADY confirmed through a tool, WITH its "
+    "[doc p.N] citation (these are also in the evidence ledger — restate them so you don't re-fetch).\n"
+    "DOCS READ: which documents/sections you've already read.\n"
+    "OPEN SUBGOALS: what still needs doing to answer the question.\n"
+    "Do NOT answer the question yet and do NOT call any tool — only produce the summary text."
+)
+
+
+def _compact_messages(
+    messages: List[Dict[str, Any]],
+    model: BaseModel,
+    keep_last_k: int,
+) -> Optional[tuple]:
+    """Hand-rolled, gate-safe compaction (§7.1). Ask the model (no tools) for a structured
+    summary of work-done, then rebuild messages = [original question, summary, last-K verbatim].
+
+    The EvidenceLedger is NOT touched here (it lives in the caller and is never summarized) —
+    that is the correctness guarantee: every verified figure survives, so the output gate still
+    binds each claim to a real span. Returns (rebuilt_messages, summary_call_tokens), or None on
+    any failure (caller keeps the original messages → degrades to the existing wall behavior,
+    never crashes).
+    """
+    if not messages:
+        return None
+    # The first user message is the original question — always preserve it verbatim.
+    question_msg = next((m for m in messages if m.get("role") == "user"
+                         and isinstance(m.get("content"), str)), messages[0])
+
+    summary_request = messages + [{"role": "user", "content": _COMPACT_SUMMARY_INSTRUCTION}]
+    try:
+        resp = model.invoke(summary_request, [])  # no tools — summary text only
+    except Exception as exc:  # noqa: BLE001 — compaction must never break the run
+        logger.warning("[agent_core.loop] compaction summary call failed — skipping: %s", exc)
+        return None
+    summary = (resp.text or "").strip()
+    if not summary:
+        return None
+
+    call_tokens = (resp.usage or {}).get("in", 0) + (resp.usage or {}).get("out", 0)
+    rebuilt: List[Dict[str, Any]] = [
+        question_msg,
+        {"role": "user", "content": f"[compacted context — summary of work so far]\n{summary}"},
+    ]
+    rebuilt.extend(_safe_tail(messages, keep_last_k))
+    return rebuilt, call_tokens
+
+
 # ── The loop ──────────────────────────────────────────────────────────────────────
 
 def run_agent(
@@ -232,10 +334,45 @@ def run_agent(
     _dead_scopes: Set[str] = set()       # query-keys that already returned nothing
     _consecutive_model_errors: int = 0   # resets on any successful model response
 
+    # ── Phase 3.1: compaction state (DOCUMENT_HARNESS §7.1) ──────────────────────────
+    _compact_on, _compact_frac, _compact_keep_k = _compaction_settings()
+    _compactions = 0                     # how many times we've compacted this run
+    _compact_floor = 0                   # don't re-compact until tokens climb past this again
+
     def _wall_exhausted() -> bool:
         return budget.wall_clock_s > 0 and (time.monotonic() - started) >= budget.wall_clock_s
 
     while True:
+        # ── Phase 3.1: compaction BEFORE the wall (DOCUMENT_HARNESS §7.1) ─────────────
+        # The top of the loop is a clean boundary — every tool_use from the prior turn
+        # already has its tool_result (the for-loop never `break`s mid-turn), so summarizing
+        # here can't orphan a tool call. When the run nears the token wall, summarize the
+        # verbose history and CONTINUE instead of letting the budget gate below abstain.
+        # The ledger is untouched → every verified figure survives (gate stays sound).
+        # Flag OFF ⇒ this whole block is skipped ⇒ byte-identical to today.
+        if (_compact_on and budget.token_budget > 0
+                and budget.tokens_used >= _compact_frac * budget.token_budget
+                and budget.tokens_used >= _compact_floor):
+            before_chars = _msg_chars(messages)
+            compacted = _compact_messages(messages, model, _compact_keep_k)
+            if compacted is not None:
+                messages, _summary_call_tokens = compacted
+                _compactions += 1
+                # Account for the summary call's own spend (it's a real model call), THEN
+                # credit back the context we freed. `tokens_used` is the loop's wall proxy
+                # and it is dominated by re-sending the growing message history each step;
+                # after compaction the live context is genuinely smaller, so the pressure
+                # really dropped. Subtract the freed chars (chars/4≈tokens), floored at 0,
+                # so the loop continues instead of abstaining at the wall.
+                budget.tokens_used += _summary_call_tokens
+                freed = max(0, (before_chars - _msg_chars(messages)) // 4)
+                budget.tokens_used = max(0, budget.tokens_used - freed)
+                # Don't re-compact until tokens climb back to the threshold from here.
+                _compact_floor = budget.tokens_used + 1
+                yield {"type": "gate", "name": "compaction", "pass": True,
+                       "detail": (f"compacted context (#{_compactions}); freed ~{freed} tokens, "
+                                  f"kept last {_compact_keep_k} messages + ledger intact")}
+
         # Budget gate BEFORE each model call (§3.2): no silent overspend — steps,
         # tokens, AND wall clock are all hard ceilings.
         if budget.step_exhausted() or budget.tokens_exhausted() or _wall_exhausted():
